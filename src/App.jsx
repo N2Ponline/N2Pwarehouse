@@ -160,6 +160,7 @@ function ReturnStaffPanel() {
   const [scanInput, setScanInput] = useState("");
   const [lastScan, setLastScan] = useState(null);
   const [staffName, setStaffName] = useState(localStorage.getItem("staffName") || "");
+  const [selectedSessions, setSelectedSessions] = useState([]); // multi-select
   const [showConfirm, setShowConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
   const scanRef = useRef(null);
@@ -170,18 +171,43 @@ function ReturnStaffPanel() {
   const loadSessions = async () => {
     setLoading(true);
     try {
-      const data = await sbReturn("return_sessions?select=*&order=created_at.desc&limit=5");
+      const data = await sbReturn("return_sessions?select=*&order=created_at.desc&limit=20");
       setSessions(data);
     } catch (e) { console.error(e); }
     setLoading(false);
   };
 
-  const selectSession = async (s) => {
+  const toggleSelectSession = (s) => {
+    setSelectedSessions(prev =>
+      prev.find(x => x.id === s.id) ? prev.filter(x => x.id !== s.id) : [...prev, s]
+    );
+  };
+
+  const startScan = async () => {
+    if (selectedSessions.length === 0) return;
     setLoading(true);
     try {
-      const scans = await sbReturn(`return_scans?session_id=eq.${s.id}&select=tracking_code,scanned_at,scanned_by`);
-      setScannedCodes(scans);
-      setActiveSession(s);
+      // load scans for all selected sessions
+      const ids = selectedSessions.map(s => s.id);
+      const allScans = [];
+      for (const id of ids) {
+        const scans = await sbReturn(`return_scans?session_id=eq.${id}&select=tracking_code,scanned_at,scanned_by,session_id`);
+        allScans.push(...scans);
+      }
+      // merge tracking_list from all sessions
+      const mergedList = [...new Set(selectedSessions.flatMap(s => s.tracking_list || []))];
+      // create a virtual merged session
+      const merged = {
+        id: ids[0], // use first for new scans
+        ids,
+        courier: selectedSessions[0].courier,
+        created_at: selectedSessions[0].created_at,
+        tracking_list: mergedList,
+        _isMulti: selectedSessions.length > 1,
+        _sessionCount: selectedSessions.length,
+      };
+      setScannedCodes(allScans);
+      setActiveSession(merged);
       setLastScan(null);
     } catch (e) { alert("โหลดข้อมูลไม่ได้"); }
     setLoading(false);
@@ -219,7 +245,10 @@ function ReturnStaffPanel() {
   const handleDeleteScan = async (trackingCode) => {
     if (!confirm(`ยืนยันลบ ${trackingCode} ออกจากรายการ?`)) return;
     try {
-      await sbReturn(`return_scans?session_id=eq.${activeSession.id}&tracking_code=eq.${trackingCode}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      const ids = activeSession.ids || [activeSession.id];
+      for (const sid of ids) {
+        await sbReturn(`return_scans?session_id=eq.${sid}&tracking_code=eq.${trackingCode}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      }
       setScannedCodes(prev => prev.filter(s => s.tracking_code !== trackingCode));
       if (lastScan?.code === trackingCode) setLastScan(null);
     } catch (e) { alert("ลบไม่สำเร็จ"); }
@@ -245,23 +274,49 @@ function ReturnStaffPanel() {
 
   if (!activeSession) return (
     <div>
-      <div style={{ marginBottom: 24 }}>
+      <div style={{ marginBottom: 20 }}>
         <h2 style={{ fontSize: 20, fontWeight: 700, color: "#ccd6f6", marginBottom: 4 }}>พนักงาน — ยิงพัสดุตีกลับ</h2>
-        <p style={{ color: "#8892b0", fontSize: 14 }}>สวัสดี <span style={{ color: "#64ffda" }}>{staffName}</span> — เลือกเซสชันที่ต้องการยิง</p>
+        <p style={{ color: "#8892b0", fontSize: 14 }}>สวัสดี <span style={{ color: "#64ffda" }}>{staffName}</span> — เลือกเซสชัน (เลือกได้หลายอัน)</p>
       </div>
+
+      <div style={{ background: "rgba(100,255,218,0.04)", border: "1px solid rgba(100,255,218,0.15)", borderRadius: 10, padding: "12px 16px", marginBottom: 18, fontSize: 13, color: "#8892b0" }}>
+        💡 ถ้าพัสดุตีกลับมาคนละวัน ให้ติ๊กหลายเซสชันพร้อมกัน แล้วกด "เริ่มยิง" — ระบบจะรวมรายการให้อัตโนมัติ
+      </div>
+
       {loading && <div style={{ color: "#555", fontSize: 14 }}>กำลังโหลด...</div>}
       {!loading && sessions.length === 0 && <div style={{ color: "#444", fontSize: 14, textAlign: "center", paddingTop: 40 }}>ยังไม่มีเซสชัน รอแอดมินสร้างก่อน</div>}
-      {sessions.map(s => (
-        <div key={s.id} onClick={() => selectSession(s)}
-          style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: 16, marginBottom: 12, cursor: "pointer", transition: "border-color 0.2s" }}
-          onMouseEnter={e => e.currentTarget.style.borderColor = "#64ffda"} onMouseLeave={e => e.currentTarget.style.borderColor = "#2a2f45"}>
-          <div style={{ fontWeight: 600, color: "#ccd6f6", fontSize: 15, marginBottom: 4 }}>{s.courier} — {new Date(s.created_at).toLocaleDateString("th-TH", { dateStyle: "long" })}</div>
-          <div style={{ color: "#8892b0", fontSize: 13 }}>{s.tracking_list?.length} รายการ · {new Date(s.created_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</div>
+
+      {sessions.map(s => {
+        const isSelected = selectedSessions.find(x => x.id === s.id);
+        return (
+          <div key={s.id} onClick={() => toggleSelectSession(s)}
+            style={{ background: isSelected ? "rgba(100,255,218,0.06)" : "#1a1d27", border: `1px solid ${isSelected ? "#64ffda" : "#2a2f45"}`, borderRadius: 10, padding: "14px 16px", marginBottom: 10, cursor: "pointer", transition: "all 0.15s", display: "flex", alignItems: "center", gap: 14 }}>
+            <div style={{ width: 20, height: 20, borderRadius: 4, border: `2px solid ${isSelected ? "#64ffda" : "#3a3f5c"}`, background: isSelected ? "#64ffda" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 12, color: "#0f1117", fontWeight: 700 }}>
+              {isSelected ? "✓" : ""}
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, color: "#ccd6f6", fontSize: 14, marginBottom: 2 }}>
+                {s.courier} — {new Date(s.created_at).toLocaleDateString("th-TH", { dateStyle: "long" })}
+              </div>
+              <div style={{ color: "#8892b0", fontSize: 13 }}>{s.tracking_list?.length} รายการ · {new Date(s.created_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</div>
+            </div>
+          </div>
+        );
+      })}
+
+      {selectedSessions.length > 0 && (
+        <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: "14px 16px", marginBottom: 14, fontSize: 13, color: "#64ffda" }}>
+          เลือกแล้ว {selectedSessions.length} เซสชัน · รวม {[...new Set(selectedSessions.flatMap(s => s.tracking_list || []))].length} รายการ
         </div>
-      ))}
+      )}
+
       <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-        <button onClick={loadSessions} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 โหลดใหม่</button>
-        <button onClick={() => { localStorage.removeItem("staffName"); setStaffName(""); }} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#555", borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>เปลี่ยนชื่อ</button>
+        <button onClick={startScan} disabled={selectedSessions.length === 0 || loading}
+          style={{ flex: 1, background: selectedSessions.length > 0 ? "#64ffda" : "#1a1d27", color: selectedSessions.length > 0 ? "#0f1117" : "#444", border: "none", borderRadius: 8, padding: "12px", fontSize: 15, fontWeight: 700, cursor: selectedSessions.length > 0 ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
+          {loading ? "กำลังโหลด..." : `เริ่มยิง${selectedSessions.length > 1 ? ` (${selectedSessions.length} เซสชัน)` : ""} →`}
+        </button>
+        <button onClick={loadSessions} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "12px 16px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄</button>
+        <button onClick={() => { localStorage.removeItem("staffName"); setStaffName(""); }} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#555", borderRadius: 8, padding: "12px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>เปลี่ยนชื่อ</button>
       </div>
     </div>
   );
@@ -270,10 +325,12 @@ function ReturnStaffPanel() {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
         <div>
-          <div style={{ fontWeight: 700, color: "#ccd6f6", fontSize: 17 }}>Flash — {new Date(activeSession.created_at).toLocaleDateString("th-TH", { dateStyle: "medium" })}</div>
-          <div style={{ color: "#8892b0", fontSize: 13, marginTop: 2 }}>พนักงาน: {staffName}</div>
+          <div style={{ fontWeight: 700, color: "#ccd6f6", fontSize: 17 }}>
+            {activeSession._isMulti ? `รวม ${activeSession._sessionCount} เซสชัน` : `Flash — ${new Date(activeSession.created_at).toLocaleDateString("th-TH", { dateStyle: "medium" })}`}
+          </div>
+          <div style={{ color: "#8892b0", fontSize: 13, marginTop: 2 }}>พนักงาน: {staffName} · {activeSession.tracking_list.length} รายการ</div>
         </div>
-        <button onClick={() => setActiveSession(null)} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>← กลับ</button>
+        <button onClick={() => { setActiveSession(null); setSelectedSessions([]); }} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>← กลับ</button>
       </div>
 
       <div style={{ marginBottom: 20 }}>
