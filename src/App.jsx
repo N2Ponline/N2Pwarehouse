@@ -57,10 +57,12 @@ const CATEGORIES = ["ทั้งหมด", "กำลังขาย", "-"];
 // ============================================================
 
 const parseFlashText = (raw) => {
-  const re = /TH[A-Z0-9]{8,}/g;
+  // รองรับ Flash (TH...), ไปรษณีย์ไทย (WA, EF, RL, CP...), Kerry (KER), J&T (JT) ฯลฯ
+  const re = /[A-Z]{2}[A-Z0-9]{8,}/g;
   const matches = raw.toUpperCase().match(re);
   if (!matches) return [];
-  return [...new Set(matches)];
+  // กรองเฉพาะที่เป็น tracking number จริงๆ (ยาวพอ, ไม่ใช่คำทั่วไป)
+  return [...new Set(matches.filter(m => m.length >= 10))];
 };
 
 const sbReturn = async (path, opts = {}) => {
@@ -214,6 +216,15 @@ function ReturnStaffPanel() {
     } catch { setLastScan({ code, status: "error" }); playBeep(false); }
   };
 
+  const handleDeleteScan = async (trackingCode) => {
+    if (!confirm(`ยืนยันลบ ${trackingCode} ออกจากรายการ?`)) return;
+    try {
+      await sbReturn(`return_scans?session_id=eq.${activeSession.id}&tracking_code=eq.${trackingCode}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      setScannedCodes(prev => prev.filter(s => s.tracking_code !== trackingCode));
+      if (lastScan?.code === trackingCode) setLastScan(null);
+    } catch (e) { alert("ลบไม่สำเร็จ"); }
+  };
+
   const scannedList = scannedCodes.map(s => s.tracking_code);
   const matched = activeSession ? activeSession.tracking_list.filter(c => scannedList.includes(c)) : [];
   const missing = activeSession ? activeSession.tracking_list.filter(c => !scannedList.includes(c)) : [];
@@ -301,7 +312,12 @@ function ReturnStaffPanel() {
           <div style={{ fontSize: 11, color: "#8892b0", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>ยิงแล้ว ({scannedCodes.length})</div>
           {scannedCodes.length === 0 && <div style={{ color: "#3a3f5c", fontSize: 13 }}>ยังไม่มี</div>}
           {[...scannedCodes].reverse().map((s, i) => (
-            <div key={i} style={{ fontFamily: "monospace", fontSize: 11, color: activeSession.tracking_list.includes(s.tracking_code) ? "#64ffda" : "#ffa500", padding: "4px 0", borderBottom: "1px solid #1e2235" }}>{s.tracking_code}</div>
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid #1e2235" }}>
+              <span style={{ fontFamily: "monospace", fontSize: 11, color: activeSession.tracking_list.includes(s.tracking_code) ? "#64ffda" : "#ffa500" }}>{s.tracking_code}</span>
+              <button onClick={() => handleDeleteScan(s.tracking_code)} title="ลบรายการนี้"
+                style={{ background: "none", border: "none", color: "#3a3f5c", cursor: "pointer", fontSize: 13, padding: "0 2px", lineHeight: 1, fontFamily: "inherit" }}
+                onMouseEnter={e => e.target.style.color = "#ff5555"} onMouseLeave={e => e.target.style.color = "#3a3f5c"}>✕</button>
+            </div>
           ))}
         </div>
         <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: 12, maxHeight: 240, overflowY: "auto" }}>
