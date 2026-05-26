@@ -381,65 +381,69 @@ function ReturnStaffPanel() {
   const [exporting, setExporting] = useState(false);
   const scanRef = useRef(null);
   const listRef = useRef(null);
-  const videoRef = useRef(null);
-  const [cameraMode, setCameraMode] = useState(false);
-  const [cameraError, setCameraError] = useState("");
-  const streamRef = useRef(null);
-  const animRef = useRef(null);
+  const cameraInputRef = useRef(null);
 
-  const loadZXing = () => new Promise((resolve, reject) => {
-    if (window.ZXing) { resolve(window.ZXing); return; }
-    const s = document.createElement("script");
-    s.src = "https://cdnjs.cloudflare.com/ajax/libs/zxing-js/0.20.0/zxing.min.js";
-    s.onload = () => resolve(window.ZXing);
-    s.onerror = () => reject(new Error("โหลด ZXing ไม่สำเร็จ"));
-    document.head.appendChild(s);
-  });
-
-  const codeReaderRef = useRef(null);
-
-  const startCamera = async () => {
-    setCameraError("");
-    try {
-      const ZXing = await loadZXing();
-      const hints = new Map();
-      const formats = [
-        ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39,
-        ZXing.BarcodeFormat.EAN_13,   ZXing.BarcodeFormat.EAN_8,
-        ZXing.BarcodeFormat.QR_CODE,  ZXing.BarcodeFormat.DATA_MATRIX,
-        ZXing.BarcodeFormat.ITF,      ZXing.BarcodeFormat.AZTEC,
-      ];
-      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, formats);
-      const reader = new ZXing.BrowserMultiFormatReader(hints);
-      codeReaderRef.current = reader;
-      setCameraMode(true);
-      setTimeout(async () => {
+  // อ่านบาร์โค้ดจากภาพถ่าย ใช้ ZXing WASM (รองรับทุก browser รวมถึง iPhone)
+  const readBarcodeFromImage = async (file) => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = async () => {
         try {
-          const devices = await ZXing.BrowserMultiFormatReader.listVideoInputDevices();
-          // prefer back camera
-          const backCam = devices.find(d => /back|rear|environment/i.test(d.label)) || devices[devices.length - 1];
-          const deviceId = backCam?.deviceId;
-          reader.decodeFromVideoDevice(deviceId, videoRef.current, (result, err) => {
-            if (!result) return;
-            const code = result.getText().trim().toUpperCase();
-            const allCodes = [...staging.map(s=>s.code), ...submitted.map(s=>s.tracking_code)];
-            if (allCodes.includes(code)) return;
-            const timeStr = new Date().toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-            setStaging(prev => [{ code, time: timeStr }, ...prev]);
-            setLastScan({ code, status: systemList.includes(code) ? "match" : "extra" });
-            playBeep(systemList.includes(code));
-          });
-        } catch (e) { setCameraError("เปิดกล้องไม่สำเร็จ: " + e.message); setCameraMode(false); }
-      }, 100);
-    } catch (e) { setCameraError("โหลดระบบสแกนไม่สำเร็จ: " + e.message); }
+          // ใช้ ZXing ผ่าน CDN
+          if (!window.ZXingWasm) {
+            // fallback: ลองใช้ BarcodeDetector ถ้ามี
+            if (window.BarcodeDetector) {
+              const detector = new window.BarcodeDetector();
+              const results = await detector.detect(img);
+              URL.revokeObjectURL(url);
+              resolve(results.length > 0 ? results[0].rawValue : null);
+              return;
+            }
+            // ถ้าไม่มีทั้งคู่ ใช้ canvas + jsQR
+            const canvas = document.createElement("canvas");
+            canvas.width = img.width; canvas.height = img.height;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0);
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            // โหลด jsQR
+            if (!window.jsQR) {
+              await new Promise((res, rej) => {
+                const s = document.createElement("script");
+                s.src = "https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js";
+                s.onload = res; s.onerror = rej;
+                document.head.appendChild(s);
+              });
+            }
+            const result = window.jsQR(imageData.data, canvas.width, canvas.height);
+            URL.revokeObjectURL(url);
+            resolve(result ? result.data : null);
+            return;
+          }
+        } catch (e) { console.error(e); }
+        URL.revokeObjectURL(url);
+        resolve(null);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
+      img.src = url;
+    });
   };
 
-  const stopCamera = () => {
-    if (codeReaderRef.current) { try { codeReaderRef.current.reset(); } catch {} codeReaderRef.current = null; }
-    setCameraMode(false);
+  const handleCameraCapture = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    // รีเซ็ต input เพื่อให้เลือกซ้ำได้
+    e.target.value = "";
+    const code = await readBarcodeFromImage(file);
+    if (!code) { alert("อ่านบาร์โค้ดไม่สำเร็จ ลองถ่ายใหม่ให้ชัดขึ้น"); return; }
+    const trimmed = code.trim().toUpperCase();
+    const allCodes = [...staging.map(s=>s.code), ...submitted.map(s=>s.tracking_code)];
+    if (allCodes.includes(trimmed)) { playBeep(false); setLastScan({ code: trimmed, status: "duplicate" }); return; }
+    const timeStr = new Date().toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    setStaging(prev => [{ code: trimmed, time: timeStr }, ...prev]);
+    setLastScan({ code: trimmed, status: systemList.includes(trimmed) ? "match" : "extra" });
+    playBeep(systemList.includes(trimmed));
   };
-
-  useEffect(() => { return () => { stopCamera(); }; }, []);
   const today = new Date().toISOString().slice(0,10);
 
   useEffect(() => { if (staffName) loadData(); }, [staffName]);
@@ -715,31 +719,16 @@ function ReturnStaffPanel() {
               )}
             </div>
 
-            {/* Camera scanner */}
-            {cameraMode && (
-              <div style={{ padding: "0 20px 10px" }}>
-                <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", background: "#000", aspectRatio: "16/9" }}>
-                  <video ref={videoRef} style={{ width: "100%", height: "100%", objectFit: "cover" }} playsInline muted />
-                  {/* Scanning guide line */}
-                  <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
-                    <div style={{ width: "70%", height: 2, background: "#64ffda", boxShadow: "0 0 10px #64ffda", borderRadius: 2, animation: "scanLine 1.5s ease-in-out infinite alternate" }} />
-                  </div>
-                  <div style={{ position: "absolute", top: 8, right: 8 }}>
-                    <button onClick={stopCamera} style={{ background: "rgba(0,0,0,0.6)", border: "1px solid #fff3", color: "#fff", borderRadius: 6, padding: "4px 10px", fontSize: 12, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>✕ ปิดกล้อง</button>
-                  </div>
-                  <div style={{ position: "absolute", bottom: 8, left: 0, right: 0, textAlign: "center", color: "#fff", fontSize: 12, opacity: 0.7 }}>ส่องบาร์โค้ดให้ตรงกับเส้น</div>
-                </div>
-                {cameraError && <div style={{ color: "#ff5555", fontSize: 12, marginTop: 6 }}>{cameraError}</div>}
-              </div>
-            )}
-            {!cameraMode && (
-              <div style={{ padding: "0 20px 10px", display: "flex", justifyContent: "center" }}>
-                <button onClick={startCamera}
-                  style={{ background: "rgba(100,255,218,0.08)", border: "1px solid rgba(100,255,218,0.25)", color: "#64ffda", borderRadius: 10, padding: "10px 24px", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", display: "flex", alignItems: "center", gap: 8 }}>
-                  📷 สแกนด้วยกล้อง
-                </button>
-              </div>
-            )}
+            {/* Camera button — ใช้ input file capture แทน เพื่อรองรับทุก OS */}
+            <div style={{ padding: "0 20px 10px" }}>
+              <input ref={cameraInputRef} type="file" accept="image/*" capture="environment"
+                style={{ display: "none" }} onChange={handleCameraCapture} />
+              <button onClick={() => cameraInputRef.current?.click()}
+                style={{ width: "100%", background: "rgba(100,255,218,0.08)", border: "1px solid rgba(100,255,218,0.25)", color: "#64ffda", borderRadius: 10, padding: "12px", fontSize: 15, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                📷 ถ่ายบาร์โค้ด (iPhone/Android)
+              </button>
+              <div style={{ fontSize: 11, color: "#555", textAlign: "center", marginTop: 6 }}>กดปุ่มนี้ → เปิดกล้อง → ถ่ายบาร์โค้ด → ระบบอ่านให้อัตโนมัติ</div>
+            </div>
 
             {/* Staged list — newest first, each item on its own row */}
             <div ref={listRef} style={{ flex: 1, overflowY: "auto", padding: "10px 20px" }}>
