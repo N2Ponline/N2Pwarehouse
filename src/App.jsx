@@ -75,13 +75,95 @@ const sbReturn = async (path, opts = {}) => {
   return text ? JSON.parse(text) : [];
 };
 
-function exportToCSV(filename, rows) {
-  const content = rows.join("\n");
-  const blob = new Blob(["﻿" + content], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
-  URL.revokeObjectURL(url);
+// ── SheetJS Excel Export ──
+async function loadXLSX() {
+  if (window.XLSX) return window.XLSX;
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload = () => resolve(window.XLSX);
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
 }
+
+async function exportReport(sessions) {
+  const XLSX = await loadXLSX();
+  const allScans = [];
+  for (const s of sessions) {
+    const scans = await sbReturn(`return_scans?session_id=eq.${s.id}&select=tracking_code,scanned_at,scanned_by`);
+    scans.forEach(sc => allScans.push({ ...sc, session_id: s.id, session_date: s.created_at }));
+  }
+  const systemList = [...new Set(sessions.flatMap(s => s.tracking_list || []))];
+  const scannedSet = new Set(allScans.map(sc => sc.tracking_code));
+  const scannedList = allScans.map(sc => sc.tracking_code);
+  const HEADER_STYLE = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "1A3C5E" } } };
+  const GREEN = { fill: { fgColor: { rgb: "C6EFCE" } } };
+  const RED   = { fill: { fgColor: { rgb: "FFCCCC" } } };
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: ระบบแจ้ง
+  const ws1 = XLSX.utils.aoa_to_sheet([
+    [{ v: "เลข Tracking (จากระบบ)", s: HEADER_STYLE }, { v: "สถานะ", s: HEADER_STYLE }, { v: "วันที่แจ้ง", s: HEADER_STYLE }],
+    ...systemList.map(code => {
+      const ok = scannedSet.has(code);
+      const sess = sessions.find(s => (s.tracking_list||[]).includes(code));
+      return [
+        { v: code, s: ok ? GREEN : RED },
+        { v: ok ? "รับแล้ว" : "ยังไม่รับ", s: ok ? GREEN : RED },
+        { v: sess ? new Date(sess.created_at).toLocaleDateString("th-TH") : "" },
+      ];
+    })
+  ]);
+  ws1["!cols"] = [{ wch: 30 }, { wch: 16 }, { wch: 16 }];
+  XLSX.utils.book_append_sheet(wb, ws1, "แจ้งจากระบบ");
+
+  // Sheet 2: พนักงานยิง
+  const ws2 = XLSX.utils.aoa_to_sheet([
+    [{ v: "เลข Tracking (พนักงานยิง)", s: HEADER_STYLE }, { v: "สถานะ", s: HEADER_STYLE }, { v: "ผู้ยิง", s: HEADER_STYLE }, { v: "เวลายิง", s: HEADER_STYLE }],
+    ...allScans.map(sc => {
+      const ok = systemList.includes(sc.tracking_code);
+      return [
+        { v: sc.tracking_code, s: ok ? GREEN : RED },
+        { v: ok ? "ตรงกับระบบ" : "ไม่อยู่ในระบบ", s: ok ? GREEN : RED },
+        { v: sc.scanned_by || "-" },
+        { v: sc.scanned_at ? new Date(sc.scanned_at).toLocaleString("th-TH") : "-" },
+      ];
+    })
+  ]);
+  ws2["!cols"] = [{ wch: 30 }, { wch: 18 }, { wch: 14 }, { wch: 22 }];
+  XLSX.utils.book_append_sheet(wb, ws2, "พนักงานยิง");
+
+  // Sheet 3: สรุปยอด
+  const matched = systemList.filter(c => scannedSet.has(c));
+  const missing = systemList.filter(c => !scannedSet.has(c));
+  const extra   = [...new Set(scannedList)].filter(c => !systemList.includes(c));
+  const pct = systemList.length > 0 ? Math.round(matched.length / systemList.length * 100) : 0;
+  const summaryRows = [
+    [{ v: "สรุปรายงานพัสดุตีกลับ", s: { font: { bold: true, sz: 14 } } }, ""],
+    ["วันที่ออกรายงาน", new Date().toLocaleDateString("th-TH", { dateStyle: "long" })],
+    ["จำนวนเซสชัน", sessions.length],
+    ["", ""],
+    [{ v: "รายการ", s: HEADER_STYLE }, { v: "จำนวน (ชิ้น)", s: HEADER_STYLE }],
+    ["แจ้งจากระบบทั้งหมด", systemList.length],
+    ["รับเข้าตรงกับระบบ", matched.length],
+    ["ยังไม่ได้รับ", missing.length],
+    ["ยิงแต่ไม่อยู่ในระบบ", extra.length],
+    ["ยิงทั้งหมด", allScans.length],
+    ["", ""],
+    [{ v: `ความครบถ้วน: ${pct}%`, s: { font: { bold: true, color: { rgb: pct === 100 ? "007A3D" : "CC0000" } } } }, ""],
+  ];
+  if (missing.length > 0) {
+    summaryRows.push(["", ""], [{ v: "รายการที่ยังไม่ได้รับ:", s: { font: { bold: true } } }, ""]);
+    missing.forEach(c => summaryRows.push([c, { v: "ยังไม่รับ", s: RED }]));
+  }
+  const ws3 = XLSX.utils.aoa_to_sheet(summaryRows);
+  ws3["!cols"] = [{ wch: 36 }, { wch: 18 }];
+  XLSX.utils.book_append_sheet(wb, ws3, "สรุปยอด");
+
+  XLSX.writeFile(wb, `return_report_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
 
 function ReturnAdminPanel() {
   const [flashText, setFlashText] = useState("");
@@ -89,6 +171,15 @@ function ReturnAdminPanel() {
   const [sessions, setSessions] = useState([]);
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [expandedId, setExpandedId] = useState(null);
+  const [exporting, setExporting] = useState(false);
+
+  const handleExport = async () => {
+    if (sessions.length === 0) return alert("ไม่มีเซสชันให้ export");
+    setExporting(true);
+    try { await exportReport(sessions); }
+    catch (e) { alert("Export ไม่สำเร็จ: " + e.message); }
+    setExporting(false);
+  };
 
   const fetchSessions = async () => {
     try {
@@ -176,7 +267,13 @@ function ReturnAdminPanel() {
             </div>
           );
         })}
-        <button onClick={fetchSessions} style={{ marginTop: 8, background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 โหลดใหม่</button>
+        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+          <button onClick={fetchSessions} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 โหลดใหม่</button>
+          <button onClick={handleExport} disabled={exporting || sessions.length === 0}
+            style={{ background: sessions.length > 0 && !exporting ? "rgba(100,255,218,0.1)" : "#1a1d27", border: `1px solid ${sessions.length > 0 ? "rgba(100,255,218,0.3)" : "#2a2f45"}`, color: sessions.length > 0 && !exporting ? "#64ffda" : "#444", borderRadius: 8, padding: "8px 20px", fontSize: 13, fontWeight: 600, cursor: sessions.length > 0 ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
+            {exporting ? "⏳ กำลัง Export..." : "📊 Export รายงาน Excel (ทุกเซสชัน)"}
+          </button>
+        </div>
       </div>
     </div>
   );
