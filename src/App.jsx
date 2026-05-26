@@ -75,11 +75,20 @@ const sbReturn = async (path, opts = {}) => {
   return text ? JSON.parse(text) : [];
 };
 
+function exportToCSV(filename, rows) {
+  const content = rows.join("\n");
+  const blob = new Blob(["﻿" + content], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
 function ReturnAdminPanel() {
   const [flashText, setFlashText] = useState("");
   const [loading, setLoading] = useState(false);
   const [sessions, setSessions] = useState([]);
   const [loadingSessions, setLoadingSessions] = useState(true);
+  const [expandedId, setExpandedId] = useState(null);
 
   const fetchSessions = async () => {
     try {
@@ -132,18 +141,38 @@ function ReturnAdminPanel() {
           const scannedCount = s.return_scans?.[0]?.count ?? 0;
           const total = s.tracking_list?.length ?? 0;
           const pct = total > 0 ? Math.round((scannedCount / total) * 100) : 0;
+          const isExpanded = expandedId === s.id;
           return (
-            <div key={s.id} style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: "14px 16px", marginBottom: 10 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <div>
-                  <span style={{ fontWeight: 600, color: "#ccd6f6", fontSize: 14 }}>{s.courier} — {new Date(s.created_at).toLocaleDateString("th-TH", { dateStyle: "medium" })}</span>
-                  <span style={{ marginLeft: 10, color: "#8892b0", fontSize: 12 }}>{new Date(s.created_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</span>
+            <div key={s.id} style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, marginBottom: 10, overflow: "hidden" }}>
+              <div style={{ padding: "14px 16px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div style={{ cursor: "pointer", flex: 1 }} onClick={() => setExpandedId(isExpanded ? null : s.id)}>
+                    <span style={{ fontWeight: 600, color: "#ccd6f6", fontSize: 14 }}>{s.courier} — {new Date(s.created_at).toLocaleDateString("th-TH", { dateStyle: "medium" })}</span>
+                    <span style={{ marginLeft: 10, color: "#8892b0", fontSize: 12 }}>{new Date(s.created_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontFamily: "monospace", fontSize: 13, color: pct === 100 ? "#64ffda" : "#ccd6f6" }}>{scannedCount}/{total}</span>
+                    <button onClick={() => exportToCSV(`session_${s.id}_${new Date(s.created_at).toISOString().slice(0,10)}.csv`, ["tracking_number", ...(s.tracking_list || [])])}
+                      style={{ background: "rgba(100,255,218,0.08)", border: "1px solid rgba(100,255,218,0.2)", color: "#64ffda", borderRadius: 6, padding: "4px 10px", fontSize: 12, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+                      📥 Excel
+                    </button>
+                    <span style={{ color: "#555", cursor: "pointer", fontSize: 14 }} onClick={() => setExpandedId(isExpanded ? null : s.id)}>{isExpanded ? "▲" : "▼"}</span>
+                  </div>
                 </div>
-                <span style={{ fontFamily: "monospace", fontSize: 13, color: pct === 100 ? "#64ffda" : "#ccd6f6" }}>{scannedCount}/{total}</span>
+                <div style={{ height: 4, background: "#0f1117", borderRadius: 2 }}>
+                  <div style={{ height: "100%", width: `${pct}%`, background: pct === 100 ? "#64ffda" : "#ff5555", borderRadius: 2 }} />
+                </div>
               </div>
-              <div style={{ height: 4, background: "#0f1117", borderRadius: 2 }}>
-                <div style={{ height: "100%", width: `${pct}%`, background: pct === 100 ? "#64ffda" : "#ff5555", borderRadius: 2 }} />
-              </div>
+              {isExpanded && (
+                <div style={{ borderTop: "1px solid #2a2f45", padding: "12px 16px", background: "#12151f", maxHeight: 220, overflowY: "auto" }}>
+                  <div style={{ fontSize: 11, color: "#8892b0", marginBottom: 8, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>รายการทั้งหมด {total} รายการ</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px" }}>
+                    {(s.tracking_list || []).map((code, i) => (
+                      <span key={i} style={{ fontFamily: "monospace", fontSize: 11, color: "#8892b0", padding: "2px 0" }}>{code}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
@@ -161,6 +190,7 @@ function ReturnStaffPanel() {
   const [lastScan, setLastScan] = useState(null);
   const [staffName, setStaffName] = useState(localStorage.getItem("staffName") || "");
   const [selectedSessions, setSelectedSessions] = useState([]); // multi-select
+  const [expandedId, setExpandedId] = useState(null);
   const [showConfirm, setShowConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
   const scanRef = useRef(null);
@@ -279,27 +309,52 @@ function ReturnStaffPanel() {
         <p style={{ color: "#8892b0", fontSize: 14 }}>สวัสดี <span style={{ color: "#64ffda" }}>{staffName}</span> — เลือกเซสชัน (เลือกได้หลายอัน)</p>
       </div>
 
-      <div style={{ background: "rgba(100,255,218,0.04)", border: "1px solid rgba(100,255,218,0.15)", borderRadius: 10, padding: "12px 16px", marginBottom: 18, fontSize: 13, color: "#8892b0" }}>
+      <div style={{ background: "rgba(100,255,218,0.04)", border: "1px solid rgba(100,255,218,0.15)", borderRadius: 10, padding: "12px 16px", marginBottom: 14, fontSize: 13, color: "#8892b0" }}>
         💡 ถ้าพัสดุตีกลับมาคนละวัน ให้ติ๊กหลายเซสชันพร้อมกัน แล้วกด "เริ่มยิง" — ระบบจะรวมรายการให้อัตโนมัติ
       </div>
+
+      {!loading && sessions.length > 0 && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+          <button onClick={() => setSelectedSessions(selectedSessions.length === sessions.length ? [] : [...sessions])}
+            style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+            {selectedSessions.length === sessions.length ? "ยกเลิกทั้งหมด" : "เลือกทั้งหมด"}
+          </button>
+        </div>
+      )}
 
       {loading && <div style={{ color: "#555", fontSize: 14 }}>กำลังโหลด...</div>}
       {!loading && sessions.length === 0 && <div style={{ color: "#444", fontSize: 14, textAlign: "center", paddingTop: 40 }}>ยังไม่มีเซสชัน รอแอดมินสร้างก่อน</div>}
 
       {sessions.map(s => {
-        const isSelected = selectedSessions.find(x => x.id === s.id);
+        const isSelected = !!selectedSessions.find(x => x.id === s.id);
+        const isExpanded = expandedId === s.id;
         return (
-          <div key={s.id} onClick={() => toggleSelectSession(s)}
-            style={{ background: isSelected ? "rgba(100,255,218,0.06)" : "#1a1d27", border: `1px solid ${isSelected ? "#64ffda" : "#2a2f45"}`, borderRadius: 10, padding: "14px 16px", marginBottom: 10, cursor: "pointer", transition: "all 0.15s", display: "flex", alignItems: "center", gap: 14 }}>
-            <div style={{ width: 20, height: 20, borderRadius: 4, border: `2px solid ${isSelected ? "#64ffda" : "#3a3f5c"}`, background: isSelected ? "#64ffda" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 12, color: "#0f1117", fontWeight: 700 }}>
-              {isSelected ? "✓" : ""}
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600, color: "#ccd6f6", fontSize: 14, marginBottom: 2 }}>
-                {s.courier} — {new Date(s.created_at).toLocaleDateString("th-TH", { dateStyle: "long" })}
+          <div key={s.id} style={{ background: isSelected ? "rgba(100,255,218,0.06)" : "#1a1d27", border: `1px solid ${isSelected ? "#64ffda" : "#2a2f45"}`, borderRadius: 10, marginBottom: 10, overflow: "hidden", transition: "all 0.15s" }}>
+            <div style={{ padding: "14px 16px", display: "flex", alignItems: "center", gap: 14 }}>
+              <div onClick={() => toggleSelectSession(s)} style={{ width: 20, height: 20, borderRadius: 4, border: `2px solid ${isSelected ? "#64ffda" : "#3a3f5c"}`, background: isSelected ? "#64ffda" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 12, color: "#0f1117", fontWeight: 700, cursor: "pointer" }}>
+                {isSelected ? "✓" : ""}
               </div>
-              <div style={{ color: "#8892b0", fontSize: 13 }}>{s.tracking_list?.length} รายการ · {new Date(s.created_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</div>
+              <div style={{ flex: 1, cursor: "pointer" }} onClick={() => toggleSelectSession(s)}>
+                <div style={{ fontWeight: 600, color: "#ccd6f6", fontSize: 14, marginBottom: 2 }}>
+                  {s.courier} — {new Date(s.created_at).toLocaleDateString("th-TH", { dateStyle: "long" })}
+                </div>
+                <div style={{ color: "#8892b0", fontSize: 13 }}>{s.tracking_list?.length} รายการ · {new Date(s.created_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</div>
+              </div>
+              <button onClick={e => { e.stopPropagation(); setExpandedId(isExpanded ? null : s.id); }}
+                style={{ background: "none", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 6, padding: "4px 10px", fontSize: 12, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+                {isExpanded ? "▲ ซ่อน" : "▼ ดูเลข"}
+              </button>
             </div>
+            {isExpanded && (
+              <div style={{ borderTop: "1px solid #2a2f45", padding: "12px 16px", background: "#12151f", maxHeight: 200, overflowY: "auto" }}>
+                <div style={{ fontSize: 11, color: "#8892b0", marginBottom: 8, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>รายการ {s.tracking_list?.length} เลข</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px" }}>
+                  {(s.tracking_list || []).map((code, i) => (
+                    <span key={i} style={{ fontFamily: "monospace", fontSize: 11, color: "#8892b0" }}>{code}</span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         );
       })}
