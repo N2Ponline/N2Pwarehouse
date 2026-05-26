@@ -245,8 +245,8 @@ function ReturnAdminPanel() {
   return (
     <div>
       <div style={{ marginBottom: 24 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: "#ccd6f6", marginBottom: 6 }}>แอดมิน — สร้างเซสชันพัสดุตีกลับ</h2>
-        <p style={{ color: "#8892b0", fontSize: 14 }}>Copy ข้อความจากหน้า Flash Express แล้ววางด้านล่าง เพื่อเปิดเซสชันให้พนักงาน</p>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: "#ccd6f6", marginBottom: 6 }}>ตีกลับในระบบ — ลงรายการจาก Flash</h2>
+        <p style={{ color: "#8892b0", fontSize: 14 }}>Copy ข้อความจากหน้า Flash Express แล้ววางด้านล่าง เพื่อชนกับรายการที่คลังรับเข้า</p>
       </div>
       <textarea value={flashText} onChange={e => setFlashText(e.target.value)}
         placeholder="วางข้อความจาก Flash Express ที่นี่...&#10;รองรับทุก format เช่น TH27218RHRH38A 15:02/TH27218RJD230A 15:11/..."
@@ -456,10 +456,10 @@ function ReturnStaffPanel() {
 
   const handleDeleteScan = async (code) => {
     if (!confirm(`ยืนยันลบ ${code}?`)) return;
-    const sessions = await sbReturnAll("return_sessions", `select=id&created_at=gte.${today}T00:00:00&created_at=lte.${today}T23:59:59`);
-    for (const s of sessions) {
-      try { await sbReturn(`return_scans?session_id=eq.${s.id}&tracking_code=eq.${code}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }); } catch {}
-    }
+    try {
+      // ลบโดยใช้ tracking_code โดยตรง ไม่ต้องวน session
+      await sbReturn(`return_scans?tracking_code=eq.${code}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+    } catch (e) { console.error("delete error", e); }
     setScannedToday(prev => prev.filter(s => s.tracking_code !== code));
     if (lastScan?.code === code) setLastScan(null);
   };
@@ -469,6 +469,66 @@ function ReturnStaffPanel() {
   const missing = systemList.filter(c => !scannedSet.has(c));
   const extra   = scannedToday.filter(s => !systemList.includes(s.tracking_code));
   const progress = systemList.length > 0 ? Math.round(matched.length / systemList.length * 100) : 0;
+
+  const [exporting, setExporting] = useState(false);
+  const handleStaffExport = async () => {
+    setExporting(true);
+    try {
+      const XLSX = await loadXLSX();
+      const dateStr = new Date().toLocaleDateString("th-TH", { dateStyle: "long" });
+      const HEADER = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "1A3C5E" } } };
+      const GREEN = { fill: { fgColor: { rgb: "C6EFCE" } } };
+      const RED   = { fill: { fgColor: { rgb: "FFCCCC" } } };
+      const ORANGE = { fill: { fgColor: { rgb: "FFE0B2" } } };
+      const wb = XLSX.utils.book_new();
+
+      // Sheet: สรุปยอด
+      const pct = systemList.length > 0 ? Math.round(matched.length/systemList.length*100) : 0;
+      const ws1 = XLSX.utils.aoa_to_sheet([
+        [{ v: "สรุปรายงานพัสดุตีกลับ", s: { font: { bold: true, sz: 14 } } }, ""],
+        ["วันที่", dateStr],
+        ["ผู้ยิง", staffName],
+        ["", ""],
+        [{ v: "หัวข้อ", s: HEADER }, { v: "จำนวน (ชิ้น)", s: HEADER }],
+        [{ v: "1. ตีกลับในระบบ (แจ้งจาก Flash)", s: {} }, systemList.length],
+        [{ v: "2. ตีกลับถึงคลัง (ยิงแล้ว)", s: {} }, scannedToday.length],
+        [{ v: "3. ✓ ตรงกัน", s: {} }, matched.length],
+        [{ v: "4. ✗ ขาด (ระบบแจ้งแต่ไม่มาถึงคลัง)", s: { fill: RED } }, missing.length],
+        [{ v: "   ⚠ เกิน (ถึงคลังแต่ยังไม่อยู่ในระบบ)", s: { fill: ORANGE } }, extra.length],
+        ["", ""],
+        [{ v: `ความครบถ้วน: ${pct}%`, s: { font: { bold: true, color: { rgb: pct===100?"007A3D":"CC0000" } } } }, ""],
+      ]);
+      ws1["!cols"] = [{ wch: 38 }, { wch: 16 }];
+      XLSX.utils.book_append_sheet(wb, ws1, "สรุปยอด");
+
+      // Sheet: ตรงกัน
+      const ws2 = XLSX.utils.aoa_to_sheet([
+        [{ v: "เลข Tracking", s: HEADER }, { v: "สถานะ", s: HEADER }],
+        ...matched.map(c => [{ v: c, s: GREEN }, { v: "✓ ตรงกัน", s: GREEN }])
+      ]);
+      ws2["!cols"] = [{ wch: 30 }, { wch: 14 }];
+      XLSX.utils.book_append_sheet(wb, ws2, "ตรงกัน");
+
+      // Sheet: ขาด
+      const ws3 = XLSX.utils.aoa_to_sheet([
+        [{ v: "เลข Tracking (ขาด)", s: HEADER }, { v: "สถานะ", s: HEADER }],
+        ...missing.map(c => [{ v: c, s: RED }, { v: "✗ ไม่มาถึงคลัง", s: RED }])
+      ]);
+      ws3["!cols"] = [{ wch: 30 }, { wch: 18 }];
+      XLSX.utils.book_append_sheet(wb, ws3, "ขาด");
+
+      // Sheet: เกิน
+      const ws4 = XLSX.utils.aoa_to_sheet([
+        [{ v: "เลข Tracking (เกิน)", s: HEADER }, { v: "สถานะ", s: HEADER }],
+        ...extra.map(s => [{ v: s.tracking_code, s: ORANGE }, { v: "⚠ ยังไม่อยู่ในระบบ", s: ORANGE }])
+      ]);
+      ws4["!cols"] = [{ wch: 30 }, { wch: 22 }];
+      XLSX.utils.book_append_sheet(wb, ws4, "เกิน");
+
+      XLSX.writeFile(wb, `return_report_${today}.xlsx`);
+    } catch (e) { alert("Export ไม่สำเร็จ: " + e.message); }
+    setExporting(false);
+  };
 
   if (!staffName) return (
     <div style={{ textAlign: "center", paddingTop: 60 }}>
@@ -489,7 +549,7 @@ function ReturnStaffPanel() {
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
         <div>
-          <h2 style={{ fontSize: 20, fontWeight: 700, color: "#ccd6f6", marginBottom: 4 }}>พนักงาน — ยิงพัสดุตีกลับ</h2>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: "#ccd6f6", marginBottom: 4 }}>ตีกลับถึงคลัง — ยิงบาร์โค้ด</h2>
           <div style={{ fontSize: 13, color: "#8892b0" }}>
             สวัสดี <span style={{ color: "#64ffda" }}>{staffName}</span> · {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}
           </div>
@@ -581,12 +641,38 @@ function ReturnStaffPanel() {
 
       {extra.length > 0 && (
         <div style={{ marginTop: 12, background: "rgba(255,165,0,0.06)", border: "1px solid rgba(255,165,0,0.2)", borderRadius: 10, padding: "10px 14px" }}>
-          <div style={{ fontSize: 12, color: "#ffa500", fontWeight: 600, marginBottom: 6 }}>⚠ ยิงแล้วแต่แอดมินยังไม่ได้ลง ({extra.length} รายการ)</div>
+          <div style={{ fontSize: 12, color: "#ffa500", fontWeight: 600, marginBottom: 6 }}>⚠ ยิงแล้วแต่ยังไม่อยู่ในระบบ ({extra.length} รายการ) — แจ้งแอดมินลงข้อมูล</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 10px" }}>
             {extra.map((s,i) => <span key={i} style={{ fontFamily: "monospace", fontSize: 11, color: "#ffa500" }}>{s.tracking_code}</span>)}
           </div>
         </div>
       )}
+
+      {/* Export button */}
+      <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid #2a2f45" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 13, color: "#8892b0" }}>
+            📊 สรุปวันที่ {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginBottom: 14 }}>
+          {[
+            { n: "1. ตีกลับในระบบ", v: systemList.length, c: "#8892b0" },
+            { n: "2. ตีกลับถึงคลัง", v: scannedToday.length, c: "#ccd6f6" },
+            { n: "3. ✓ ตรงกัน", v: matched.length, c: "#64ffda" },
+            { n: `4. ✗ ขาด`, v: missing.length, c: missing.length > 0 ? "#ff5555" : "#64ffda" },
+          ].map((s,i) => (
+            <div key={i} style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 13, color: "#8892b0" }}>{s.n}</span>
+              <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 16, color: s.c }}>{s.v}</span>
+            </div>
+          ))}
+        </div>
+        <button onClick={handleStaffExport} disabled={exporting}
+          style={{ width: "100%", background: "#64ffda", color: "#0f1117", border: "none", borderRadius: 10, padding: "13px", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", opacity: exporting ? 0.6 : 1 }}>
+          {exporting ? "⏳ กำลัง Export..." : "📥 Export รายงาน Excel"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -598,7 +684,7 @@ function ReturnCheckerTab() {
   return (
     <div>
       <div style={{ display: "flex", gap: 8, marginBottom: 28 }}>
-        {[["admin","🗂 แอดมิน"],["staff","📦 พนักงาน"]].map(([v,l]) => (
+        {[["admin","🗂 ตีกลับในระบบ"],["staff","📦 ตีกลับถึงคลัง"]].map(([v,l]) => (
           <button key={v} onClick={() => setAndSave(v)} className={`tab-btn ${subTab === v ? "active" : ""}`}>{l}</button>
         ))}
       </div>
