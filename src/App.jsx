@@ -385,47 +385,50 @@ function ReturnStaffPanel() {
 
   // อ่านบาร์โค้ดจากภาพถ่าย ใช้ ZXing WASM (รองรับทุก browser รวมถึง iPhone)
   const readBarcodeFromImage = async (file) => {
+    // โหลด ZXing-wasm — อ่านได้ทุกประเภท Code128, Code39, EAN, QR ฯลฯ
+    if (!window.ZXing) {
+      await new Promise((res, rej) => {
+        const s = document.createElement("script");
+        s.src = "https://cdn.jsdelivr.net/npm/zxing-wasm@1.2.6/dist/full/zxing_full.min.js";
+        s.onload = res; s.onerror = rej;
+        document.head.appendChild(s);
+      });
+    }
     return new Promise((resolve) => {
-      const img = new Image();
-      const url = URL.createObjectURL(file);
-      img.onload = async () => {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
         try {
-          // ใช้ ZXing ผ่าน CDN
-          if (!window.ZXingWasm) {
-            // fallback: ลองใช้ BarcodeDetector ถ้ามี
-            if (window.BarcodeDetector) {
-              const detector = new window.BarcodeDetector();
-              const results = await detector.detect(img);
-              URL.revokeObjectURL(url);
-              resolve(results.length > 0 ? results[0].rawValue : null);
-              return;
-            }
-            // ถ้าไม่มีทั้งคู่ ใช้ canvas + jsQR
-            const canvas = document.createElement("canvas");
-            canvas.width = img.width; canvas.height = img.height;
-            const ctx = canvas.getContext("2d");
-            ctx.drawImage(img, 0, 0);
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            // โหลด jsQR
-            if (!window.jsQR) {
-              await new Promise((res, rej) => {
-                const s = document.createElement("script");
-                s.src = "https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js";
-                s.onload = res; s.onerror = rej;
-                document.head.appendChild(s);
-              });
-            }
-            const result = window.jsQR(imageData.data, canvas.width, canvas.height);
-            URL.revokeObjectURL(url);
-            resolve(result ? result.data : null);
-            return;
-          }
-        } catch (e) { console.error(e); }
-        URL.revokeObjectURL(url);
-        resolve(null);
+          const ZXing = window.ZXing;
+          // รอให้ wasm พร้อม
+          const instance = await ZXing();
+          const arr = new Uint8Array(e.target.result);
+          const blob = new Blob([arr]);
+          const img = await createImageBitmap(blob).catch(() => null);
+          if (!img) { resolve(null); return; }
+
+          // วาดลง canvas
+          const canvas = document.createElement("canvas");
+          // ลดขนาดถ้าภาพใหญ่เกิน เพื่อเพิ่มความเร็ว
+          const MAX = 1200;
+          const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+          canvas.width = Math.round(img.width * scale);
+          canvas.height = Math.round(img.height * scale);
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+          const result = instance.readBarcodesFromImageData(imageData, {
+            tryHarder: true,
+            formats: ["Code128","Code39","Code93","EAN13","EAN8","UPCA","UPCE","QRCode","DataMatrix","Aztec","ITF","CodaBar"],
+          });
+          resolve(result.length > 0 ? result[0].text : null);
+        } catch (err) {
+          console.error("ZXing error:", err);
+          resolve(null);
+        }
       };
-      img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
-      img.src = url;
+      reader.onerror = () => resolve(null);
+      reader.readAsArrayBuffer(file);
     });
   };
 
