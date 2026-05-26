@@ -370,44 +370,39 @@ function ReturnAdminPanel() {
 
 function ReturnStaffPanel() {
   const [staffName, setStaffName] = useState(localStorage.getItem("staffName") || "");
+  // สถานะหลัก: idle | scanning | confirm
+  const [mode, setMode] = useState("idle");
+  // staging = เลขที่ยิงในรอบนี้ (local เท่านั้น ยังไม่บันทึก)
+  const [staging, setStaging] = useState([]);
+  // submitted = เลขที่บันทึกขึ้น Supabase แล้ว
+  const [submitted, setSubmitted] = useState([]);
+  // systemList = รายการจากเซสชันวันนี้
+  const [systemList, setSystemList] = useState([]);
   const [scanInput, setScanInput] = useState("");
-  const [scannedToday, setScannedToday] = useState([]); // all scans today (loaded + new)
-  const [systemList, setSystemList] = useState([]); // all tracking from all sessions today
   const [lastScan, setLastScan] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [initialized, setInitialized] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const scanRef = useRef(null);
   const today = new Date().toISOString().slice(0,10);
 
-  // Load today's data on mount
-  useEffect(() => {
-    if (staffName) initData();
-  }, [staffName]);
+  useEffect(() => { if (staffName) loadData(); }, [staffName]);
+  useEffect(() => { if (mode === "scanning" && scanRef.current) scanRef.current.focus(); }, [mode]);
 
-  useEffect(() => {
-    if (scanRef.current && staffName && initialized) scanRef.current.focus();
-  }, [initialized, staffName]);
-
-  const initData = async () => {
+  const loadData = async () => {
     setLoading(true);
     try {
-      // โหลดเซสชันวันนี้ทั้งหมด
       const sessions = await sbReturnAll("return_sessions", `select=*&created_at=gte.${today}T00:00:00&created_at=lte.${today}T23:59:59`);
-      const merged = [...new Set(sessions.flatMap(s => s.tracking_list || []))];
-      setSystemList(merged);
-      // โหลดการยิงวันนี้ทั้งหมด (ทุก session)
+      setSystemList([...new Set(sessions.flatMap(s => s.tracking_list || []))]);
+      // โหลดที่บันทึกแล้ว
       const allScans = [];
       for (const s of sessions) {
-        const scans = await sbReturnAll("return_scans", `session_id=eq.${s.id}&select=tracking_code,scanned_by,scanned_at`);
-        allScans.push(...scans);
+        const scans = await sbReturnAll("return_scans", `session_id=eq.${s.id}&select=tracking_code`);
+        allScans.push(...scans.map(x => x.tracking_code));
       }
-      // dedup
-      const seen = new Set();
-      const unique = allScans.filter(s => { if (seen.has(s.tracking_code)) return false; seen.add(s.tracking_code); return true; });
-      setScannedToday(unique);
+      setSubmitted([...new Set(allScans)]);
     } catch (e) { console.error(e); }
     setLoading(false);
-    setInitialized(true);
   };
 
   const playBeep = (ok) => {
@@ -422,55 +417,62 @@ function ReturnStaffPanel() {
     } catch {}
   };
 
-  const handleScan = async (e) => {
+  const handleScan = (e) => {
     if (e.key !== "Enter") return;
     const code = scanInput.trim().toUpperCase();
     if (!code) return;
     setScanInput("");
-
-    // ยิงซ้ำ?
-    if (scannedToday.find(s => s.tracking_code === code)) {
+    if (staging.includes(code) || submitted.includes(code)) {
       setLastScan({ code, status: "duplicate" }); playBeep(false); return;
     }
-
-    // หา session ที่มีเลขนี้
-    const sessions = await sbReturnAll("return_sessions", `select=id,tracking_list&created_at=gte.${today}T00:00:00&created_at=lte.${today}T23:59:59`);
-    const targetSession = sessions.find(s => (s.tracking_list||[]).includes(code));
-    const sessionId = targetSession?.id || (sessions[0]?.id ?? null);
-
-    const inSystem = !!targetSession;
-
-    // บันทึก (ถ้ามี session ก็บันทึกเข้า session นั้น ถ้าไม่มีบันทึกเข้า session แรก หรือถ้าไม่มีเซสชันเลยก็เก็บ local)
-    if (sessionId) {
-      try {
-        await sbReturn("return_scans", { method: "POST", body: JSON.stringify({ tracking_code: code, session_id: sessionId, scanned_by: staffName || "พนักงาน" }) });
-      } catch {}
-    }
-
-    const newScan = { tracking_code: code };
-    setScannedToday(prev => [newScan, ...prev]);
-    if (inSystem) setSystemList(prev => prev); // already loaded
-    setLastScan({ code, status: inSystem ? "match" : "extra" });
-    playBeep(inSystem);
+    setStaging(prev => [code, ...prev]);
+    setLastScan({ code, status: systemList.includes(code) ? "match" : "extra" });
+    playBeep(systemList.includes(code));
   };
 
-  const handleDeleteScan = async (code) => {
-    if (!confirm(`ยืนยันลบ ${code}?`)) return;
-    try {
-      // ลบโดยใช้ tracking_code โดยตรง ไม่ต้องวน session
-      await sbReturn(`return_scans?tracking_code=eq.${code}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
-    } catch (e) { console.error("delete error", e); }
-    setScannedToday(prev => prev.filter(s => s.tracking_code !== code));
+  const removeFromStaging = (code) => {
+    setStaging(prev => prev.filter(c => c !== code));
     if (lastScan?.code === code) setLastScan(null);
   };
 
-  const scannedSet = new Set(scannedToday.map(s => s.tracking_code));
+  const handleConfirm = async () => {
+    if (staging.length === 0) return;
+    setSaving(true);
+    try {
+      const sessions = await sbReturnAll("return_sessions", `select=id,tracking_list&created_at=gte.${today}T00:00:00&created_at=lte.${today}T23:59:59`);
+      const fallbackId = sessions[0]?.id ?? null;
+      for (const code of staging) {
+        const target = sessions.find(s => (s.tracking_list||[]).includes(code));
+        const sid = target?.id || fallbackId;
+        if (sid) {
+          try {
+            await sbReturn("return_scans", { method: "POST", body: JSON.stringify({ tracking_code: code, session_id: sid, scanned_by: staffName }) });
+          } catch {}
+        }
+      }
+      setSubmitted(prev => [...new Set([...prev, ...staging])]);
+      setStaging([]);
+      setLastScan(null);
+      setMode("idle");
+      // reload system list in case admin added sessions while scanning
+      await loadData();
+    } catch (e) { alert("บันทึกไม่สำเร็จ"); }
+    setSaving(false);
+  };
+
+  const handleCancel = () => {
+    if (staging.length > 0 && !confirm(`ยกเลิกการยิง ${staging.length} รายการ?`)) return;
+    setStaging([]); setLastScan(null); setMode("idle");
+  };
+
+  // Derived
+  const allScanned = [...new Set([...submitted, ...staging])];
+  const scannedSet = new Set(allScanned);
   const matched = systemList.filter(c => scannedSet.has(c));
   const missing = systemList.filter(c => !scannedSet.has(c));
-  const extra   = scannedToday.filter(s => !systemList.includes(s.tracking_code));
+  const extra = allScanned.filter(c => !systemList.includes(c));
   const progress = systemList.length > 0 ? Math.round(matched.length / systemList.length * 100) : 0;
 
-  const [exporting, setExporting] = useState(false);
   const handleStaffExport = async () => {
     setExporting(true);
     try {
@@ -481,50 +483,27 @@ function ReturnStaffPanel() {
       const RED   = { fill: { fgColor: { rgb: "FFCCCC" } } };
       const ORANGE = { fill: { fgColor: { rgb: "FFE0B2" } } };
       const wb = XLSX.utils.book_new();
-
-      // Sheet: สรุปยอด
       const pct = systemList.length > 0 ? Math.round(matched.length/systemList.length*100) : 0;
       const ws1 = XLSX.utils.aoa_to_sheet([
         [{ v: "สรุปรายงานพัสดุตีกลับ", s: { font: { bold: true, sz: 14 } } }, ""],
-        ["วันที่", dateStr],
-        ["ผู้ยิง", staffName],
-        ["", ""],
-        [{ v: "หัวข้อ", s: HEADER }, { v: "จำนวน (ชิ้น)", s: HEADER }],
-        [{ v: "1. ตีกลับในระบบ (แจ้งจาก Flash)", s: {} }, systemList.length],
-        [{ v: "2. ตีกลับถึงคลัง (ยิงแล้ว)", s: {} }, scannedToday.length],
-        [{ v: "3. ✓ ตรงกัน", s: {} }, matched.length],
-        [{ v: "4. ✗ ขาด (ระบบแจ้งแต่ไม่มาถึงคลัง)", s: { fill: RED } }, missing.length],
-        [{ v: "   ⚠ เกิน (ถึงคลังแต่ยังไม่อยู่ในระบบ)", s: { fill: ORANGE } }, extra.length],
+        ["วันที่", dateStr], ["ผู้ยิง", staffName], ["", ""],
+        [{ v: "หัวข้อ", s: HEADER }, { v: "จำนวน", s: HEADER }],
+        ["1. ตีกลับในระบบ", systemList.length],
+        ["2. ตีกลับถึงคลัง", allScanned.length],
+        ["3. ✓ ตรงกัน", matched.length],
+        [{ v: "4. ✗ ขาด", s: missing.length>0?{fill:RED}:{} }, missing.length],
+        [{ v: "   ⚠ เกิน", s: extra.length>0?{fill:ORANGE}:{} }, extra.length],
         ["", ""],
         [{ v: `ความครบถ้วน: ${pct}%`, s: { font: { bold: true, color: { rgb: pct===100?"007A3D":"CC0000" } } } }, ""],
       ]);
-      ws1["!cols"] = [{ wch: 38 }, { wch: 16 }];
+      ws1["!cols"] = [{ wch: 36 }, { wch: 14 }];
       XLSX.utils.book_append_sheet(wb, ws1, "สรุปยอด");
-
-      // Sheet: ตรงกัน
-      const ws2 = XLSX.utils.aoa_to_sheet([
-        [{ v: "เลข Tracking", s: HEADER }, { v: "สถานะ", s: HEADER }],
-        ...matched.map(c => [{ v: c, s: GREEN }, { v: "✓ ตรงกัน", s: GREEN }])
-      ]);
-      ws2["!cols"] = [{ wch: 30 }, { wch: 14 }];
-      XLSX.utils.book_append_sheet(wb, ws2, "ตรงกัน");
-
-      // Sheet: ขาด
-      const ws3 = XLSX.utils.aoa_to_sheet([
-        [{ v: "เลข Tracking (ขาด)", s: HEADER }, { v: "สถานะ", s: HEADER }],
-        ...missing.map(c => [{ v: c, s: RED }, { v: "✗ ไม่มาถึงคลัง", s: RED }])
-      ]);
-      ws3["!cols"] = [{ wch: 30 }, { wch: 18 }];
-      XLSX.utils.book_append_sheet(wb, ws3, "ขาด");
-
-      // Sheet: เกิน
-      const ws4 = XLSX.utils.aoa_to_sheet([
-        [{ v: "เลข Tracking (เกิน)", s: HEADER }, { v: "สถานะ", s: HEADER }],
-        ...extra.map(s => [{ v: s.tracking_code, s: ORANGE }, { v: "⚠ ยังไม่อยู่ในระบบ", s: ORANGE }])
-      ]);
-      ws4["!cols"] = [{ wch: 30 }, { wch: 22 }];
-      XLSX.utils.book_append_sheet(wb, ws4, "เกิน");
-
+      const ws2 = XLSX.utils.aoa_to_sheet([[{ v:"เลข Tracking",s:HEADER},{v:"สถานะ",s:HEADER}],...matched.map(c=>[{v:c,s:GREEN},{v:"✓ ตรงกัน",s:GREEN}])]);
+      ws2["!cols"]=[{wch:30},{wch:14}]; XLSX.utils.book_append_sheet(wb,ws2,"ตรงกัน");
+      const ws3 = XLSX.utils.aoa_to_sheet([[{v:"เลข Tracking (ขาด)",s:HEADER},{v:"สถานะ",s:HEADER}],...missing.map(c=>[{v:c,s:RED},{v:"✗ ไม่มาถึงคลัง",s:RED}])]);
+      ws3["!cols"]=[{wch:30},{wch:18}]; XLSX.utils.book_append_sheet(wb,ws3,"ขาด");
+      const ws4 = XLSX.utils.aoa_to_sheet([[{v:"เลข Tracking (เกิน)",s:HEADER},{v:"สถานะ",s:HEADER}],...extra.map(c=>[{v:c,s:ORANGE},{v:"⚠ ยังไม่อยู่ในระบบ",s:ORANGE}])]);
+      ws4["!cols"]=[{wch:30},{wch:22}]; XLSX.utils.book_append_sheet(wb,ws4,"เกิน");
       XLSX.writeFile(wb, `return_report_${today}.xlsx`);
     } catch (e) { alert("Export ไม่สำเร็จ: " + e.message); }
     setExporting(false);
@@ -550,24 +529,24 @@ function ReturnStaffPanel() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
         <div>
           <h2 style={{ fontSize: 20, fontWeight: 700, color: "#ccd6f6", marginBottom: 4 }}>ตีกลับถึงคลัง — ยิงบาร์โค้ด</h2>
-          <div style={{ fontSize: 13, color: "#8892b0" }}>
-            สวัสดี <span style={{ color: "#64ffda" }}>{staffName}</span> · {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}
-          </div>
+          <div style={{ fontSize: 13, color: "#8892b0" }}>สวัสดี <span style={{ color: "#64ffda" }}>{staffName}</span> · {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}</div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={initData} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 รีเฟรช</button>
-          <button onClick={() => { localStorage.removeItem("staffName"); setStaffName(""); setInitialized(false); }} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#555", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>เปลี่ยนชื่อ</button>
+          <button onClick={loadData} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 รีเฟรช</button>
+          <button onClick={() => { localStorage.removeItem("staffName"); setStaffName(""); }} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#555", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>เปลี่ยนชื่อ</button>
         </div>
       </div>
 
-      {/* Stats bar */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 18 }}>
+      {/* Stats */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 16 }}>
         {[
           { label: "ระบบแจ้ง", value: systemList.length, color: "#8892b0" },
-          { label: "ยิงแล้ว", value: scannedToday.length, color: "#ccd6f6" },
+          { label: "ถึงคลังแล้ว", value: submitted.length, color: "#ccd6f6" },
           { label: "✓ ตรง", value: matched.length, color: "#64ffda" },
-          { label: missing.length > 0 ? `✗ ขาด ${missing.length}` : extra.length > 0 ? `⚠ เกิน ${extra.length}` : "✓ ครบ!", value: missing.length > 0 ? missing.length : extra.length > 0 ? extra.length : "🎉", color: missing.length > 0 ? "#ff5555" : extra.length > 0 ? "#ffa500" : "#64ffda" },
-        ].map((s,i) => (
+          { label: missing.length > 0 ? `✗ ขาด` : extra.length > 0 ? `⚠ เกิน` : "✓ ครบ!",
+            value: missing.length > 0 ? missing.length : extra.length > 0 ? extra.length : "🎉",
+            color: missing.length > 0 ? "#ff5555" : extra.length > 0 ? "#ffa500" : "#64ffda" },
+        ].map((s, i) => (
           <div key={i} style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: "12px 14px", textAlign: "center" }}>
             <div style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 700, color: s.color }}>{s.value}</div>
             <div style={{ fontSize: 11, color: "#555", marginTop: 4 }}>{s.label}</div>
@@ -575,7 +554,7 @@ function ReturnStaffPanel() {
         ))}
       </div>
 
-      {/* Progress */}
+      {/* Progress bar */}
       {systemList.length > 0 && (
         <div style={{ marginBottom: 16 }}>
           <div style={{ height: 6, background: "#0f1117", borderRadius: 3, overflow: "hidden" }}>
@@ -585,82 +564,104 @@ function ReturnStaffPanel() {
         </div>
       )}
 
-      {systemList.length === 0 && (
-        <div style={{ background: "rgba(255,165,0,0.06)", border: "1px solid rgba(255,165,0,0.2)", borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#ffa500" }}>
-          ⚠ แอดมินยังไม่ได้ลงรายการวันนี้ — ยิงได้เลย ระบบจะชนให้อัตโนมัติเมื่อแอดมินลงข้อมูล
+      {/* Start scan button (idle mode) */}
+      {mode === "idle" && (
+        <div style={{ textAlign: "center", paddingTop: 8, paddingBottom: 8 }}>
+          <button onClick={() => { setMode("scanning"); setStaging([]); setLastScan(null); }}
+            style={{ background: "#64ffda", color: "#0f1117", border: "none", borderRadius: 10, padding: "14px 40px", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+            📦 เริ่มยิงบาร์โค้ด
+          </button>
+          {submitted.length > 0 && (
+            <div style={{ marginTop: 20 }}>
+              <div style={{ fontSize: 13, color: "#8892b0", marginBottom: 10 }}>ยิงและบันทึกแล้ว {submitted.length} รายการวันนี้</div>
+              <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: 12, maxHeight: 160, overflowY: "auto", textAlign: "left" }}>
+                {submitted.map((code, i) => (
+                  <div key={i} style={{ fontFamily: "monospace", fontSize: 11, color: systemList.includes(code) ? "#64ffda" : "#ffa500", padding: "3px 0", borderBottom: "1px solid #1e2235" }}>{code}</div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Scan input */}
-      <input ref={scanRef} value={scanInput} onChange={e => setScanInput(e.target.value)} onKeyDown={handleScan}
-        placeholder="📦 ยิงบาร์โค้ดที่นี่..."
-        style={{ width: "100%", background: "#0f1117", border: `2px solid ${lastScan?.status === "match" ? "#64ffda" : lastScan?.status === "extra" ? "#ffa500" : lastScan?.status === "duplicate" ? "#ffa500" : "#2a2f45"}`, borderRadius: 10, padding: "14px 16px", color: "#e8eaf0", fontSize: 15, outline: "none", fontFamily: "monospace", marginBottom: 14, transition: "border-color 0.3s" }} />
+      {/* SCANNING POPUP OVERLAY */}
+      {mode === "scanning" && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 18, width: "100%", maxWidth: 520, maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+            {/* Popup header */}
+            <div style={{ padding: "18px 20px 12px", borderBottom: "1px solid #2a2f45" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontWeight: 700, color: "#ccd6f6", fontSize: 17 }}>📦 ยิงบาร์โค้ด</div>
+                  <div style={{ fontSize: 12, color: "#8892b0", marginTop: 2 }}>ยิงแล้ว <span style={{ color: "#64ffda", fontWeight: 700 }}>{staging.length}</span> รายการ ยังไม่ได้บันทึก</div>
+                </div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <div style={{ fontFamily: "monospace", fontSize: 20, fontWeight: 700, color: "#ccd6f6" }}>
+                    {staging.length}<span style={{ color: "#3a3f5c", fontSize: 14 }}> รายการ</span>
+                  </div>
+                </div>
+              </div>
+              {/* Scan input */}
+              <input ref={scanRef} value={scanInput} onChange={e => setScanInput(e.target.value)} onKeyDown={handleScan}
+                placeholder="ยิงบาร์โค้ดที่นี่..."
+                style={{ width: "100%", marginTop: 12, background: "#0f1117", border: `2px solid ${lastScan?.status === "match" ? "#64ffda" : lastScan?.status === "duplicate" ? "#ffa500" : lastScan?.status === "extra" ? "#ffa500" : "#2a2f45"}`, borderRadius: 10, padding: "12px 14px", color: "#e8eaf0", fontSize: 15, outline: "none", fontFamily: "monospace", transition: "border-color 0.2s" }} />
+              {/* Last scan feedback */}
+              {lastScan && (
+                <div style={{ marginTop: 8, padding: "8px 12px", borderRadius: 8, background: lastScan.status === "match" ? "rgba(100,255,218,0.08)" : "rgba(255,165,0,0.08)", border: `1px solid ${lastScan.status === "match" ? "rgba(100,255,218,0.3)" : "rgba(255,165,0,0.3)"}`, display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 18 }}>{lastScan.status === "match" ? "✅" : lastScan.status === "duplicate" ? "⚠️" : "📌"}</span>
+                  <div>
+                    <div style={{ fontFamily: "monospace", fontSize: 12, color: "#ccd6f6" }}>{lastScan.code}</div>
+                    <div style={{ fontSize: 11, color: lastScan.status === "match" ? "#64ffda" : "#ffa500", marginTop: 1 }}>
+                      {lastScan.status === "match" ? "✓ อยู่ในรายการวันนี้" : lastScan.status === "duplicate" ? "⚠ ยิงซ้ำ" : "📌 บันทึกไว้ก่อน (ยังไม่อยู่ในระบบ)"}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
 
-      {/* Last scan result */}
-      {lastScan && (
-        <div style={{ marginBottom: 14, padding: "10px 14px", borderRadius: 10, background: lastScan.status === "match" ? "rgba(100,255,218,0.06)" : lastScan.status === "duplicate" ? "rgba(255,165,0,0.06)" : "rgba(255,85,85,0.06)", border: `1px solid ${lastScan.status === "match" ? "rgba(100,255,218,0.3)" : lastScan.status === "duplicate" ? "rgba(255,165,0,0.3)" : "rgba(255,85,85,0.3)"}`, display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 20 }}>{lastScan.status === "match" ? "✅" : lastScan.status === "duplicate" ? "⚠️" : "❌"}</span>
-          <div>
-            <div style={{ fontFamily: "monospace", fontWeight: 600, fontSize: 13, color: "#ccd6f6" }}>{lastScan.code}</div>
-            <div style={{ fontSize: 12, color: lastScan.status === "match" ? "#64ffda" : lastScan.status === "duplicate" ? "#ffa500" : "#ff8888", marginTop: 2 }}>
-              {lastScan.status === "match" ? "✓ ตรงกับรายการ" : lastScan.status === "duplicate" ? "⚠ ยิงซ้ำแล้ว" : "⚠ ไม่อยู่ในรายการวันนี้ (บันทึกไว้แล้ว)"}
+            {/* Staged list */}
+            <div style={{ flex: 1, overflowY: "auto", padding: "12px 20px" }}>
+              {staging.length === 0 && <div style={{ color: "#3a3f5c", fontSize: 13, textAlign: "center", paddingTop: 20 }}>ยังไม่มีรายการ — เริ่มยิงได้เลย</div>}
+              {staging.map((code, i) => {
+                const ok = systemList.includes(code);
+                return (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid #1e2235" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <span style={{ fontSize: 14 }}>{ok ? "✅" : "📌"}</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 12, color: ok ? "#64ffda" : "#ffa500" }}>{code}</span>
+                    </div>
+                    <button onClick={() => removeFromStaging(code)}
+                      style={{ background: "none", border: "none", color: "#3a3f5c", cursor: "pointer", fontSize: 16, padding: "0 4px", fontFamily: "inherit" }}
+                      onMouseEnter={e => e.target.style.color = "#ff5555"} onMouseLeave={e => e.target.style.color = "#3a3f5c"}>✕</button>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Popup footer */}
+            <div style={{ padding: "14px 20px", borderTop: "1px solid #2a2f45", display: "flex", gap: 10 }}>
+              <button onClick={handleConfirm} disabled={staging.length === 0 || saving}
+                style={{ flex: 1, background: staging.length > 0 && !saving ? "#64ffda" : "#1e2235", color: staging.length > 0 && !saving ? "#0f1117" : "#444", border: "none", borderRadius: 10, padding: "13px", fontSize: 15, fontWeight: 700, cursor: staging.length > 0 ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
+                {saving ? "⏳ กำลังบันทึก..." : `✅ ยืนยัน ${staging.length} รายการ`}
+              </button>
+              <button onClick={handleCancel}
+                style={{ background: "#0f1117", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 10, padding: "13px 18px", fontSize: 14, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+                ยกเลิก
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Two columns */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        {/* Scanned */}
-        <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: 12, maxHeight: 280, overflowY: "auto" }}>
-          <div style={{ fontSize: 11, color: "#8892b0", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>ยิงแล้วทั้งหมด ({scannedToday.length})</div>
-          {scannedToday.length === 0 && <div style={{ color: "#3a3f5c", fontSize: 13 }}>ยังไม่มี</div>}
-          {scannedToday.map((s, i) => {
-            const ok = systemList.includes(s.tracking_code);
-            return (
-              <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: "1px solid #1e2235" }}>
-                <span style={{ fontFamily: "monospace", fontSize: 11, color: ok ? "#64ffda" : "#ffa500" }}>{s.tracking_code}</span>
-                <button onClick={() => handleDeleteScan(s.tracking_code)} style={{ background: "none", border: "none", color: "#2a2f45", cursor: "pointer", fontSize: 12, fontFamily: "inherit" }} onMouseEnter={e => e.target.style.color="#ff5555"} onMouseLeave={e => e.target.style.color="#2a2f45"}>✕</button>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Missing */}
-        <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: 12, maxHeight: 280, overflowY: "auto" }}>
-          <div style={{ fontSize: 11, color: "#8892b0", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
-            {systemList.length > 0 ? `ยังไม่ได้รับ (${missing.length})` : "รายการจากระบบ (รอแอดมิน)"}
-          </div>
-          {systemList.length === 0 && <div style={{ color: "#3a3f5c", fontSize: 12 }}>รอแอดมินลงข้อมูล<br/>กด 🔄 รีเฟรชเพื่ออัปเดต</div>}
-          {missing.length === 0 && systemList.length > 0 && <div style={{ color: "#64ffda", fontSize: 13 }}>ครบแล้ว! 🎉</div>}
-          {missing.map((code, i) => (
-            <div key={i} style={{ fontFamily: "monospace", fontSize: 11, color: "#ff5555", padding: "4px 0", borderBottom: "1px solid #1e2235" }}>{code}</div>
-          ))}
-        </div>
-      </div>
-
-      {extra.length > 0 && (
-        <div style={{ marginTop: 12, background: "rgba(255,165,0,0.06)", border: "1px solid rgba(255,165,0,0.2)", borderRadius: 10, padding: "10px 14px" }}>
-          <div style={{ fontSize: 12, color: "#ffa500", fontWeight: 600, marginBottom: 6 }}>⚠ ยิงแล้วแต่ยังไม่อยู่ในระบบ ({extra.length} รายการ) — แจ้งแอดมินลงข้อมูล</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 10px" }}>
-            {extra.map((s,i) => <span key={i} style={{ fontFamily: "monospace", fontSize: 11, color: "#ffa500" }}>{s.tracking_code}</span>)}
-          </div>
-        </div>
-      )}
-
-      {/* Export button */}
+      {/* Summary + Export (always visible) */}
       <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid #2a2f45" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-          <div style={{ fontSize: 13, color: "#8892b0" }}>
-            📊 สรุปวันที่ {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}
-          </div>
-        </div>
+        <div style={{ fontSize: 13, color: "#8892b0", marginBottom: 10 }}>📊 สรุปวันที่ {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginBottom: 14 }}>
           {[
             { n: "1. ตีกลับในระบบ", v: systemList.length, c: "#8892b0" },
-            { n: "2. ตีกลับถึงคลัง", v: scannedToday.length, c: "#ccd6f6" },
+            { n: "2. ตีกลับถึงคลัง", v: submitted.length, c: "#ccd6f6" },
             { n: "3. ✓ ตรงกัน", v: matched.length, c: "#64ffda" },
-            { n: `4. ✗ ขาด`, v: missing.length, c: missing.length > 0 ? "#ff5555" : "#64ffda" },
+            { n: "4. ✗ ขาด", v: missing.length, c: missing.length > 0 ? "#ff5555" : "#64ffda" },
           ].map((s,i) => (
             <div key={i} style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ fontSize: 13, color: "#8892b0" }}>{s.n}</span>
