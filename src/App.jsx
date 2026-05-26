@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 const SUPABASE_URL = "https://slwbzbnomsugffyzjyuv.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsd2J6Ym5vbXN1Z2ZmeXpqeXV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MjIxMDcsImV4cCI6MjA5NTI5ODEwN30.qG3CPT6J_evddK8qmpF7P3bVswn_Du43MEHo33bUnqA";
+
 const sb = async (path, opts = {}) => {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     headers: {
@@ -50,6 +51,327 @@ const dbToTx = (r) => ({
 
 const CATEGORIES = ["ทั้งหมด", "กำลังขาย", "-"];
 
+
+// ============================================================
+// RETURN CHECKER — พัสดุตีกลับ
+// ============================================================
+
+const parseFlashText = (raw) => {
+  const re = /TH[A-Z0-9]{8,}/g;
+  const matches = raw.toUpperCase().match(re);
+  if (!matches) return [];
+  return [...new Set(matches)];
+};
+
+const sbReturn = async (path, opts = {}) => {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=representation", ...opts.headers },
+    ...opts,
+  });
+  if (!res.ok) throw await res.json().catch(() => ({}));
+  const text = await res.text();
+  return text ? JSON.parse(text) : [];
+};
+
+function ReturnAdminPanel() {
+  const [flashText, setFlashText] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [sessions, setSessions] = useState([]);
+  const [loadingSessions, setLoadingSessions] = useState(true);
+
+  const fetchSessions = async () => {
+    try {
+      const data = await sbReturn("return_sessions?select=*,return_scans(count)&order=created_at.desc&limit=10");
+      setSessions(data);
+    } catch (e) { console.error(e); }
+    setLoadingSessions(false);
+  };
+
+  useEffect(() => { fetchSessions(); }, []);
+
+  const handleCreate = async () => {
+    const list = parseFlashText(flashText);
+    if (!list.length) return alert("ไม่พบเลข tracking กรุณาตรวจสอบข้อความ");
+    setLoading(true);
+    try {
+      await sbReturn("return_sessions", { method: "POST", body: JSON.stringify({ tracking_list: list, courier: "Flash" }) });
+      setFlashText("");
+      fetchSessions();
+    } catch (e) { alert("เกิดข้อผิดพลาด"); }
+    setLoading(false);
+  };
+
+  const preview = parseFlashText(flashText);
+
+  return (
+    <div>
+      <div style={{ marginBottom: 24 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: "#ccd6f6", marginBottom: 6 }}>แอดมิน — สร้างเซสชันพัสดุตีกลับ</h2>
+        <p style={{ color: "#8892b0", fontSize: 14 }}>Copy ข้อความจากหน้า Flash Express แล้ววางด้านล่าง เพื่อเปิดเซสชันให้พนักงาน</p>
+      </div>
+      <textarea value={flashText} onChange={e => setFlashText(e.target.value)}
+        placeholder="วางข้อความจาก Flash Express ที่นี่...&#10;รองรับทุก format เช่น TH27218RHRH38A 15:02/TH27218RJD230A 15:11/..."
+        style={{ width: "100%", height: 180, background: "#0f1117", border: "1px solid #2a2f45", borderRadius: 10, padding: 16, color: "#e8eaf0", fontSize: 13, resize: "vertical", outline: "none", lineHeight: 1.8, fontFamily: "'Sarabun', sans-serif" }} />
+      {flashText.trim() && (
+        <div style={{ marginTop: 8, fontSize: 13, color: "#8892b0" }}>
+          พบเลข tracking <span style={{ color: "#64ffda", fontWeight: 700 }}>{preview.length}</span> รายการ
+        </div>
+      )}
+      <button onClick={handleCreate} disabled={!flashText.trim() || loading}
+        style={{ marginTop: 14, background: flashText.trim() && !loading ? "#64ffda" : "#1a1d27", color: flashText.trim() && !loading ? "#0f1117" : "#444", border: "none", borderRadius: 10, padding: "12px 28px", fontSize: 15, fontWeight: 700, cursor: flashText.trim() ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
+        {loading ? "กำลังสร้าง..." : "✅ สร้างเซสชัน"}
+      </button>
+
+      <div style={{ marginTop: 32 }}>
+        <div style={{ fontSize: 13, color: "#8892b0", fontWeight: 600, marginBottom: 14, textTransform: "uppercase", letterSpacing: 1 }}>เซสชันล่าสุด</div>
+        {loadingSessions && <div style={{ color: "#555", fontSize: 14 }}>กำลังโหลด...</div>}
+        {!loadingSessions && sessions.length === 0 && <div style={{ color: "#444", fontSize: 14 }}>ยังไม่มีเซสชัน</div>}
+        {sessions.map(s => {
+          const scannedCount = s.return_scans?.[0]?.count ?? 0;
+          const total = s.tracking_list?.length ?? 0;
+          const pct = total > 0 ? Math.round((scannedCount / total) * 100) : 0;
+          return (
+            <div key={s.id} style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: "14px 16px", marginBottom: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div>
+                  <span style={{ fontWeight: 600, color: "#ccd6f6", fontSize: 14 }}>{s.courier} — {new Date(s.created_at).toLocaleDateString("th-TH", { dateStyle: "medium" })}</span>
+                  <span style={{ marginLeft: 10, color: "#8892b0", fontSize: 12 }}>{new Date(s.created_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</span>
+                </div>
+                <span style={{ fontFamily: "monospace", fontSize: 13, color: pct === 100 ? "#64ffda" : "#ccd6f6" }}>{scannedCount}/{total}</span>
+              </div>
+              <div style={{ height: 4, background: "#0f1117", borderRadius: 2 }}>
+                <div style={{ height: "100%", width: `${pct}%`, background: pct === 100 ? "#64ffda" : "#ff5555", borderRadius: 2 }} />
+              </div>
+            </div>
+          );
+        })}
+        <button onClick={fetchSessions} style={{ marginTop: 8, background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 โหลดใหม่</button>
+      </div>
+    </div>
+  );
+}
+
+function ReturnStaffPanel() {
+  const [sessions, setSessions] = useState([]);
+  const [activeSession, setActiveSession] = useState(null);
+  const [scannedCodes, setScannedCodes] = useState([]);
+  const [scanInput, setScanInput] = useState("");
+  const [lastScan, setLastScan] = useState(null);
+  const [staffName, setStaffName] = useState(localStorage.getItem("staffName") || "");
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const scanRef = useRef(null);
+
+  useEffect(() => { loadSessions(); }, []);
+  useEffect(() => { if (activeSession && scanRef.current) scanRef.current.focus(); }, [activeSession]);
+
+  const loadSessions = async () => {
+    setLoading(true);
+    try {
+      const data = await sbReturn("return_sessions?select=*&order=created_at.desc&limit=5");
+      setSessions(data);
+    } catch (e) { console.error(e); }
+    setLoading(false);
+  };
+
+  const selectSession = async (s) => {
+    setLoading(true);
+    try {
+      const scans = await sbReturn(`return_scans?session_id=eq.${s.id}&select=tracking_code,scanned_at,scanned_by`);
+      setScannedCodes(scans);
+      setActiveSession(s);
+      setLastScan(null);
+    } catch (e) { alert("โหลดข้อมูลไม่ได้"); }
+    setLoading(false);
+  };
+
+  const playBeep = (ok) => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const o = ctx.createOscillator(); const g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.type = "sine"; o.frequency.value = ok ? 880 : 280;
+      g.gain.setValueAtTime(0.3, ctx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+      o.start(); o.stop(ctx.currentTime + 0.3);
+    } catch {}
+  };
+
+  const handleScan = async (e) => {
+    if (e.key !== "Enter") return;
+    const code = scanInput.trim().toUpperCase();
+    if (!code || !activeSession) return;
+    setScanInput("");
+    if (scannedCodes.find(s => s.tracking_code === code)) {
+      setLastScan({ code, status: "duplicate" }); playBeep(false); return;
+    }
+    const inList = activeSession.tracking_list.includes(code);
+    try {
+      await sbReturn("return_scans", { method: "POST", body: JSON.stringify({ tracking_code: code, session_id: activeSession.id, scanned_by: staffName || "พนักงาน" }) });
+      setScannedCodes(prev => [...prev, { tracking_code: code }]);
+      setLastScan({ code, status: inList ? "match" : "extra" });
+      playBeep(inList);
+    } catch { setLastScan({ code, status: "error" }); playBeep(false); }
+  };
+
+  const scannedList = scannedCodes.map(s => s.tracking_code);
+  const matched = activeSession ? activeSession.tracking_list.filter(c => scannedList.includes(c)) : [];
+  const missing = activeSession ? activeSession.tracking_list.filter(c => !scannedList.includes(c)) : [];
+  const extra = scannedCodes.filter(s => activeSession && !activeSession.tracking_list.includes(s.tracking_code));
+  const progress = activeSession ? Math.round((matched.length / activeSession.tracking_list.length) * 100) : 0;
+
+  if (!staffName) return (
+    <div style={{ textAlign: "center", paddingTop: 60 }}>
+      <div style={{ fontSize: 32, marginBottom: 16 }}>👤</div>
+      <h2 style={{ fontSize: 18, fontWeight: 700, color: "#ccd6f6", marginBottom: 8 }}>ระบุชื่อพนักงานก่อน</h2>
+      <p style={{ color: "#8892b0", fontSize: 14, marginBottom: 24 }}>ใช้สำหรับบันทึกว่าใครยิงบาร์โค้ด</p>
+      <input placeholder="ชื่อพนักงาน" autoFocus
+        style={{ background: "#0f1117", border: "1px solid #2a2f45", borderRadius: 8, padding: "10px 16px", color: "#e8eaf0", fontSize: 15, outline: "none", fontFamily: "'Sarabun', sans-serif", width: 240, textAlign: "center" }}
+        onKeyDown={e => { if (e.key === "Enter" && e.target.value.trim()) { const n = e.target.value.trim(); setStaffName(n); localStorage.setItem("staffName", n); } }} />
+      <div style={{ color: "#555", fontSize: 13, marginTop: 10 }}>กด Enter เพื่อยืนยัน</div>
+    </div>
+  );
+
+  if (!activeSession) return (
+    <div>
+      <div style={{ marginBottom: 24 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: "#ccd6f6", marginBottom: 4 }}>พนักงาน — ยิงพัสดุตีกลับ</h2>
+        <p style={{ color: "#8892b0", fontSize: 14 }}>สวัสดี <span style={{ color: "#64ffda" }}>{staffName}</span> — เลือกเซสชันที่ต้องการยิง</p>
+      </div>
+      {loading && <div style={{ color: "#555", fontSize: 14 }}>กำลังโหลด...</div>}
+      {!loading && sessions.length === 0 && <div style={{ color: "#444", fontSize: 14, textAlign: "center", paddingTop: 40 }}>ยังไม่มีเซสชัน รอแอดมินสร้างก่อน</div>}
+      {sessions.map(s => (
+        <div key={s.id} onClick={() => selectSession(s)}
+          style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: 16, marginBottom: 12, cursor: "pointer", transition: "border-color 0.2s" }}
+          onMouseEnter={e => e.currentTarget.style.borderColor = "#64ffda"} onMouseLeave={e => e.currentTarget.style.borderColor = "#2a2f45"}>
+          <div style={{ fontWeight: 600, color: "#ccd6f6", fontSize: 15, marginBottom: 4 }}>{s.courier} — {new Date(s.created_at).toLocaleDateString("th-TH", { dateStyle: "long" })}</div>
+          <div style={{ color: "#8892b0", fontSize: 13 }}>{s.tracking_list?.length} รายการ · {new Date(s.created_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</div>
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+        <button onClick={loadSessions} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 โหลดใหม่</button>
+        <button onClick={() => { localStorage.removeItem("staffName"); setStaffName(""); }} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#555", borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>เปลี่ยนชื่อ</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <div>
+          <div style={{ fontWeight: 700, color: "#ccd6f6", fontSize: 17 }}>Flash — {new Date(activeSession.created_at).toLocaleDateString("th-TH", { dateStyle: "medium" })}</div>
+          <div style={{ color: "#8892b0", fontSize: 13, marginTop: 2 }}>พนักงาน: {staffName}</div>
+        </div>
+        <button onClick={() => setActiveSession(null)} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>← กลับ</button>
+      </div>
+
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+          <span style={{ fontSize: 14, color: "#8892b0" }}>ความคืบหน้า</span>
+          <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 20, color: progress === 100 ? "#64ffda" : "#ccd6f6" }}>{matched.length}<span style={{ color: "#3a3f5c" }}>/{activeSession.tracking_list.length}</span></span>
+        </div>
+        <div style={{ height: 8, background: "#0f1117", borderRadius: 4, overflow: "hidden" }}>
+          <div style={{ height: "100%", width: `${progress}%`, background: progress === 100 ? "#64ffda" : "#ff5555", borderRadius: 4, transition: "width 0.3s" }} />
+        </div>
+        <div style={{ display: "flex", gap: 16, marginTop: 8, fontSize: 13 }}>
+          <span style={{ color: "#64ffda" }}>✓ ตรง {matched.length}</span>
+          <span style={{ color: "#ff5555" }}>✗ ขาด {missing.length}</span>
+          {extra.length > 0 && <span style={{ color: "#ffa500" }}>⚠ เกิน {extra.length}</span>}
+        </div>
+      </div>
+
+      <input ref={scanRef} value={scanInput} onChange={e => setScanInput(e.target.value)} onKeyDown={handleScan}
+        placeholder="📦 ยิงบาร์โค้ดที่นี่..."
+        style={{ width: "100%", background: "#0f1117", border: `2px solid ${lastScan?.status === "match" ? "#64ffda" : lastScan?.status === "duplicate" ? "#ffa500" : lastScan ? "#ff5555" : "#2a2f45"}`, borderRadius: 10, padding: "14px 16px", color: "#e8eaf0", fontSize: 15, outline: "none", fontFamily: "monospace", marginBottom: 14, transition: "border-color 0.3s" }} />
+
+      {lastScan && (
+        <div style={{ marginBottom: 16, padding: "12px 16px", borderRadius: 10, background: lastScan.status === "match" ? "rgba(100,255,218,0.06)" : "rgba(255,85,85,0.06)", border: `1px solid ${lastScan.status === "match" ? "rgba(100,255,218,0.3)" : "rgba(255,85,85,0.3)"}`, display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 20 }}>{lastScan.status === "match" ? "✅" : lastScan.status === "duplicate" ? "⚠️" : "❌"}</span>
+          <div>
+            <div style={{ fontFamily: "monospace", fontWeight: 600, fontSize: 13, color: "#ccd6f6" }}>{lastScan.code}</div>
+            <div style={{ fontSize: 12, color: lastScan.status === "match" ? "#64ffda" : lastScan.status === "duplicate" ? "#ffa500" : "#ff5555", marginTop: 2 }}>
+              {lastScan.status === "match" ? "✓ อยู่ในรายการ" : lastScan.status === "duplicate" ? "⚠ ยิงซ้ำแล้ว" : "✗ ไม่อยู่ในรายการ"}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: 12, maxHeight: 240, overflowY: "auto" }}>
+          <div style={{ fontSize: 11, color: "#8892b0", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>ยิงแล้ว ({scannedCodes.length})</div>
+          {scannedCodes.length === 0 && <div style={{ color: "#3a3f5c", fontSize: 13 }}>ยังไม่มี</div>}
+          {[...scannedCodes].reverse().map((s, i) => (
+            <div key={i} style={{ fontFamily: "monospace", fontSize: 11, color: activeSession.tracking_list.includes(s.tracking_code) ? "#64ffda" : "#ffa500", padding: "4px 0", borderBottom: "1px solid #1e2235" }}>{s.tracking_code}</div>
+          ))}
+        </div>
+        <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: 12, maxHeight: 240, overflowY: "auto" }}>
+          <div style={{ fontSize: 11, color: "#8892b0", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>ยังไม่ได้ยิง ({missing.length})</div>
+          {missing.length === 0 && <div style={{ color: "#64ffda", fontSize: 13 }}>ครบแล้ว! 🎉</div>}
+          {missing.map((code, i) => (
+            <div key={i} style={{ fontFamily: "monospace", fontSize: 11, color: "#ff5555", padding: "4px 0", borderBottom: "1px solid #1e2235" }}>{code}</div>
+          ))}
+        </div>
+      </div>
+
+      <button onClick={() => setShowConfirm(true)} style={{ width: "100%", background: "#1a1d27", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 10, padding: "12px", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+        ดูสรุปผล / ส่งงาน
+      </button>
+
+      {showConfirm && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(4px)" }} onClick={() => setShowConfirm(false)}>
+          <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 16, padding: 28, width: "100%", maxWidth: 380 }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: "#ccd6f6", marginBottom: 20 }}>📋 ยืนยันจำนวนก่อนส่ง</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+              {[
+                { label: "รายการจาก Flash", value: activeSession.tracking_list.length, color: "#ccd6f6" },
+                { label: "ยิงได้ทั้งหมด", value: scannedCodes.length, color: "#ccd6f6" },
+                { label: "ตรงกับ Flash", value: matched.length, color: matched.length === activeSession.tracking_list.length ? "#64ffda" : "#ff5555" },
+                ...(missing.length > 0 ? [{ label: "⚠ ขาดหาย", value: missing.length, color: "#ff5555" }] : []),
+                ...(extra.length > 0 ? [{ label: "⚠ เกินรายการ", value: extra.length, color: "#ffa500" }] : []),
+              ].map((row, i) => (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "11px 14px", background: "#0f1117", borderRadius: 8, border: "1px solid #2a2f45" }}>
+                  <span style={{ color: "#8892b0", fontSize: 14 }}>{row.label}</span>
+                  <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 16, color: row.color }}>{row.value} ชิ้น</span>
+                </div>
+              ))}
+            </div>
+            {missing.length > 0 && (
+              <div style={{ background: "rgba(255,85,85,0.06)", border: "1px solid rgba(255,85,85,0.2)", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "#ff8888" }}>
+                ยังขาดอีก {missing.length} รายการ — กด "ยิงต่อ" ถ้าต้องการยิงเพิ่ม
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => { setShowConfirm(false); alert(`✅ บันทึกแล้ว!\nยิงได้ ${matched.length}/${activeSession.tracking_list.length} รายการ\nขาด ${missing.length} รายการ`); }}
+                style={{ flex: 1, background: "#64ffda", border: "none", color: "#0f1117", borderRadius: 10, padding: "13px", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+                ✅ ยืนยันส่งงาน
+              </button>
+              <button onClick={() => setShowConfirm(false)} style={{ background: "#1e2235", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 10, padding: "13px 16px", fontSize: 14, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+                ยิงต่อ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReturnCheckerTab() {
+  const [subTab, setSubTab] = useState(() => localStorage.getItem("returnSubTab") || "staff");
+  const setAndSave = (v) => { setSubTab(v); localStorage.setItem("returnSubTab", v); };
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 28 }}>
+        {[["admin","🗂 แอดมิน"],["staff","📦 พนักงาน"]].map(([v,l]) => (
+          <button key={v} onClick={() => setAndSave(v)} className={`tab-btn ${subTab === v ? "active" : ""}`}>{l}</button>
+        ))}
+      </div>
+      {subTab === "admin" ? <ReturnAdminPanel /> : <ReturnStaffPanel />}
+    </div>
+  );
+}
+
+// ============================================================
 export default function WarehouseApp() {
   const [products, setProducts] = useState([]);
   const [transactions, setTransactions] = useState([]);
@@ -265,7 +587,7 @@ export default function WarehouseApp() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 4 }}>
-            {[["dashboard","📊","ภาพรวม"],["inventory","📦","สินค้าคงคลัง"],["transactions","🔄","รายการเคลื่อนไหว"]].map(([t,icon,label]) => (
+            {[["dashboard","📊","ภาพรวม"],["inventory","📦","สินค้าคงคลัง"],["transactions","🔄","รายการเคลื่อนไหว"],["returns","↩","พัสดุตีกลับ"]].map(([t,icon,label]) => (
               <button key={t} className={`tab-btn ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>{icon} {label}</button>
             ))}
           </div>
@@ -410,6 +732,13 @@ export default function WarehouseApp() {
               </table>
               {filteredProducts.length === 0 && <div style={{ textAlign: "center", padding: 48, color: "#8892b0" }}>ไม่พบสินค้าที่ค้นหา</div>}
             </div>
+          </div>
+        )}
+
+        {/* RETURNS */}
+        {tab === "returns" && (
+          <div>
+            <ReturnCheckerTab />
           </div>
         )}
 
