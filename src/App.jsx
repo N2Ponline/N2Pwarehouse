@@ -370,13 +370,9 @@ function ReturnAdminPanel() {
 
 function ReturnStaffPanel() {
   const [staffName, setStaffName] = useState(localStorage.getItem("staffName") || "");
-  // สถานะหลัก: idle | scanning | confirm
-  const [mode, setMode] = useState("idle");
-  // staging = เลขที่ยิงในรอบนี้ (local เท่านั้น ยังไม่บันทึก)
-  const [staging, setStaging] = useState([]);
-  // submitted = เลขที่บันทึกขึ้น Supabase แล้ว
-  const [submitted, setSubmitted] = useState([]);
-  // systemList = รายการจากเซสชันวันนี้
+  const [mode, setMode] = useState("idle"); // idle | scanning
+  const [staging, setStaging] = useState([]); // [{code, time}] local only
+  const [submitted, setSubmitted] = useState([]); // [{code, by, at}] saved to DB
   const [systemList, setSystemList] = useState([]);
   const [scanInput, setScanInput] = useState("");
   const [lastScan, setLastScan] = useState(null);
@@ -384,6 +380,7 @@ function ReturnStaffPanel() {
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const scanRef = useRef(null);
+  const listRef = useRef(null);
   const today = new Date().toISOString().slice(0,10);
 
   useEffect(() => { if (staffName) loadData(); }, [staffName]);
@@ -394,13 +391,13 @@ function ReturnStaffPanel() {
     try {
       const sessions = await sbReturnAll("return_sessions", `select=*&created_at=gte.${today}T00:00:00&created_at=lte.${today}T23:59:59`);
       setSystemList([...new Set(sessions.flatMap(s => s.tracking_list || []))]);
-      // โหลดที่บันทึกแล้ว
       const allScans = [];
       for (const s of sessions) {
-        const scans = await sbReturnAll("return_scans", `session_id=eq.${s.id}&select=tracking_code`);
-        allScans.push(...scans.map(x => x.tracking_code));
+        const scans = await sbReturnAll("return_scans", `session_id=eq.${s.id}&select=tracking_code,scanned_by,scanned_at&order=scanned_at.desc`);
+        allScans.push(...scans);
       }
-      setSubmitted([...new Set(allScans)]);
+      const seen = new Set();
+      setSubmitted(allScans.filter(s => { if (seen.has(s.tracking_code)) return false; seen.add(s.tracking_code); return true; }));
     } catch (e) { console.error(e); }
     setLoading(false);
   };
@@ -411,8 +408,7 @@ function ReturnStaffPanel() {
       const o = ctx.createOscillator(); const g = ctx.createGain();
       o.connect(g); g.connect(ctx.destination);
       o.type = "sine"; o.frequency.value = ok ? 880 : 280;
-      g.gain.setValueAtTime(0.3, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+      g.gain.setValueAtTime(0.3, ctx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
       o.start(); o.stop(ctx.currentTime + 0.3);
     } catch {}
   };
@@ -422,16 +418,23 @@ function ReturnStaffPanel() {
     const code = scanInput.trim().toUpperCase();
     if (!code) return;
     setScanInput("");
-    if (staging.includes(code) || submitted.includes(code)) {
+    const allCodes = [...staging.map(s=>s.code), ...submitted.map(s=>s.tracking_code)];
+    if (allCodes.includes(code)) {
       setLastScan({ code, status: "duplicate" }); playBeep(false); return;
     }
-    setStaging(prev => [code, ...prev]);
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const newEntry = { code, time: timeStr };
+    // ขึ้นบนสุด (รายการล่าสุด = บนสุด)
+    setStaging(prev => [newEntry, ...prev]);
     setLastScan({ code, status: systemList.includes(code) ? "match" : "extra" });
     playBeep(systemList.includes(code));
+    // scroll list to top
+    setTimeout(() => { if (listRef.current) listRef.current.scrollTop = 0; }, 50);
   };
 
   const removeFromStaging = (code) => {
-    setStaging(prev => prev.filter(c => c !== code));
+    setStaging(prev => prev.filter(s => s.code !== code));
     if (lastScan?.code === code) setLastScan(null);
   };
 
@@ -441,20 +444,25 @@ function ReturnStaffPanel() {
     try {
       const sessions = await sbReturnAll("return_sessions", `select=id,tracking_list&created_at=gte.${today}T00:00:00&created_at=lte.${today}T23:59:59`);
       const fallbackId = sessions[0]?.id ?? null;
-      for (const code of staging) {
-        const target = sessions.find(s => (s.tracking_list||[]).includes(code));
+      const now = new Date().toISOString();
+      for (const entry of staging) {
+        const target = sessions.find(s => (s.tracking_list||[]).includes(entry.code));
         const sid = target?.id || fallbackId;
         if (sid) {
           try {
-            await sbReturn("return_scans", { method: "POST", body: JSON.stringify({ tracking_code: code, session_id: sid, scanned_by: staffName }) });
+            await sbReturn("return_scans", { method: "POST", body: JSON.stringify({
+              tracking_code: entry.code,
+              session_id: sid,
+              scanned_by: staffName,
+              scanned_at: now,
+            })});
           } catch {}
         }
       }
-      setSubmitted(prev => [...new Set([...prev, ...staging])]);
-      setStaging([]);
-      setLastScan(null);
-      setMode("idle");
-      // reload system list in case admin added sessions while scanning
+      // prepend to submitted (newest first)
+      const newSubmitted = staging.map(s => ({ tracking_code: s.code, scanned_by: staffName, scanned_at: now }));
+      setSubmitted(prev => [...newSubmitted, ...prev]);
+      setStaging([]); setLastScan(null); setMode("idle");
       await loadData();
     } catch (e) { alert("บันทึกไม่สำเร็จ"); }
     setSaving(false);
@@ -465,12 +473,11 @@ function ReturnStaffPanel() {
     setStaging([]); setLastScan(null); setMode("idle");
   };
 
-  // Derived
-  const allScanned = [...new Set([...submitted, ...staging])];
-  const scannedSet = new Set(allScanned);
+  const allCodes = [...new Set([...submitted.map(s=>s.tracking_code), ...staging.map(s=>s.code)])];
+  const scannedSet = new Set(allCodes);
   const matched = systemList.filter(c => scannedSet.has(c));
   const missing = systemList.filter(c => !scannedSet.has(c));
-  const extra = allScanned.filter(c => !systemList.includes(c));
+  const extra = allCodes.filter(c => !systemList.includes(c));
   const progress = systemList.length > 0 ? Math.round(matched.length / systemList.length * 100) : 0;
 
   const handleStaffExport = async () => {
@@ -481,15 +488,16 @@ function ReturnStaffPanel() {
       const HEADER = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "1A3C5E" } } };
       const GREEN = { fill: { fgColor: { rgb: "C6EFCE" } } };
       const RED   = { fill: { fgColor: { rgb: "FFCCCC" } } };
-      const ORANGE = { fill: { fgColor: { rgb: "FFE0B2" } } };
+      const ORANGE= { fill: { fgColor: { rgb: "FFE0B2" } } };
       const wb = XLSX.utils.book_new();
       const pct = systemList.length > 0 ? Math.round(matched.length/systemList.length*100) : 0;
+      // Sheet 1: สรุป
       const ws1 = XLSX.utils.aoa_to_sheet([
         [{ v: "สรุปรายงานพัสดุตีกลับ", s: { font: { bold: true, sz: 14 } } }, ""],
-        ["วันที่", dateStr], ["ผู้ยิง", staffName], ["", ""],
+        ["วันที่ตีกลับ", dateStr], ["ผู้ยิงบาร์โค้ด", staffName], ["", ""],
         [{ v: "หัวข้อ", s: HEADER }, { v: "จำนวน", s: HEADER }],
         ["1. ตีกลับในระบบ", systemList.length],
-        ["2. ตีกลับถึงคลัง", allScanned.length],
+        ["2. ตีกลับถึงคลัง", submitted.length],
         ["3. ✓ ตรงกัน", matched.length],
         [{ v: "4. ✗ ขาด", s: missing.length>0?{fill:RED}:{} }, missing.length],
         [{ v: "   ⚠ เกิน", s: extra.length>0?{fill:ORANGE}:{} }, extra.length],
@@ -498,12 +506,27 @@ function ReturnStaffPanel() {
       ]);
       ws1["!cols"] = [{ wch: 36 }, { wch: 14 }];
       XLSX.utils.book_append_sheet(wb, ws1, "สรุปยอด");
-      const ws2 = XLSX.utils.aoa_to_sheet([[{ v:"เลข Tracking",s:HEADER},{v:"สถานะ",s:HEADER}],...matched.map(c=>[{v:c,s:GREEN},{v:"✓ ตรงกัน",s:GREEN}])]);
-      ws2["!cols"]=[{wch:30},{wch:14}]; XLSX.utils.book_append_sheet(wb,ws2,"ตรงกัน");
-      const ws3 = XLSX.utils.aoa_to_sheet([[{v:"เลข Tracking (ขาด)",s:HEADER},{v:"สถานะ",s:HEADER}],...missing.map(c=>[{v:c,s:RED},{v:"✗ ไม่มาถึงคลัง",s:RED}])]);
+      // Sheet 2: ตรงกัน (with date + staff)
+      const ws2 = XLSX.utils.aoa_to_sheet([
+        [{v:"เลข Tracking",s:HEADER},{v:"ผู้ยิง",s:HEADER},{v:"เวลายิง",s:HEADER},{v:"สถานะ",s:HEADER}],
+        ...matched.map(code => {
+          const sc = submitted.find(s=>s.tracking_code===code);
+          return [{v:code,s:GREEN},{v:sc?.scanned_by||staffName},{v:sc?.scanned_at?new Date(sc.scanned_at).toLocaleString("th-TH"):dateStr},{v:"✓ ตรงกัน",s:GREEN}];
+        })
+      ]);
+      ws2["!cols"]=[{wch:30},{wch:14},{wch:22},{wch:14}]; XLSX.utils.book_append_sheet(wb,ws2,"ตรงกัน");
+      // Sheet 3: ขาด
+      const ws3 = XLSX.utils.aoa_to_sheet([
+        [{v:"เลข Tracking (ขาด)",s:HEADER},{v:"สถานะ",s:HEADER}],
+        ...missing.map(c=>[{v:c,s:RED},{v:"✗ ไม่มาถึงคลัง",s:RED}])
+      ]);
       ws3["!cols"]=[{wch:30},{wch:18}]; XLSX.utils.book_append_sheet(wb,ws3,"ขาด");
-      const ws4 = XLSX.utils.aoa_to_sheet([[{v:"เลข Tracking (เกิน)",s:HEADER},{v:"สถานะ",s:HEADER}],...extra.map(c=>[{v:c,s:ORANGE},{v:"⚠ ยังไม่อยู่ในระบบ",s:ORANGE}])]);
-      ws4["!cols"]=[{wch:30},{wch:22}]; XLSX.utils.book_append_sheet(wb,ws4,"เกิน");
+      // Sheet 4: เกิน
+      const ws4 = XLSX.utils.aoa_to_sheet([
+        [{v:"เลข Tracking (เกิน)",s:HEADER},{v:"ผู้ยิง",s:HEADER},{v:"สถานะ",s:HEADER}],
+        ...extra.map(c=>{const sc=submitted.find(s=>s.tracking_code===c);return [{v:c,s:ORANGE},{v:sc?.scanned_by||staffName},{v:"⚠ ยังไม่อยู่ในระบบ",s:ORANGE}];})
+      ]);
+      ws4["!cols"]=[{wch:30},{wch:14},{wch:22}]; XLSX.utils.book_append_sheet(wb,ws4,"เกิน");
       XLSX.writeFile(wb, `return_report_${today}.xlsx`);
     } catch (e) { alert("Export ไม่สำเร็จ: " + e.message); }
     setExporting(false);
@@ -525,25 +548,31 @@ function ReturnStaffPanel() {
 
   return (
     <div>
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+      {/* Header row: title + export + refresh + rename */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
         <div>
-          <h2 style={{ fontSize: 20, fontWeight: 700, color: "#ccd6f6", marginBottom: 4 }}>ตีกลับถึงคลัง — ยิงบาร์โค้ด</h2>
-          <div style={{ fontSize: 13, color: "#8892b0" }}>สวัสดี <span style={{ color: "#64ffda" }}>{staffName}</span> · {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}</div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: "#ccd6f6", marginBottom: 2 }}>ตีกลับถึงคลัง — ยิงบาร์โค้ด</h2>
+          <div style={{ fontSize: 12, color: "#8892b0" }}>
+            <span style={{ color: "#64ffda" }}>{staffName}</span> · {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}
+          </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={loadData} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 รีเฟรช</button>
-          <button onClick={() => { localStorage.removeItem("staffName"); setStaffName(""); }} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#555", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>เปลี่ยนชื่อ</button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <button onClick={handleStaffExport} disabled={exporting}
+            style={{ background: "rgba(100,255,218,0.1)", border: "1px solid rgba(100,255,218,0.3)", color: "#64ffda", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+            {exporting ? "⏳..." : "📥 Export Excel"}
+          </button>
+          <button onClick={loadData} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "7px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 รีเฟรช</button>
+          <button onClick={() => { localStorage.removeItem("staffName"); setStaffName(""); }} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#555", borderRadius: 8, padding: "7px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>เปลี่ยนชื่อ</button>
         </div>
       </div>
 
       {/* Stats */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 14 }}>
         {[
           { label: "ระบบแจ้ง", value: systemList.length, color: "#8892b0" },
           { label: "ถึงคลังแล้ว", value: submitted.length, color: "#ccd6f6" },
           { label: "✓ ตรง", value: matched.length, color: "#64ffda" },
-          { label: missing.length > 0 ? `✗ ขาด` : extra.length > 0 ? `⚠ เกิน` : "✓ ครบ!",
+          { label: missing.length > 0 ? "✗ ขาด" : extra.length > 0 ? "⚠ เกิน" : "✓ ครบ!",
             value: missing.length > 0 ? missing.length : extra.length > 0 ? extra.length : "🎉",
             color: missing.length > 0 ? "#ff5555" : extra.length > 0 ? "#ffa500" : "#64ffda" },
         ].map((s, i) => (
@@ -554,85 +583,98 @@ function ReturnStaffPanel() {
         ))}
       </div>
 
-      {/* Progress bar */}
+      {/* Progress */}
       {systemList.length > 0 && (
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 14 }}>
           <div style={{ height: 6, background: "#0f1117", borderRadius: 3, overflow: "hidden" }}>
             <div style={{ height: "100%", width: `${progress}%`, background: progress === 100 ? "#64ffda" : "#ff5555", borderRadius: 3, transition: "width 0.3s" }} />
           </div>
-          <div style={{ fontSize: 12, color: "#555", marginTop: 4, textAlign: "right" }}>{progress}%</div>
+          <div style={{ fontSize: 12, color: "#555", marginTop: 3, textAlign: "right" }}>{progress}%</div>
         </div>
       )}
 
-      {/* Start scan button (idle mode) */}
-      {mode === "idle" && (
-        <div style={{ textAlign: "center", paddingTop: 8, paddingBottom: 8 }}>
-          <button onClick={() => { setMode("scanning"); setStaging([]); setLastScan(null); }}
-            style={{ background: "#64ffda", color: "#0f1117", border: "none", borderRadius: 10, padding: "14px 40px", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
-            📦 เริ่มยิงบาร์โค้ด
-          </button>
-          {submitted.length > 0 && (
-            <div style={{ marginTop: 20 }}>
-              <div style={{ fontSize: 13, color: "#8892b0", marginBottom: 10 }}>ยิงและบันทึกแล้ว {submitted.length} รายการวันนี้</div>
-              <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: 12, maxHeight: 160, overflowY: "auto", textAlign: "left" }}>
-                {submitted.map((code, i) => (
-                  <div key={i} style={{ fontFamily: "monospace", fontSize: 11, color: systemList.includes(code) ? "#64ffda" : "#ffa500", padding: "3px 0", borderBottom: "1px solid #1e2235" }}>{code}</div>
-                ))}
+      {/* Start button */}
+      <div style={{ textAlign: "center", marginBottom: 16 }}>
+        <button onClick={() => { setMode("scanning"); setStaging([]); setLastScan(null); }}
+          style={{ background: "#64ffda", color: "#0f1117", border: "none", borderRadius: 10, padding: "13px 36px", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+          📦 เริ่มยิงบาร์โค้ด
+        </button>
+      </div>
+
+      {/* Submitted list (newest first) */}
+      {submitted.length > 0 && (
+        <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: 12, maxHeight: 220, overflowY: "auto" }}>
+          <div style={{ fontSize: 11, color: "#8892b0", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
+            ยิงและบันทึกแล้ว ({submitted.length})
+          </div>
+          {submitted.map((s, i) => {
+            const ok = systemList.includes(s.tracking_code);
+            const timeStr = s.scanned_at ? new Date(s.scanned_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : "";
+            return (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid #1e2235" }}>
+                <span style={{ fontFamily: "monospace", fontSize: 11, color: ok ? "#64ffda" : "#ffa500" }}>{s.tracking_code}</span>
+                <span style={{ fontSize: 11, color: "#555" }}>{s.scanned_by} {timeStr}</span>
               </div>
-            </div>
-          )}
+            );
+          })}
         </div>
       )}
 
-      {/* SCANNING POPUP OVERLAY */}
+      {/* SCANNING POPUP */}
       {mode === "scanning" && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
           <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 18, width: "100%", maxWidth: 520, maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+
             {/* Popup header */}
-            <div style={{ padding: "18px 20px 12px", borderBottom: "1px solid #2a2f45" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid #2a2f45" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div>
                   <div style={{ fontWeight: 700, color: "#ccd6f6", fontSize: 17 }}>📦 ยิงบาร์โค้ด</div>
-                  <div style={{ fontSize: 12, color: "#8892b0", marginTop: 2 }}>ยิงแล้ว <span style={{ color: "#64ffda", fontWeight: 700 }}>{staging.length}</span> รายการ ยังไม่ได้บันทึก</div>
-                </div>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <div style={{ fontFamily: "monospace", fontSize: 20, fontWeight: 700, color: "#ccd6f6" }}>
-                    {staging.length}<span style={{ color: "#3a3f5c", fontSize: 14 }}> รายการ</span>
+                  <div style={{ fontSize: 12, color: "#8892b0", marginTop: 2 }}>
+                    รอยืนยัน <span style={{ color: "#64ffda", fontWeight: 700 }}>{staging.length}</span> รายการ — ยังไม่บันทึก
                   </div>
                 </div>
+                <div style={{ fontFamily: "monospace", fontSize: 28, fontWeight: 700, color: "#64ffda" }}>{staging.length}</div>
               </div>
-              {/* Scan input */}
+
+              {/* Scan input - auto focus, auto newline on scan */}
               <input ref={scanRef} value={scanInput} onChange={e => setScanInput(e.target.value)} onKeyDown={handleScan}
-                placeholder="ยิงบาร์โค้ดที่นี่..."
-                style={{ width: "100%", marginTop: 12, background: "#0f1117", border: `2px solid ${lastScan?.status === "match" ? "#64ffda" : lastScan?.status === "duplicate" ? "#ffa500" : lastScan?.status === "extra" ? "#ffa500" : "#2a2f45"}`, borderRadius: 10, padding: "12px 14px", color: "#e8eaf0", fontSize: 15, outline: "none", fontFamily: "monospace", transition: "border-color 0.2s" }} />
+                placeholder="ยิงบาร์โค้ดที่นี่... (ขึ้นบรรทัดใหม่ทุกครั้งที่ยิง)"
+                style={{ width: "100%", background: "#0f1117", border: `2px solid ${lastScan?.status === "match" ? "#64ffda" : lastScan?.status === "duplicate" ? "#ffa500" : lastScan?.status === "extra" ? "#ffa500" : "#2a2f45"}`, borderRadius: 10, padding: "12px 14px", color: "#e8eaf0", fontSize: 14, outline: "none", fontFamily: "monospace", transition: "border-color 0.2s" }} />
+
               {/* Last scan feedback */}
               {lastScan && (
-                <div style={{ marginTop: 8, padding: "8px 12px", borderRadius: 8, background: lastScan.status === "match" ? "rgba(100,255,218,0.08)" : "rgba(255,165,0,0.08)", border: `1px solid ${lastScan.status === "match" ? "rgba(100,255,218,0.3)" : "rgba(255,165,0,0.3)"}`, display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontSize: 18 }}>{lastScan.status === "match" ? "✅" : lastScan.status === "duplicate" ? "⚠️" : "📌"}</span>
+                <div style={{ marginTop: 8, padding: "7px 12px", borderRadius: 8, background: lastScan.status === "match" ? "rgba(100,255,218,0.08)" : "rgba(255,165,0,0.08)", border: `1px solid ${lastScan.status === "match" ? "rgba(100,255,218,0.25)" : "rgba(255,165,0,0.25)"}`, display: "flex", alignItems: "center", gap: 10 }}>
+                  <span>{lastScan.status === "match" ? "✅" : lastScan.status === "duplicate" ? "⚠️" : "📌"}</span>
                   <div>
-                    <div style={{ fontFamily: "monospace", fontSize: 12, color: "#ccd6f6" }}>{lastScan.code}</div>
-                    <div style={{ fontSize: 11, color: lastScan.status === "match" ? "#64ffda" : "#ffa500", marginTop: 1 }}>
-                      {lastScan.status === "match" ? "✓ อยู่ในรายการวันนี้" : lastScan.status === "duplicate" ? "⚠ ยิงซ้ำ" : "📌 บันทึกไว้ก่อน (ยังไม่อยู่ในระบบ)"}
-                    </div>
+                    <span style={{ fontFamily: "monospace", fontSize: 12, color: "#ccd6f6" }}>{lastScan.code}</span>
+                    <span style={{ fontSize: 11, color: lastScan.status === "match" ? "#64ffda" : "#ffa500", marginLeft: 10 }}>
+                      {lastScan.status === "match" ? "✓ อยู่ในรายการ" : lastScan.status === "duplicate" ? "⚠ ยิงซ้ำ" : "📌 บันทึกไว้ก่อน"}
+                    </span>
                   </div>
                 </div>
               )}
             </div>
 
-            {/* Staged list */}
-            <div style={{ flex: 1, overflowY: "auto", padding: "12px 20px" }}>
-              {staging.length === 0 && <div style={{ color: "#3a3f5c", fontSize: 13, textAlign: "center", paddingTop: 20 }}>ยังไม่มีรายการ — เริ่มยิงได้เลย</div>}
-              {staging.map((code, i) => {
-                const ok = systemList.includes(code);
+            {/* Staged list — newest first, each item on its own row */}
+            <div ref={listRef} style={{ flex: 1, overflowY: "auto", padding: "10px 20px" }}>
+              {staging.length === 0 && (
+                <div style={{ color: "#3a3f5c", fontSize: 13, textAlign: "center", paddingTop: 20 }}>ยังไม่มีรายการ — เริ่มยิงได้เลย</div>
+              )}
+              {staging.map((entry, i) => {
+                const ok = systemList.includes(entry.code);
                 return (
-                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid #1e2235" }}>
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #1e2235" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <span style={{ fontSize: 14 }}>{ok ? "✅" : "📌"}</span>
-                      <span style={{ fontFamily: "monospace", fontSize: 12, color: ok ? "#64ffda" : "#ffa500" }}>{code}</span>
+                      <div>
+                        <div style={{ fontFamily: "monospace", fontSize: 13, color: ok ? "#64ffda" : "#ffa500" }}>{entry.code}</div>
+                        <div style={{ fontSize: 10, color: "#555", marginTop: 1 }}>{entry.time}</div>
+                      </div>
                     </div>
-                    <button onClick={() => removeFromStaging(code)}
-                      style={{ background: "none", border: "none", color: "#3a3f5c", cursor: "pointer", fontSize: 16, padding: "0 4px", fontFamily: "inherit" }}
-                      onMouseEnter={e => e.target.style.color = "#ff5555"} onMouseLeave={e => e.target.style.color = "#3a3f5c"}>✕</button>
+                    <button onClick={() => removeFromStaging(entry.code)}
+                      style={{ background: "none", border: "none", color: "#3a3f5c", cursor: "pointer", fontSize: 16, padding: "0 4px" }}
+                      onMouseEnter={e => e.target.style.color="#ff5555"} onMouseLeave={e => e.target.style.color="#3a3f5c"}>✕</button>
                   </div>
                 );
               })}
@@ -652,28 +694,6 @@ function ReturnStaffPanel() {
           </div>
         </div>
       )}
-
-      {/* Summary + Export (always visible) */}
-      <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid #2a2f45" }}>
-        <div style={{ fontSize: 13, color: "#8892b0", marginBottom: 10 }}>📊 สรุปวันที่ {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 8, marginBottom: 14 }}>
-          {[
-            { n: "1. ตีกลับในระบบ", v: systemList.length, c: "#8892b0" },
-            { n: "2. ตีกลับถึงคลัง", v: submitted.length, c: "#ccd6f6" },
-            { n: "3. ✓ ตรงกัน", v: matched.length, c: "#64ffda" },
-            { n: "4. ✗ ขาด", v: missing.length, c: missing.length > 0 ? "#ff5555" : "#64ffda" },
-          ].map((s,i) => (
-            <div key={i} style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 8, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 13, color: "#8892b0" }}>{s.n}</span>
-              <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 16, color: s.c }}>{s.v}</span>
-            </div>
-          ))}
-        </div>
-        <button onClick={handleStaffExport} disabled={exporting}
-          style={{ width: "100%", background: "#64ffda", color: "#0f1117", border: "none", borderRadius: 10, padding: "13px", fontSize: 15, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", opacity: exporting ? 0.6 : 1 }}>
-          {exporting ? "⏳ กำลัง Export..." : "📥 Export รายงาน Excel"}
-        </button>
-      </div>
     </div>
   );
 }
