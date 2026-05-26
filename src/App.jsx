@@ -75,6 +75,22 @@ const sbReturn = async (path, opts = {}) => {
   return text ? JSON.parse(text) : [];
 };
 
+// ดึงข้อมูลทั้งหมดแบบ paginate (รองรับหลักพัน rows)
+const sbReturnAll = async (table, filter = "") => {
+  const PAGE = 1000;
+  let all = [];
+  let offset = 0;
+  while (true) {
+    const sep = filter ? "&" : "?";
+    const url = `${table}${filter ? "?" + filter : ""}${sep}limit=${PAGE}&offset=${offset}`;
+    const batch = await sbReturn(url);
+    all = all.concat(batch || []);
+    if (!batch || batch.length < PAGE) break;
+    offset += PAGE;
+  }
+  return all;
+};
+
 // ── SheetJS Excel Export ──
 async function loadXLSX() {
   if (window.XLSX) return window.XLSX;
@@ -91,7 +107,7 @@ async function exportReport(sessions) {
   const XLSX = await loadXLSX();
   const allScans = [];
   for (const s of sessions) {
-    const scans = await sbReturn(`return_scans?session_id=eq.${s.id}&select=tracking_code,scanned_at,scanned_by`);
+    const scans = await sbReturnAll("return_scans", `session_id=eq.${s.id}&select=tracking_code,scanned_at,scanned_by`);
     scans.forEach(sc => allScans.push({ ...sc, session_id: s.id, session_date: s.created_at }));
   }
   const systemList = [...new Set(sessions.flatMap(s => s.tracking_list || []))];
@@ -172,6 +188,19 @@ function ReturnAdminPanel() {
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [expandedId, setExpandedId] = useState(null);
   const [exporting, setExporting] = useState(false);
+  const [dateFilter, setDateFilter] = useState(""); // YYYY-MM-DD
+  const [scansCache, setScansCache] = useState({}); // id -> [{tracking_code, scanned_by, scanned_at}]
+  const [loadingScans, setLoadingScans] = useState(null); // session id loading
+
+  const loadScans = async (sessionId) => {
+    if (scansCache[sessionId]) return; // already cached
+    setLoadingScans(sessionId);
+    try {
+      const data = await sbReturnAll("return_scans", `session_id=eq.${sessionId}&select=tracking_code,scanned_by,scanned_at&order=scanned_at.asc`);
+      setScansCache(prev => ({ ...prev, [sessionId]: data }));
+    } catch (e) { console.error(e); }
+    setLoadingScans(null);
+  };
 
   const handleExport = async () => {
     if (sessions.length === 0) return alert("ไม่มีเซสชันให้ export");
@@ -181,25 +210,33 @@ function ReturnAdminPanel() {
     setExporting(false);
   };
 
-  const fetchSessions = async () => {
+  const fetchSessions = async (date = dateFilter) => {
     try {
-      const data = await sbReturn("return_sessions?select=*,return_scans(count)&order=created_at.desc&limit=10");
+      let filter = "select=*,return_scans(count)&order=created_at.desc";
+      if (date) filter += `&created_at=gte.${date}T00:00:00&created_at=lte.${date}T23:59:59`;
+      const data = await sbReturnAll("return_sessions", filter);
       setSessions(data);
     } catch (e) { console.error(e); }
     setLoadingSessions(false);
   };
 
-  useEffect(() => { fetchSessions(); }, []);
+  useEffect(() => { fetchSessions(dateFilter); }, [dateFilter]);
 
   const handleCreate = async () => {
     const list = parseFlashText(flashText);
     if (!list.length) return alert("ไม่พบเลข tracking กรุณาตรวจสอบข้อความ");
     setLoading(true);
     try {
+      // Supabase array column รองรับข้อมูลใหญ่ได้ แต่ถ้าเกิน 5000 ให้แจ้งเตือน
+      if (list.length > 5000) {
+        if (!confirm(`พบ ${list.length.toLocaleString()} รายการ (มากกว่าปกติ) ยืนยันสร้างเซสชันนี้?`)) {
+          setLoading(false); return;
+        }
+      }
       await sbReturn("return_sessions", { method: "POST", body: JSON.stringify({ tracking_list: list, courier: "Flash" }) });
       setFlashText("");
       fetchSessions();
-    } catch (e) { alert("เกิดข้อผิดพลาด"); }
+    } catch (e) { alert("เกิดข้อผิดพลาด: " + JSON.stringify(e)); }
     setLoading(false);
   };
 
@@ -225,7 +262,16 @@ function ReturnAdminPanel() {
       </button>
 
       <div style={{ marginTop: 32 }}>
-        <div style={{ fontSize: 13, color: "#8892b0", fontWeight: 600, marginBottom: 14, textTransform: "uppercase", letterSpacing: 1 }}>เซสชันล่าสุด</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+          <div style={{ fontSize: 13, color: "#8892b0", fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>
+            เซสชัน {dateFilter ? `วันที่ ${new Date(dateFilter).toLocaleDateString("th-TH")}` : "ทั้งหมด"} ({sessions.length} เซสชัน)
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="date" value={dateFilter} onChange={e => setDateFilter(e.target.value)}
+              style={{ background: "#0f1117", border: "1px solid #2a2f45", borderRadius: 8, padding: "6px 12px", color: "#e8eaf0", fontSize: 13, outline: "none", fontFamily: "'Sarabun', sans-serif", cursor: "pointer" }} />
+            {dateFilter && <button onClick={() => setDateFilter("")} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "6px 12px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>✕ ล้าง</button>}
+          </div>
+        </div>
         {loadingSessions && <div style={{ color: "#555", fontSize: 14 }}>กำลังโหลด...</div>}
         {!loadingSessions && sessions.length === 0 && <div style={{ color: "#444", fontSize: 14 }}>ยังไม่มีเซสชัน</div>}
         {sessions.map(s => {
@@ -237,7 +283,7 @@ function ReturnAdminPanel() {
             <div key={s.id} style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, marginBottom: 10, overflow: "hidden" }}>
               <div style={{ padding: "14px 16px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <div style={{ cursor: "pointer", flex: 1 }} onClick={() => setExpandedId(isExpanded ? null : s.id)}>
+                  <div style={{ cursor: "pointer", flex: 1 }} onClick={() => { const next = isExpanded ? null : s.id; setExpandedId(next); if (next) loadScans(next); }}>
                     <span style={{ fontWeight: 600, color: "#ccd6f6", fontSize: 14 }}>{s.courier} — {new Date(s.created_at).toLocaleDateString("th-TH", { dateStyle: "medium" })}</span>
                     <span style={{ marginLeft: 10, color: "#8892b0", fontSize: 12 }}>{new Date(s.created_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</span>
                   </div>
@@ -247,7 +293,7 @@ function ReturnAdminPanel() {
                       style={{ background: "rgba(100,255,218,0.08)", border: "1px solid rgba(100,255,218,0.2)", color: "#64ffda", borderRadius: 6, padding: "4px 10px", fontSize: 12, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
                       📥 Excel
                     </button>
-                    <span style={{ color: "#555", cursor: "pointer", fontSize: 14 }} onClick={() => setExpandedId(isExpanded ? null : s.id)}>{isExpanded ? "▲" : "▼"}</span>
+                    <span style={{ color: "#555", cursor: "pointer", fontSize: 14 }} onClick={() => { const next = isExpanded ? null : s.id; setExpandedId(next); if (next) loadScans(next); }}>{isExpanded ? "▲" : "▼"}</span>
                   </div>
                 </div>
                 <div style={{ height: 4, background: "#0f1117", borderRadius: 2 }}>
@@ -255,13 +301,56 @@ function ReturnAdminPanel() {
                 </div>
               </div>
               {isExpanded && (
-                <div style={{ borderTop: "1px solid #2a2f45", padding: "12px 16px", background: "#12151f", maxHeight: 220, overflowY: "auto" }}>
-                  <div style={{ fontSize: 11, color: "#8892b0", marginBottom: 8, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>รายการทั้งหมด {total} รายการ</div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px" }}>
-                    {(s.tracking_list || []).map((code, i) => (
-                      <span key={i} style={{ fontFamily: "monospace", fontSize: 11, color: "#8892b0", padding: "2px 0" }}>{code}</span>
-                    ))}
-                  </div>
+                <div style={{ borderTop: "1px solid #2a2f45", background: "#12151f" }}>
+                  {/* Sub-tabs */}
+                  {(() => {
+                    const scans = scansCache[s.id] || [];
+                    const scannedSet = new Set(scans.map(x => x.tracking_code));
+                    return (
+                      <div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0 }}>
+                          {/* Left: ระบบแจ้ง */}
+                          <div style={{ padding: "12px 14px", borderRight: "1px solid #2a2f45", maxHeight: 260, overflowY: "auto" }}>
+                            <div style={{ fontSize: 11, color: "#8892b0", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
+                              📋 แจ้งจากระบบ ({total})
+                            </div>
+                            {(s.tracking_list || []).map((code, i) => {
+                              const ok = scannedSet.has(code);
+                              const scan = scans.find(x => x.tracking_code === code);
+                              return (
+                                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: "1px solid #1a1d27" }}>
+                                  <span style={{ fontFamily: "monospace", fontSize: 11, color: ok ? "#64ffda" : "#ff5555" }}>{code}</span>
+                                  <span style={{ fontSize: 11, color: ok ? "#64ffda" : "#555" }}>
+                                    {ok ? `✓ ${scan?.scanned_by || ""}` : "รอรับ"}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                          {/* Right: พนักงานยิง */}
+                          <div style={{ padding: "12px 14px", maxHeight: 260, overflowY: "auto" }}>
+                            <div style={{ fontSize: 11, color: "#8892b0", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
+                              📦 พนักงานยิง ({scans.length})
+                              {loadingScans === s.id && <span style={{ color: "#555", marginLeft: 8 }}>กำลังโหลด...</span>}
+                            </div>
+                            {scans.length === 0 && loadingScans !== s.id && <div style={{ color: "#444", fontSize: 12 }}>ยังไม่มีการยิง</div>}
+                            {scans.map((sc, i) => {
+                              const inList = (s.tracking_list || []).includes(sc.tracking_code);
+                              return (
+                                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: "1px solid #1a1d27" }}>
+                                  <span style={{ fontFamily: "monospace", fontSize: 11, color: inList ? "#64ffda" : "#ffa500" }}>{sc.tracking_code}</span>
+                                  <div style={{ textAlign: "right" }}>
+                                    <div style={{ fontSize: 11, color: "#ccd6f6" }}>{sc.scanned_by || "-"}</div>
+                                    <div style={{ fontSize: 10, color: "#555" }}>{sc.scanned_at ? new Date(sc.scanned_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : ""}</div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>
@@ -298,7 +387,7 @@ function ReturnStaffPanel() {
   const loadSessions = async () => {
     setLoading(true);
     try {
-      const data = await sbReturn("return_sessions?select=*&order=created_at.desc&limit=20");
+      const data = await sbReturnAll("return_sessions", "select=*&order=created_at.desc");
       setSessions(data);
     } catch (e) { console.error(e); }
     setLoading(false);
@@ -318,7 +407,7 @@ function ReturnStaffPanel() {
       const ids = selectedSessions.map(s => s.id);
       const allScans = [];
       for (const id of ids) {
-        const scans = await sbReturn(`return_scans?session_id=eq.${id}&select=tracking_code,scanned_at,scanned_by,session_id`);
+        const scans = await sbReturnAll("return_scans", `session_id=eq.${id}&select=tracking_code,scanned_at,scanned_by,session_id`);
         allScans.push(...scans);
       }
       // merge tracking_list from all sessions
