@@ -398,15 +398,29 @@ function ReturnStaffPanel() {
     document.head.appendChild(s);
   });
 
+  // ใช้ ref เก็บ staging codes ล่าสุดเพื่อให้ handleScanned อ่านได้โดยไม่ stale closure
+  const stagingCodesRef = useRef([]);
+  const submittedCodesRef = useRef([]);
+
+  // sync ref ทุกครั้งที่ state เปลี่ยน
+  useEffect(() => { stagingCodesRef.current = staging.map(s => s.code); }, [staging]);
+  useEffect(() => { submittedCodesRef.current = submitted.map(s => s.tracking_code); }, [submitted]);
+
   const handleScanned = (code) => {
     code = code.trim().toUpperCase();
-    // debounce — ไม่รับเลขซ้ำภายใน 2 วินาที
+    if (!code) return;
+    // debounce เลขเดิมภายใน 1.5 วินาที (ป้องกัน scanner ยิงซ้ำเร็วเกิน)
     const now = Date.now();
-    if (code === lastScannedRef.current && now - lastScannedTime.current < 2000) return;
+    if (code === lastScannedRef.current && now - lastScannedTime.current < 1500) return;
     lastScannedRef.current = code;
     lastScannedTime.current = now;
-    const allCodes = [...staging.map(s=>s.code), ...submitted.map(s=>s.tracking_code)];
-    if (allCodes.includes(code)) { playBeep(false); setLastScan({ code, status: "duplicate" }); return; }
+    // ตรวจสอบซ้ำจาก ref (ไม่ stale)
+    const allCodes = [...stagingCodesRef.current, ...submittedCodesRef.current];
+    if (allCodes.includes(code)) {
+      playBeep(false);
+      setLastScan({ code, status: "duplicate" });
+      return;
+    }
     const timeStr = new Date().toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     setStaging(prev => [{ code, time: timeStr }, ...prev]);
     setLastScan({ code, status: systemList.includes(code) ? "match" : "extra" });
