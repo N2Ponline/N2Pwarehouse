@@ -369,97 +369,45 @@ function ReturnAdminPanel() {
 }
 
 function ReturnStaffPanel() {
-  const [sessions, setSessions] = useState([]);
-  const [activeSession, setActiveSession] = useState(null);
-  const [scannedCodes, setScannedCodes] = useState([]);
-  const [scanInput, setScanInput] = useState("");
-  const [lastScan, setLastScan] = useState(null);
   const [staffName, setStaffName] = useState(localStorage.getItem("staffName") || "");
-  const [selectedSessions, setSelectedSessions] = useState([]); // multi-select
-  const [expandedId, setExpandedId] = useState(null);
-  const [showConfirm, setShowConfirm] = useState(false);
+  const [scanInput, setScanInput] = useState("");
+  const [scannedToday, setScannedToday] = useState([]); // all scans today (loaded + new)
+  const [systemList, setSystemList] = useState([]); // all tracking from all sessions today
+  const [lastScan, setLastScan] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [staffDateFilter, setStaffDateFilter] = useState(new Date().toISOString().slice(0,10)); // default วันนี้
-  const [preScanMode, setPreScanMode] = useState(false); // ยิงก่อนไม่มีเซสชัน
-  const [preScanCodes, setPreScanCodes] = useState([]); // เก็บไว้ชั่วคราว
+  const [initialized, setInitialized] = useState(false);
   const scanRef = useRef(null);
+  const today = new Date().toISOString().slice(0,10);
 
-  useEffect(() => { loadSessions(staffDateFilter); }, [staffDateFilter]);
-  useEffect(() => { if (activeSession && scanRef.current) scanRef.current.focus(); }, [activeSession]);
+  // Load today's data on mount
+  useEffect(() => {
+    if (staffName) initData();
+  }, [staffName]);
 
-  const loadSessions = async (date) => {
+  useEffect(() => {
+    if (scanRef.current && staffName && initialized) scanRef.current.focus();
+  }, [initialized, staffName]);
+
+  const initData = async () => {
     setLoading(true);
-    setSelectedSessions([]); // clear selection when date changes
     try {
-      let filter = "select=*&order=created_at.desc";
-      if (date) filter += `&created_at=gte.${date}T00:00:00&created_at=lte.${date}T23:59:59`;
-      const data = await sbReturnAll("return_sessions", filter);
-      setSessions(data);
+      // โหลดเซสชันวันนี้ทั้งหมด
+      const sessions = await sbReturnAll("return_sessions", `select=*&created_at=gte.${today}T00:00:00&created_at=lte.${today}T23:59:59`);
+      const merged = [...new Set(sessions.flatMap(s => s.tracking_list || []))];
+      setSystemList(merged);
+      // โหลดการยิงวันนี้ทั้งหมด (ทุก session)
+      const allScans = [];
+      for (const s of sessions) {
+        const scans = await sbReturnAll("return_scans", `session_id=eq.${s.id}&select=tracking_code,scanned_by,scanned_at`);
+        allScans.push(...scans);
+      }
+      // dedup
+      const seen = new Set();
+      const unique = allScans.filter(s => { if (seen.has(s.tracking_code)) return false; seen.add(s.tracking_code); return true; });
+      setScannedToday(unique);
     } catch (e) { console.error(e); }
     setLoading(false);
-  };
-
-  const toggleSelectSession = (s) => {
-    setSelectedSessions(prev =>
-      prev.find(x => x.id === s.id) ? prev.filter(x => x.id !== s.id) : [...prev, s]
-    );
-  };
-
-  const startScan = async () => {
-    if (selectedSessions.length === 0 && preScanCodes.length === 0) return;
-    setLoading(true);
-    try {
-      let allScans = [];
-      let mergedList = [];
-      let firstSessionId = null;
-
-      if (selectedSessions.length > 0) {
-        const ids = selectedSessions.map(s => s.id);
-        firstSessionId = ids[0];
-        for (const id of ids) {
-          const scans = await sbReturnAll("return_scans", `session_id=eq.${id}&select=tracking_code,scanned_at,scanned_by,session_id`);
-          allScans.push(...scans);
-        }
-        mergedList = [...new Set(selectedSessions.flatMap(s => s.tracking_list || []))];
-      }
-
-      // ถ้ามี preScanCodes ให้ auto-submit เข้าเซสชันที่เลือก หรือสร้าง temp session
-      if (preScanCodes.length > 0) {
-        if (firstSessionId) {
-          // ยิงเข้าเซสชันแรกที่เลือก
-          for (const code of preScanCodes) {
-            if (!allScans.find(s => s.tracking_code === code)) {
-              try {
-                await sbReturn("return_scans", { method: "POST", body: JSON.stringify({ tracking_code: code, session_id: firstSessionId, scanned_by: staffName || "พนักงาน" }) });
-                allScans.push({ tracking_code: code });
-              } catch {}
-            }
-          }
-          setPreScanCodes([]);
-          setPreScanMode(false);
-        } else {
-          // ไม่มีเซสชัน — แจ้งให้รอแอดมิน
-          alert(`บันทึกไว้ ${preScanCodes.length} รายการแล้ว
-รอแอดมินสร้างเซสชัน แล้วกลับมาเลือกเซสชัน + กด "เริ่มยิง" จะชนให้อัตโนมัติ`);
-          setLoading(false);
-          return;
-        }
-      }
-
-      const merged = {
-        id: firstSessionId || selectedSessions[0]?.id,
-        ids: selectedSessions.map(s => s.id),
-        courier: selectedSessions[0]?.courier || "Flash",
-        created_at: selectedSessions[0]?.created_at || new Date().toISOString(),
-        tracking_list: mergedList,
-        _isMulti: selectedSessions.length > 1,
-        _sessionCount: selectedSessions.length,
-      };
-      setScannedCodes(allScans);
-      setActiveSession(merged);
-      setLastScan(null);
-    } catch (e) { alert("โหลดข้อมูลไม่ได้"); }
-    setLoading(false);
+    setInitialized(true);
   };
 
   const playBeep = (ok) => {
@@ -474,59 +422,59 @@ function ReturnStaffPanel() {
     } catch {}
   };
 
-  const handlePreScan = (e) => {
+  const handleScan = async (e) => {
     if (e.key !== "Enter") return;
     const code = scanInput.trim().toUpperCase();
     if (!code) return;
     setScanInput("");
-    if (preScanCodes.includes(code)) {
+
+    // ยิงซ้ำ?
+    if (scannedToday.find(s => s.tracking_code === code)) {
       setLastScan({ code, status: "duplicate" }); playBeep(false); return;
     }
-    setPreScanCodes(prev => [code, ...prev]);
-    setLastScan({ code, status: "prescan" });
-    playBeep(true);
-  };
 
-  const handleScan = async (e) => {
-    if (e.key !== "Enter") return;
-    const code = scanInput.trim().toUpperCase();
-    if (!code || !activeSession) return;
-    setScanInput("");
-    if (scannedCodes.find(s => s.tracking_code === code)) {
-      setLastScan({ code, status: "duplicate" }); playBeep(false); return;
+    // หา session ที่มีเลขนี้
+    const sessions = await sbReturnAll("return_sessions", `select=id,tracking_list&created_at=gte.${today}T00:00:00&created_at=lte.${today}T23:59:59`);
+    const targetSession = sessions.find(s => (s.tracking_list||[]).includes(code));
+    const sessionId = targetSession?.id || (sessions[0]?.id ?? null);
+
+    const inSystem = !!targetSession;
+
+    // บันทึก (ถ้ามี session ก็บันทึกเข้า session นั้น ถ้าไม่มีบันทึกเข้า session แรก หรือถ้าไม่มีเซสชันเลยก็เก็บ local)
+    if (sessionId) {
+      try {
+        await sbReturn("return_scans", { method: "POST", body: JSON.stringify({ tracking_code: code, session_id: sessionId, scanned_by: staffName || "พนักงาน" }) });
+      } catch {}
     }
-    const inList = activeSession.tracking_list.includes(code);
-    try {
-      await sbReturn("return_scans", { method: "POST", body: JSON.stringify({ tracking_code: code, session_id: activeSession.id, scanned_by: staffName || "พนักงาน" }) });
-      setScannedCodes(prev => [...prev, { tracking_code: code }]);
-      setLastScan({ code, status: inList ? "match" : "extra" });
-      playBeep(inList);
-    } catch { setLastScan({ code, status: "error" }); playBeep(false); }
+
+    const newScan = { tracking_code: code };
+    setScannedToday(prev => [newScan, ...prev]);
+    if (inSystem) setSystemList(prev => prev); // already loaded
+    setLastScan({ code, status: inSystem ? "match" : "extra" });
+    playBeep(inSystem);
   };
 
-  const handleDeleteScan = async (trackingCode) => {
-    if (!confirm(`ยืนยันลบ ${trackingCode} ออกจากรายการ?`)) return;
-    try {
-      const ids = activeSession.ids || [activeSession.id];
-      for (const sid of ids) {
-        await sbReturn(`return_scans?session_id=eq.${sid}&tracking_code=eq.${trackingCode}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
-      }
-      setScannedCodes(prev => prev.filter(s => s.tracking_code !== trackingCode));
-      if (lastScan?.code === trackingCode) setLastScan(null);
-    } catch (e) { alert("ลบไม่สำเร็จ"); }
+  const handleDeleteScan = async (code) => {
+    if (!confirm(`ยืนยันลบ ${code}?`)) return;
+    const sessions = await sbReturnAll("return_sessions", `select=id&created_at=gte.${today}T00:00:00&created_at=lte.${today}T23:59:59`);
+    for (const s of sessions) {
+      try { await sbReturn(`return_scans?session_id=eq.${s.id}&tracking_code=eq.${code}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }); } catch {}
+    }
+    setScannedToday(prev => prev.filter(s => s.tracking_code !== code));
+    if (lastScan?.code === code) setLastScan(null);
   };
 
-  const scannedList = scannedCodes.map(s => s.tracking_code);
-  const matched = activeSession ? activeSession.tracking_list.filter(c => scannedList.includes(c)) : [];
-  const missing = activeSession ? activeSession.tracking_list.filter(c => !scannedList.includes(c)) : [];
-  const extra = scannedCodes.filter(s => activeSession && !activeSession.tracking_list.includes(s.tracking_code));
-  const progress = activeSession ? Math.round((matched.length / activeSession.tracking_list.length) * 100) : 0;
+  const scannedSet = new Set(scannedToday.map(s => s.tracking_code));
+  const matched = systemList.filter(c => scannedSet.has(c));
+  const missing = systemList.filter(c => !scannedSet.has(c));
+  const extra   = scannedToday.filter(s => !systemList.includes(s.tracking_code));
+  const progress = systemList.length > 0 ? Math.round(matched.length / systemList.length * 100) : 0;
 
   if (!staffName) return (
     <div style={{ textAlign: "center", paddingTop: 60 }}>
-      <div style={{ fontSize: 32, marginBottom: 16 }}>👤</div>
+      <div style={{ fontSize: 36, marginBottom: 16 }}>👤</div>
       <h2 style={{ fontSize: 18, fontWeight: 700, color: "#ccd6f6", marginBottom: 8 }}>ระบุชื่อพนักงานก่อน</h2>
-      <p style={{ color: "#8892b0", fontSize: 14, marginBottom: 24 }}>ใช้สำหรับบันทึกว่าใครยิงบาร์โค้ด</p>
+      <p style={{ color: "#8892b0", fontSize: 14, marginBottom: 24 }}>ใช้บันทึกว่าใครยิงบาร์โค้ด</p>
       <input placeholder="ชื่อพนักงาน" autoFocus
         style={{ background: "#0f1117", border: "1px solid #2a2f45", borderRadius: 8, padding: "10px 16px", color: "#e8eaf0", fontSize: 15, outline: "none", fontFamily: "'Sarabun', sans-serif", width: 240, textAlign: "center" }}
         onKeyDown={e => { if (e.key === "Enter" && e.target.value.trim()) { const n = e.target.value.trim(); setStaffName(n); localStorage.setItem("staffName", n); } }} />
@@ -534,259 +482,115 @@ function ReturnStaffPanel() {
     </div>
   );
 
-  if (!activeSession) return (
-    <div>
-      <div style={{ marginBottom: 16 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: "#ccd6f6", marginBottom: 4 }}>พนักงาน — ยิงพัสดุตีกลับ</h2>
-        <p style={{ color: "#8892b0", fontSize: 14 }}>สวัสดี <span style={{ color: "#64ffda" }}>{staffName}</span> — เลือกเซสชัน</p>
-      </div>
-
-      {/* Date filter bar */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: "10px 14px", flexWrap: "wrap" }}>
-        <span style={{ fontSize: 13, color: "#8892b0" }}>📅 วันที่:</span>
-        <input type="date" value={staffDateFilter} onChange={e => setStaffDateFilter(e.target.value)}
-          style={{ background: "#0f1117", border: "1px solid #2a2f45", borderRadius: 8, padding: "5px 10px", color: "#e8eaf0", fontSize: 13, outline: "none", fontFamily: "'Sarabun', sans-serif", cursor: "pointer" }} />
-        <button onClick={() => setStaffDateFilter(new Date().toISOString().slice(0,10))}
-          style={{ background: "rgba(100,255,218,0.08)", border: "1px solid rgba(100,255,218,0.2)", color: "#64ffda", borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>วันนี้</button>
-        <button onClick={() => { const d = new Date(); d.setDate(d.getDate()-1); setStaffDateFilter(d.toISOString().slice(0,10)); }}
-          style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>เมื่อวาน</button>
-        <button onClick={() => setStaffDateFilter("")}
-          style={{ background: "transparent", border: "1px solid #2a2f45", color: "#555", borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>ทั้งหมด</button>
-        <span style={{ marginLeft: "auto", fontSize: 12, color: "#555" }}>{sessions.length} เซสชัน</span>
-      </div>
-
-      {!loading && sessions.length > 0 && (
-        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
-          <button onClick={() => setSelectedSessions(selectedSessions.length === sessions.length ? [] : [...sessions])}
-            style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
-            {selectedSessions.length === sessions.length ? "ยกเลิกทั้งหมด" : "เลือกทั้งหมด"}
-          </button>
-        </div>
-      )}
-
-      {loading && <div style={{ color: "#555", fontSize: 14 }}>กำลังโหลด...</div>}
-      {!loading && sessions.length === 0 && !preScanMode && (
-        <div style={{ textAlign: "center", paddingTop: 32 }}>
-          <div style={{ color: "#555", fontSize: 14, marginBottom: 20 }}>
-            {staffDateFilter ? `ไม่มีเซสชันในวันที่ ${new Date(staffDateFilter).toLocaleDateString("th-TH")}` : "ยังไม่มีเซสชัน"}
-          </div>
-          <div style={{ background: "rgba(255,165,0,0.06)", border: "1px solid rgba(255,165,0,0.2)", borderRadius: 12, padding: "20px 24px", maxWidth: 420, margin: "0 auto", textAlign: "left" }}>
-            <div style={{ fontWeight: 700, color: "#ffa500", fontSize: 15, marginBottom: 8 }}>📦 ยิงก่อน รอแอดมินชนทีหลัง</div>
-            <div style={{ color: "#8892b0", fontSize: 13, lineHeight: 1.7, marginBottom: 16 }}>
-              ถ้าพัสดุมาถึงแต่แอดมินยังไม่ได้ลงข้อมูล สามารถยิงเก็บไว้ก่อนได้เลย แล้วแจ้งแอดมินสร้างเซสชันตามมาทีหลัง ระบบจะชนยอดให้อัตโนมัติ
-            </div>
-            <button onClick={() => setPreScanMode(true)}
-              style={{ background: "#ffa500", color: "#0f1117", border: "none", borderRadius: 8, padding: "10px 22px", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
-              ยิงก่อนได้เลย →
-            </button>
-          </div>
-        </div>
-      )}
-
-      {sessions.map(s => {
-        const isSelected = !!selectedSessions.find(x => x.id === s.id);
-        const isExpanded = expandedId === s.id;
-        return (
-          <div key={s.id} style={{ background: isSelected ? "rgba(100,255,218,0.06)" : "#1a1d27", border: `1px solid ${isSelected ? "#64ffda" : "#2a2f45"}`, borderRadius: 10, marginBottom: 10, overflow: "hidden", transition: "all 0.15s" }}>
-            <div style={{ padding: "14px 16px", display: "flex", alignItems: "center", gap: 14 }}>
-              <div onClick={() => toggleSelectSession(s)} style={{ width: 20, height: 20, borderRadius: 4, border: `2px solid ${isSelected ? "#64ffda" : "#3a3f5c"}`, background: isSelected ? "#64ffda" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 12, color: "#0f1117", fontWeight: 700, cursor: "pointer" }}>
-                {isSelected ? "✓" : ""}
-              </div>
-              <div style={{ flex: 1, cursor: "pointer" }} onClick={() => toggleSelectSession(s)}>
-                <div style={{ fontWeight: 600, color: "#ccd6f6", fontSize: 14, marginBottom: 2 }}>
-                  {s.courier} — {new Date(s.created_at).toLocaleDateString("th-TH", { dateStyle: "long" })}
-                </div>
-                <div style={{ color: "#8892b0", fontSize: 13 }}>{s.tracking_list?.length} รายการ · {new Date(s.created_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</div>
-              </div>
-              <button onClick={e => { e.stopPropagation(); setExpandedId(isExpanded ? null : s.id); }}
-                style={{ background: "none", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 6, padding: "4px 10px", fontSize: 12, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
-                {isExpanded ? "▲ ซ่อน" : "▼ ดูเลข"}
-              </button>
-            </div>
-            {isExpanded && (
-              <div style={{ borderTop: "1px solid #2a2f45", padding: "12px 16px", background: "#12151f", maxHeight: 200, overflowY: "auto" }}>
-                <div style={{ fontSize: 11, color: "#8892b0", marginBottom: 8, fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>รายการ {s.tracking_list?.length} เลข</div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 12px" }}>
-                  {(s.tracking_list || []).map((code, i) => (
-                    <span key={i} style={{ fontFamily: "monospace", fontSize: 11, color: "#8892b0" }}>{code}</span>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      })}
-
-      {selectedSessions.length > 0 && (
-        <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: "14px 16px", marginBottom: 14, fontSize: 13, color: "#64ffda" }}>
-          เลือกแล้ว {selectedSessions.length} เซสชัน · รวม {[...new Set(selectedSessions.flatMap(s => s.tracking_list || []))].length} รายการ
-        </div>
-      )}
-
-      {/* PRE-SCAN MODE UI */}
-      {preScanMode && (
-        <div style={{ marginTop: 8 }}>
-          <div style={{ background: "rgba(255,165,0,0.06)", border: "1px solid rgba(255,165,0,0.25)", borderRadius: 12, padding: "16px" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-              <div>
-                <div style={{ fontWeight: 700, color: "#ffa500", fontSize: 15 }}>📦 โหมดยิงก่อน</div>
-                <div style={{ color: "#8892b0", fontSize: 13, marginTop: 2 }}>ยิงแล้ว {preScanCodes.length} รายการ — รอแอดมินสร้างเซสชัน</div>
-              </div>
-              <button onClick={() => { setPreScanMode(false); setPreScanCodes([]); setLastScan(null); }}
-                style={{ background: "transparent", border: "1px solid #2a2f45", color: "#555", borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
-                ✕ ยกเลิก
-              </button>
-            </div>
-            <input ref={scanRef} value={scanInput} onChange={e => setScanInput(e.target.value)} onKeyDown={handlePreScan}
-              placeholder="📦 ยิงบาร์โค้ดที่นี่..."
-              style={{ width: "100%", background: "#0f1117", border: `2px solid ${lastScan?.status === "prescan" ? "#ffa500" : lastScan?.status === "duplicate" ? "#ff5555" : "#2a2f45"}`, borderRadius: 8, padding: "12px 14px", color: "#e8eaf0", fontSize: 14, outline: "none", fontFamily: "monospace", marginBottom: 12, transition: "border-color 0.2s" }} autoFocus />
-            {lastScan && (
-              <div style={{ padding: "8px 12px", borderRadius: 8, background: lastScan.status === "prescan" ? "rgba(255,165,0,0.08)" : "rgba(255,85,85,0.08)", border: `1px solid ${lastScan.status === "prescan" ? "rgba(255,165,0,0.3)" : "rgba(255,85,85,0.3)"}`, display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                <span>{lastScan.status === "prescan" ? "✅" : "⚠️"}</span>
-                <div>
-                  <div style={{ fontFamily: "monospace", fontSize: 12, color: "#ccd6f6" }}>{lastScan.code}</div>
-                  <div style={{ fontSize: 11, color: lastScan.status === "prescan" ? "#ffa500" : "#ff5555", marginTop: 1 }}>{lastScan.status === "prescan" ? "บันทึกไว้แล้ว รอเซสชัน" : "ยิงซ้ำแล้ว"}</div>
-                </div>
-              </div>
-            )}
-            {preScanCodes.length > 0 && (
-              <div style={{ background: "#0f1117", borderRadius: 8, padding: "10px 12px", maxHeight: 160, overflowY: "auto" }}>
-                <div style={{ fontSize: 11, color: "#8892b0", marginBottom: 6, fontWeight: 600 }}>รายการที่ยิงแล้ว</div>
-                {preScanCodes.map((code, i) => (
-                  <div key={i} style={{ fontFamily: "monospace", fontSize: 11, color: "#ffa500", padding: "2px 0", borderBottom: "1px solid #1a1d27", display: "flex", justifyContent: "space-between" }}>
-                    <span>{code}</span>
-                    <button onClick={() => setPreScanCodes(prev => prev.filter(c => c !== code))} style={{ background: "none", border: "none", color: "#3a3f5c", cursor: "pointer", fontSize: 12, fontFamily: "inherit" }} onMouseEnter={e => e.target.style.color="#ff5555"} onMouseLeave={e => e.target.style.color="#3a3f5c"}>✕</button>
-                  </div>
-                ))}
-              </div>
-            )}
-            {preScanCodes.length > 0 && sessions.length > 0 && (
-              <div style={{ marginTop: 12, background: "rgba(100,255,218,0.06)", border: "1px solid rgba(100,255,218,0.2)", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#64ffda" }}>
-                🎯 เซสชันโหลดมาแล้ว! เลือกเซสชันด้านบนแล้วกด "เริ่มยิง" — รายการที่ยิงไปแล้วจะถูกชนให้อัตโนมัติ
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-        <button onClick={startScan} disabled={(selectedSessions.length === 0 && preScanCodes.length === 0) || loading}
-          style={{ flex: 1, background: (selectedSessions.length > 0 || preScanCodes.length > 0) ? "#64ffda" : "#1a1d27", color: (selectedSessions.length > 0 || preScanCodes.length > 0) ? "#0f1117" : "#444", border: "none", borderRadius: 8, padding: "12px", fontSize: 15, fontWeight: 700, cursor: (selectedSessions.length > 0 || preScanCodes.length > 0) ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
-          {loading ? "กำลังโหลด..." : `เริ่มยิง${selectedSessions.length > 1 ? ` (${selectedSessions.length} เซสชัน)` : ""} →`}
-        </button>
-        <button onClick={() => loadSessions(staffDateFilter)} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "12px 16px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄</button>
-        <button onClick={() => { localStorage.removeItem("staffName"); setStaffName(""); }} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#555", borderRadius: 8, padding: "12px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>เปลี่ยนชื่อ</button>
-      </div>
-    </div>
-  );
+  if (loading) return <div style={{ textAlign: "center", paddingTop: 60, color: "#555" }}>กำลังโหลดข้อมูลวันนี้...</div>;
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
         <div>
-          <div style={{ fontWeight: 700, color: "#ccd6f6", fontSize: 17 }}>
-            {activeSession._isMulti ? `รวม ${activeSession._sessionCount} เซสชัน` : `Flash — ${new Date(activeSession.created_at).toLocaleDateString("th-TH", { dateStyle: "medium" })}`}
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: "#ccd6f6", marginBottom: 4 }}>พนักงาน — ยิงพัสดุตีกลับ</h2>
+          <div style={{ fontSize: 13, color: "#8892b0" }}>
+            สวัสดี <span style={{ color: "#64ffda" }}>{staffName}</span> · {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}
           </div>
-          <div style={{ color: "#8892b0", fontSize: 13, marginTop: 2 }}>พนักงาน: {staffName} · {activeSession.tracking_list.length} รายการ</div>
         </div>
-        <button onClick={() => { setActiveSession(null); setSelectedSessions([]); }} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>← กลับ</button>
-      </div>
-
-      <div style={{ marginBottom: 20 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-          <span style={{ fontSize: 14, color: "#8892b0" }}>ความคืบหน้า</span>
-          <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 20, color: progress === 100 ? "#64ffda" : "#ccd6f6" }}>{matched.length}<span style={{ color: "#3a3f5c" }}>/{activeSession.tracking_list.length}</span></span>
-        </div>
-        <div style={{ height: 8, background: "#0f1117", borderRadius: 4, overflow: "hidden" }}>
-          <div style={{ height: "100%", width: `${progress}%`, background: progress === 100 ? "#64ffda" : "#ff5555", borderRadius: 4, transition: "width 0.3s" }} />
-        </div>
-        <div style={{ display: "flex", gap: 16, marginTop: 8, fontSize: 13 }}>
-          <span style={{ color: "#64ffda" }}>✓ ตรง {matched.length}</span>
-          <span style={{ color: "#ff5555" }}>✗ ขาด {missing.length}</span>
-          {extra.length > 0 && <span style={{ color: "#ffa500" }}>⚠ เกิน {extra.length}</span>}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={initData} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 รีเฟรช</button>
+          <button onClick={() => { localStorage.removeItem("staffName"); setStaffName(""); setInitialized(false); }} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#555", borderRadius: 8, padding: "6px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>เปลี่ยนชื่อ</button>
         </div>
       </div>
 
+      {/* Stats bar */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 18 }}>
+        {[
+          { label: "ระบบแจ้ง", value: systemList.length, color: "#8892b0" },
+          { label: "ยิงแล้ว", value: scannedToday.length, color: "#ccd6f6" },
+          { label: "✓ ตรง", value: matched.length, color: "#64ffda" },
+          { label: missing.length > 0 ? `✗ ขาด ${missing.length}` : extra.length > 0 ? `⚠ เกิน ${extra.length}` : "✓ ครบ!", value: missing.length > 0 ? missing.length : extra.length > 0 ? extra.length : "🎉", color: missing.length > 0 ? "#ff5555" : extra.length > 0 ? "#ffa500" : "#64ffda" },
+        ].map((s,i) => (
+          <div key={i} style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: "12px 14px", textAlign: "center" }}>
+            <div style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 700, color: s.color }}>{s.value}</div>
+            <div style={{ fontSize: 11, color: "#555", marginTop: 4 }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Progress */}
+      {systemList.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ height: 6, background: "#0f1117", borderRadius: 3, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${progress}%`, background: progress === 100 ? "#64ffda" : "#ff5555", borderRadius: 3, transition: "width 0.3s" }} />
+          </div>
+          <div style={{ fontSize: 12, color: "#555", marginTop: 4, textAlign: "right" }}>{progress}%</div>
+        </div>
+      )}
+
+      {systemList.length === 0 && (
+        <div style={{ background: "rgba(255,165,0,0.06)", border: "1px solid rgba(255,165,0,0.2)", borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#ffa500" }}>
+          ⚠ แอดมินยังไม่ได้ลงรายการวันนี้ — ยิงได้เลย ระบบจะชนให้อัตโนมัติเมื่อแอดมินลงข้อมูล
+        </div>
+      )}
+
+      {/* Scan input */}
       <input ref={scanRef} value={scanInput} onChange={e => setScanInput(e.target.value)} onKeyDown={handleScan}
         placeholder="📦 ยิงบาร์โค้ดที่นี่..."
-        style={{ width: "100%", background: "#0f1117", border: `2px solid ${lastScan?.status === "match" ? "#64ffda" : lastScan?.status === "duplicate" ? "#ffa500" : lastScan ? "#ff5555" : "#2a2f45"}`, borderRadius: 10, padding: "14px 16px", color: "#e8eaf0", fontSize: 15, outline: "none", fontFamily: "monospace", marginBottom: 14, transition: "border-color 0.3s" }} />
+        style={{ width: "100%", background: "#0f1117", border: `2px solid ${lastScan?.status === "match" ? "#64ffda" : lastScan?.status === "extra" ? "#ffa500" : lastScan?.status === "duplicate" ? "#ffa500" : "#2a2f45"}`, borderRadius: 10, padding: "14px 16px", color: "#e8eaf0", fontSize: 15, outline: "none", fontFamily: "monospace", marginBottom: 14, transition: "border-color 0.3s" }} />
 
+      {/* Last scan result */}
       {lastScan && (
-        <div style={{ marginBottom: 16, padding: "12px 16px", borderRadius: 10, background: lastScan.status === "match" ? "rgba(100,255,218,0.06)" : "rgba(255,85,85,0.06)", border: `1px solid ${lastScan.status === "match" ? "rgba(100,255,218,0.3)" : "rgba(255,85,85,0.3)"}`, display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ marginBottom: 14, padding: "10px 14px", borderRadius: 10, background: lastScan.status === "match" ? "rgba(100,255,218,0.06)" : lastScan.status === "duplicate" ? "rgba(255,165,0,0.06)" : "rgba(255,85,85,0.06)", border: `1px solid ${lastScan.status === "match" ? "rgba(100,255,218,0.3)" : lastScan.status === "duplicate" ? "rgba(255,165,0,0.3)" : "rgba(255,85,85,0.3)"}`, display: "flex", alignItems: "center", gap: 10 }}>
           <span style={{ fontSize: 20 }}>{lastScan.status === "match" ? "✅" : lastScan.status === "duplicate" ? "⚠️" : "❌"}</span>
           <div>
             <div style={{ fontFamily: "monospace", fontWeight: 600, fontSize: 13, color: "#ccd6f6" }}>{lastScan.code}</div>
-            <div style={{ fontSize: 12, color: lastScan.status === "match" ? "#64ffda" : lastScan.status === "duplicate" ? "#ffa500" : "#ff5555", marginTop: 2 }}>
-              {lastScan.status === "match" ? "✓ อยู่ในรายการ" : lastScan.status === "duplicate" ? "⚠ ยิงซ้ำแล้ว" : "✗ ไม่อยู่ในรายการ"}
+            <div style={{ fontSize: 12, color: lastScan.status === "match" ? "#64ffda" : lastScan.status === "duplicate" ? "#ffa500" : "#ff8888", marginTop: 2 }}>
+              {lastScan.status === "match" ? "✓ ตรงกับรายการ" : lastScan.status === "duplicate" ? "⚠ ยิงซ้ำแล้ว" : "⚠ ไม่อยู่ในรายการวันนี้ (บันทึกไว้แล้ว)"}
             </div>
           </div>
         </div>
       )}
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
-        <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: 12, maxHeight: 240, overflowY: "auto" }}>
-          <div style={{ fontSize: 11, color: "#8892b0", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>ยิงแล้ว ({scannedCodes.length})</div>
-          {scannedCodes.length === 0 && <div style={{ color: "#3a3f5c", fontSize: 13 }}>ยังไม่มี</div>}
-          {[...scannedCodes].reverse().map((s, i) => (
-            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid #1e2235" }}>
-              <span style={{ fontFamily: "monospace", fontSize: 11, color: activeSession.tracking_list.includes(s.tracking_code) ? "#64ffda" : "#ffa500" }}>{s.tracking_code}</span>
-              <button onClick={() => handleDeleteScan(s.tracking_code)} title="ลบรายการนี้"
-                style={{ background: "none", border: "none", color: "#3a3f5c", cursor: "pointer", fontSize: 13, padding: "0 2px", lineHeight: 1, fontFamily: "inherit" }}
-                onMouseEnter={e => e.target.style.color = "#ff5555"} onMouseLeave={e => e.target.style.color = "#3a3f5c"}>✕</button>
-            </div>
-          ))}
+      {/* Two columns */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        {/* Scanned */}
+        <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: 12, maxHeight: 280, overflowY: "auto" }}>
+          <div style={{ fontSize: 11, color: "#8892b0", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>ยิงแล้วทั้งหมด ({scannedToday.length})</div>
+          {scannedToday.length === 0 && <div style={{ color: "#3a3f5c", fontSize: 13 }}>ยังไม่มี</div>}
+          {scannedToday.map((s, i) => {
+            const ok = systemList.includes(s.tracking_code);
+            return (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: "1px solid #1e2235" }}>
+                <span style={{ fontFamily: "monospace", fontSize: 11, color: ok ? "#64ffda" : "#ffa500" }}>{s.tracking_code}</span>
+                <button onClick={() => handleDeleteScan(s.tracking_code)} style={{ background: "none", border: "none", color: "#2a2f45", cursor: "pointer", fontSize: 12, fontFamily: "inherit" }} onMouseEnter={e => e.target.style.color="#ff5555"} onMouseLeave={e => e.target.style.color="#2a2f45"}>✕</button>
+              </div>
+            );
+          })}
         </div>
-        <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: 12, maxHeight: 240, overflowY: "auto" }}>
-          <div style={{ fontSize: 11, color: "#8892b0", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>ยังไม่ได้ยิง ({missing.length})</div>
-          {missing.length === 0 && <div style={{ color: "#64ffda", fontSize: 13 }}>ครบแล้ว! 🎉</div>}
+
+        {/* Missing */}
+        <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: 12, maxHeight: 280, overflowY: "auto" }}>
+          <div style={{ fontSize: 11, color: "#8892b0", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
+            {systemList.length > 0 ? `ยังไม่ได้รับ (${missing.length})` : "รายการจากระบบ (รอแอดมิน)"}
+          </div>
+          {systemList.length === 0 && <div style={{ color: "#3a3f5c", fontSize: 12 }}>รอแอดมินลงข้อมูล<br/>กด 🔄 รีเฟรชเพื่ออัปเดต</div>}
+          {missing.length === 0 && systemList.length > 0 && <div style={{ color: "#64ffda", fontSize: 13 }}>ครบแล้ว! 🎉</div>}
           {missing.map((code, i) => (
             <div key={i} style={{ fontFamily: "monospace", fontSize: 11, color: "#ff5555", padding: "4px 0", borderBottom: "1px solid #1e2235" }}>{code}</div>
           ))}
         </div>
       </div>
 
-      <button onClick={() => setShowConfirm(true)} style={{ width: "100%", background: "#1a1d27", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 10, padding: "12px", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
-        ดูสรุปผล / ส่งงาน
-      </button>
-
-      {showConfirm && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(4px)" }} onClick={() => setShowConfirm(false)}>
-          <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 16, padding: 28, width: "100%", maxWidth: 380 }} onClick={e => e.stopPropagation()}>
-            <div style={{ fontSize: 16, fontWeight: 700, color: "#ccd6f6", marginBottom: 20 }}>📋 ยืนยันจำนวนก่อนส่ง</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
-              {[
-                { label: "รายการจาก Flash", value: activeSession.tracking_list.length, color: "#ccd6f6" },
-                { label: "ยิงได้ทั้งหมด", value: scannedCodes.length, color: "#ccd6f6" },
-                { label: "ตรงกับ Flash", value: matched.length, color: matched.length === activeSession.tracking_list.length ? "#64ffda" : "#ff5555" },
-                ...(missing.length > 0 ? [{ label: "⚠ ขาดหาย", value: missing.length, color: "#ff5555" }] : []),
-                ...(extra.length > 0 ? [{ label: "⚠ เกินรายการ", value: extra.length, color: "#ffa500" }] : []),
-              ].map((row, i) => (
-                <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "11px 14px", background: "#0f1117", borderRadius: 8, border: "1px solid #2a2f45" }}>
-                  <span style={{ color: "#8892b0", fontSize: 14 }}>{row.label}</span>
-                  <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 16, color: row.color }}>{row.value} ชิ้น</span>
-                </div>
-              ))}
-            </div>
-            {missing.length > 0 && (
-              <div style={{ background: "rgba(255,85,85,0.06)", border: "1px solid rgba(255,85,85,0.2)", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "#ff8888" }}>
-                ยังขาดอีก {missing.length} รายการ — กด "ยิงต่อ" ถ้าต้องการยิงเพิ่ม
-              </div>
-            )}
-            <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={() => { setShowConfirm(false); alert(`✅ บันทึกแล้ว!\nยิงได้ ${matched.length}/${activeSession.tracking_list.length} รายการ\nขาด ${missing.length} รายการ`); }}
-                style={{ flex: 1, background: "#64ffda", border: "none", color: "#0f1117", borderRadius: 10, padding: "13px", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
-                ✅ ยืนยันส่งงาน
-              </button>
-              <button onClick={() => setShowConfirm(false)} style={{ background: "#1e2235", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 10, padding: "13px 16px", fontSize: 14, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
-                ยิงต่อ
-              </button>
-            </div>
+      {extra.length > 0 && (
+        <div style={{ marginTop: 12, background: "rgba(255,165,0,0.06)", border: "1px solid rgba(255,165,0,0.2)", borderRadius: 10, padding: "10px 14px" }}>
+          <div style={{ fontSize: 12, color: "#ffa500", fontWeight: 600, marginBottom: 6 }}>⚠ ยิงแล้วแต่แอดมินยังไม่ได้ลง ({extra.length} รายการ)</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 10px" }}>
+            {extra.map((s,i) => <span key={i} style={{ fontFamily: "monospace", fontSize: 11, color: "#ffa500" }}>{s.tracking_code}</span>)}
           </div>
         </div>
       )}
     </div>
   );
 }
+
 
 function ReturnCheckerTab() {
   const [subTab, setSubTab] = useState(() => localStorage.getItem("returnSubTab") || "staff");
