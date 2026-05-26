@@ -381,6 +381,65 @@ function ReturnStaffPanel() {
   const [exporting, setExporting] = useState(false);
   const scanRef = useRef(null);
   const listRef = useRef(null);
+  const videoRef = useRef(null);
+  const [cameraMode, setCameraMode] = useState(false);
+  const [cameraError, setCameraError] = useState("");
+  const streamRef = useRef(null);
+  const animRef = useRef(null);
+
+  const loadZXing = () => new Promise((resolve, reject) => {
+    if (window.ZXing) { resolve(window.ZXing); return; }
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/zxing-js/0.20.0/zxing.min.js";
+    s.onload = () => resolve(window.ZXing);
+    s.onerror = () => reject(new Error("โหลด ZXing ไม่สำเร็จ"));
+    document.head.appendChild(s);
+  });
+
+  const codeReaderRef = useRef(null);
+
+  const startCamera = async () => {
+    setCameraError("");
+    try {
+      const ZXing = await loadZXing();
+      const hints = new Map();
+      const formats = [
+        ZXing.BarcodeFormat.CODE_128, ZXing.BarcodeFormat.CODE_39,
+        ZXing.BarcodeFormat.EAN_13,   ZXing.BarcodeFormat.EAN_8,
+        ZXing.BarcodeFormat.QR_CODE,  ZXing.BarcodeFormat.DATA_MATRIX,
+        ZXing.BarcodeFormat.ITF,      ZXing.BarcodeFormat.AZTEC,
+      ];
+      hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, formats);
+      const reader = new ZXing.BrowserMultiFormatReader(hints);
+      codeReaderRef.current = reader;
+      setCameraMode(true);
+      setTimeout(async () => {
+        try {
+          const devices = await ZXing.BrowserMultiFormatReader.listVideoInputDevices();
+          // prefer back camera
+          const backCam = devices.find(d => /back|rear|environment/i.test(d.label)) || devices[devices.length - 1];
+          const deviceId = backCam?.deviceId;
+          reader.decodeFromVideoDevice(deviceId, videoRef.current, (result, err) => {
+            if (!result) return;
+            const code = result.getText().trim().toUpperCase();
+            const allCodes = [...staging.map(s=>s.code), ...submitted.map(s=>s.tracking_code)];
+            if (allCodes.includes(code)) return;
+            const timeStr = new Date().toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+            setStaging(prev => [{ code, time: timeStr }, ...prev]);
+            setLastScan({ code, status: systemList.includes(code) ? "match" : "extra" });
+            playBeep(systemList.includes(code));
+          });
+        } catch (e) { setCameraError("เปิดกล้องไม่สำเร็จ: " + e.message); setCameraMode(false); }
+      }, 100);
+    } catch (e) { setCameraError("โหลดระบบสแกนไม่สำเร็จ: " + e.message); }
+  };
+
+  const stopCamera = () => {
+    if (codeReaderRef.current) { try { codeReaderRef.current.reset(); } catch {} codeReaderRef.current = null; }
+    setCameraMode(false);
+  };
+
+  useEffect(() => { return () => { stopCamera(); }; }, []);
   const today = new Date().toISOString().slice(0,10);
 
   useEffect(() => { if (staffName) loadData(); }, [staffName]);
@@ -656,6 +715,32 @@ function ReturnStaffPanel() {
               )}
             </div>
 
+            {/* Camera scanner */}
+            {cameraMode && (
+              <div style={{ padding: "0 20px 10px" }}>
+                <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", background: "#000", aspectRatio: "16/9" }}>
+                  <video ref={videoRef} style={{ width: "100%", height: "100%", objectFit: "cover" }} playsInline muted />
+                  {/* Scanning guide line */}
+                  <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+                    <div style={{ width: "70%", height: 2, background: "#64ffda", boxShadow: "0 0 10px #64ffda", borderRadius: 2, animation: "scanLine 1.5s ease-in-out infinite alternate" }} />
+                  </div>
+                  <div style={{ position: "absolute", top: 8, right: 8 }}>
+                    <button onClick={stopCamera} style={{ background: "rgba(0,0,0,0.6)", border: "1px solid #fff3", color: "#fff", borderRadius: 6, padding: "4px 10px", fontSize: 12, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>✕ ปิดกล้อง</button>
+                  </div>
+                  <div style={{ position: "absolute", bottom: 8, left: 0, right: 0, textAlign: "center", color: "#fff", fontSize: 12, opacity: 0.7 }}>ส่องบาร์โค้ดให้ตรงกับเส้น</div>
+                </div>
+                {cameraError && <div style={{ color: "#ff5555", fontSize: 12, marginTop: 6 }}>{cameraError}</div>}
+              </div>
+            )}
+            {!cameraMode && (
+              <div style={{ padding: "0 20px 10px", display: "flex", justifyContent: "center" }}>
+                <button onClick={startCamera}
+                  style={{ background: "rgba(100,255,218,0.08)", border: "1px solid rgba(100,255,218,0.25)", color: "#64ffda", borderRadius: 10, padding: "10px 24px", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", display: "flex", alignItems: "center", gap: 8 }}>
+                  📷 สแกนด้วยกล้อง
+                </button>
+              </div>
+            )}
+
             {/* Staged list — newest first, each item on its own row */}
             <div ref={listRef} style={{ flex: 1, overflowY: "auto", padding: "10px 20px" }}>
               {staging.length === 0 && (
@@ -917,6 +1002,7 @@ export default function WarehouseApp() {
         .label { font-size: 12px; color: #8892b0; margin-bottom: 6px; font-weight: 500; }
         .db-dot { width: 8px; height: 8px; background: #64ffda; border-radius: 50%; display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+        @keyframes scanLine { from { transform: translateY(-40px); opacity: 0.6; } to { transform: translateY(40px); opacity: 1; } }
       `}</style>
 
       {/* HEADER */}
