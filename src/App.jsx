@@ -1035,7 +1035,7 @@ export default function WarehouseApp() {
     const qty = parseInt(txForm.quantity);
     const pid = parseInt(txForm.productId);
     const product = products.find(p => p.id === pid);
-    if (txType === "out" && product.quantity < qty) return showToast("สินค้าในคลังไม่เพียงพอ", "error");
+    // อนุญาตให้สต็อกติดลบได้
     setSaving(true);
     try {
       const newQty = txType === "in" ? product.quantity + qty : product.quantity - qty;
@@ -1272,9 +1272,7 @@ export default function WarehouseApp() {
             </div>
             <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
               <input className="inp" style={{ flex: 1, minWidth: 200 }} placeholder="🔍 ค้นหาชื่อหรือ SKU..." value={search} onChange={e => setSearch(e.target.value)} />
-              <select className="inp" style={{ width: "auto" }} value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}>
-                {CATEGORIES.map(c => <option key={c}>{c}</option>)}
-              </select>
+
               <select className="inp" style={{ width: "auto" }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
                 <option>ทั้งหมด</option>
                 <option>ปกติ</option>
@@ -1296,7 +1294,7 @@ export default function WarehouseApp() {
                     <th style={{ width: 60 }}>รูป</th>
                     <SortTh col="sku" label="SKU" />
                     <SortTh col="name" label="ชื่อสินค้า" />
-                    <SortTh col="category" label="หมวดหมู่" />
+
                     <SortTh col="quantity" label="คงเหลือ" />
                     <th>สถานะ</th>
                     <SortTh col="price" label="ราคาทุน" />
@@ -1319,7 +1317,7 @@ export default function WarehouseApp() {
                         </td>
                         <td><span className="mono" style={{ color: "#8892b0", fontSize: 12 }}>{p.sku}</span></td>
                         <td style={{ fontWeight: 500, color: "#ccd6f6" }}>{p.name}</td>
-                        <td><span style={{ background: "#1e2235", borderRadius: 6, padding: "3px 8px", fontSize: 12 }}>{p.category}</span></td>
+
                         <td className="mono" style={{ fontWeight: 700, color: p.quantity < 0 ? "#ff5555" : undefined }}>{p.quantity} <span style={{ color: "#8892b0", fontSize: 12, fontWeight: 400 }}>{p.unit}</span></td>
                         <td><span className={`badge badge-${status}`}>{status === "ok" ? "✓ ปกติ" : status === "low" ? "⚠ ใกล้หมด" : "✗ หมด"}</span></td>
                         <td className="mono" style={{ color: "#c3e88d" }}>฿{p.price.toLocaleString()}</td>
@@ -1401,13 +1399,7 @@ export default function WarehouseApp() {
                 <div className="label">SKU / รหัสสินค้า</div>
                 <input className="inp" value={form.sku || ""} onChange={e => setForm({ ...form, sku: e.target.value })} />
               </div>
-              <div>
-                <div className="label">หมวดหมู่</div>
-                <select className="inp" value={form.category || ""} onChange={e => setForm({ ...form, category: e.target.value })}>
-                  <option value="">เลือกหมวดหมู่</option>
-                  {["กำลังขาย", "-"].map(c => <option key={c}>{c}</option>)}
-                </select>
-              </div>
+
               <div style={{ gridColumn: "1/-1" }}>
                 <div className="label">ชื่อสินค้า</div>
                 <input className="inp" value={form.name || ""} onChange={e => setForm({ ...form, name: e.target.value })} />
