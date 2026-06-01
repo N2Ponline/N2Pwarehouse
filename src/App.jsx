@@ -833,6 +833,7 @@ export default function WarehouseApp() {
   const [tab, setTab] = useState("dashboard");
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("ทั้งหมด");
+  const [statusFilter, setStatusFilter] = useState("ทั้งหมด");
   const [showModal, setShowModal] = useState(null);
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [txType, setTxType] = useState("in");
@@ -870,10 +871,20 @@ export default function WarehouseApp() {
   };
 
   const filteredProducts = (() => {
+    const cutoff15 = new Date(); cutoff15.setDate(cutoff15.getDate() - 15);
+    const recentIds15 = new Set(transactions.filter(tx => new Date(tx.date) >= cutoff15).map(tx => tx.productId));
     let arr = products.filter(p => {
       const matchSearch = p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.toLowerCase().includes(search.toLowerCase());
       const matchCat = categoryFilter === "ทั้งหมด" || p.category === categoryFilter;
-      return matchSearch && matchCat;
+      const matchStatus = (() => {
+        if (statusFilter === "ทั้งหมด") return true;
+        if (statusFilter === "ปกติ") return p.quantity > 0 && !(p.minStock > 0 && p.quantity <= p.minStock);
+        if (statusFilter === "ใกล้หมด") return p.minStock > 0 && p.quantity > 0 && p.quantity <= p.minStock;
+        if (statusFilter === "หมด") return p.quantity <= 0;
+        if (statusFilter === "ไม่เคลื่อนไหว") return p.quantity > 0 && !recentIds15.has(p.id);
+        return true;
+      })();
+      return matchSearch && matchCat && matchStatus;
     });
     if (sortCol) {
       arr = [...arr].sort((a, b) => {
@@ -1264,6 +1275,19 @@ export default function WarehouseApp() {
               <select className="inp" style={{ width: "auto" }} value={categoryFilter} onChange={e => setCategoryFilter(e.target.value)}>
                 {CATEGORIES.map(c => <option key={c}>{c}</option>)}
               </select>
+              <select className="inp" style={{ width: "auto" }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
+                <option>ทั้งหมด</option>
+                <option>ปกติ</option>
+                <option>ใกล้หมด</option>
+                <option>หมด</option>
+                <option>ไม่เคลื่อนไหว</option>
+              </select>
+              {(statusFilter !== "ทั้งหมด" || categoryFilter !== "ทั้งหมด") && (
+                <button className="btn" style={{ background: "rgba(255,85,85,0.08)", color: "#ff5555", border: "1px solid rgba(255,85,85,0.2)", padding: "8px 14px", fontSize: 13 }}
+                  onClick={() => { setStatusFilter("ทั้งหมด"); setCategoryFilter("ทั้งหมด"); }}>
+                  ✕ ล้างตัวกรอง
+                </button>
+              )}
             </div>
             <div className="card" style={{ padding: 0, overflow: "hidden" }}>
               <table>
