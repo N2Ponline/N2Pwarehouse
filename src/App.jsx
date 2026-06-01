@@ -1428,12 +1428,50 @@ export default function WarehouseApp() {
               ))}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              <div>
+              <div style={{ position: "relative" }}>
                 <div className="label">สินค้า</div>
-                <select className="inp" value={txForm.productId} onChange={e => setTxForm({ ...txForm, productId: e.target.value })}>
-                  <option value="">-- เลือกสินค้า --</option>
-                  {products.map(p => <option key={p.id} value={p.id}>{p.name} (คงเหลือ: {p.quantity} {p.unit})</option>)}
-                </select>
+                {(() => {
+                  const selected = products.find(p => String(p.id) === String(txForm.productId));
+                  return (
+                    <div>
+                      <input className="inp" placeholder="พิมพ์ชื่อสินค้าเพื่อค้นหา..."
+                        value={txForm._productSearch !== undefined ? txForm._productSearch : (selected ? selected.name : "")}
+                        onChange={e => setTxForm({ ...txForm, _productSearch: e.target.value, productId: "" })}
+                        onFocus={e => setTxForm(f => ({ ...f, _productSearch: f._productSearch !== undefined ? f._productSearch : (selected ? selected.name : ""), _showDrop: true }))}
+                        onBlur={() => setTimeout(() => setTxForm(f => ({ ...f, _showDrop: false })), 150)}
+                        autoComplete="off"
+                      />
+                      {txForm._showDrop && (() => {
+                        const q = (txForm._productSearch || "").toLowerCase();
+                        const filtered = products.filter(p =>
+                          p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q)
+                        ).slice(0, 30);
+                        return filtered.length > 0 ? (
+                          <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 8, maxHeight: 240, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
+                            {filtered.map(p => (
+                              <div key={p.id}
+                                onMouseDown={() => setTxForm(f => ({ ...f, productId: String(p.id), _productSearch: p.name, _showDrop: false }))}
+                                style={{ padding: "10px 14px", cursor: "pointer", borderBottom: "1px solid #1e2235", fontSize: 14 }}
+                                onMouseEnter={e => e.currentTarget.style.background = "rgba(100,255,218,0.08)"}
+                                onMouseLeave={e => e.currentTarget.style.background = "transparent"}
+                              >
+                                <span style={{ color: "#ccd6f6", fontWeight: 500 }}>{p.name}</span>
+                                <span style={{ color: "#555", fontSize: 12, marginLeft: 8 }}>{p.sku}</span>
+                                <span style={{ float: "right", color: p.quantity <= 0 ? "#ff5555" : "#64ffda", fontSize: 12, fontFamily: "monospace" }}>
+                                  {p.quantity} {p.unit}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : q ? (
+                          <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 8, padding: "12px 14px", color: "#555", fontSize: 13 }}>
+                            ไม่พบสินค้า "{txForm._productSearch}"
+                          </div>
+                        ) : null;
+                      })()}
+                    </div>
+                  );
+                })()}
               </div>
               <div>
                 <div className="label">จำนวน</div>
