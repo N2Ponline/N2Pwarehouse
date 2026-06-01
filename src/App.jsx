@@ -842,6 +842,17 @@ export default function WarehouseApp() {
   const [toast, setToast] = useState(null);
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
+  const [pinnedIds, setPinnedIds] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("pinnedProducts") || "[]"); } catch { return []; }
+  });
+
+  const togglePin = (id) => {
+    setPinnedIds(prev => {
+      const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
+      localStorage.setItem("pinnedProducts", JSON.stringify(next));
+      return next;
+    });
+  };
   const [saving, setSaving] = useState(false);
 
   const showToast = (msg, type = "success") => {
@@ -1291,6 +1302,7 @@ export default function WarehouseApp() {
               <table>
                 <thead>
                   <tr>
+                    <th style={{ width: 36 }}></th>
                     <th style={{ width: 60 }}>รูป</th>
                     <SortTh col="sku" label="SKU" />
                     <SortTh col="name" label="ชื่อสินค้า" />
@@ -1305,7 +1317,15 @@ export default function WarehouseApp() {
                   {filteredProducts.map(p => {
                     const status = p.quantity <= 0 ? "out" : (p.minStock > 0 && p.quantity <= p.minStock) ? "low" : "ok";
                     return (
-                      <tr key={p.id}>
+                      <tr key={p.id} style={{ background: pinnedIds.includes(p.id) ? "rgba(100,255,218,0.04)" : undefined }}>
+                        <td style={{ textAlign: "center" }}>
+                          <button onClick={() => togglePin(p.id)} title={pinnedIds.includes(p.id) ? "ถอนหมุด" : "ปักหมุด"}
+                            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 15, padding: "2px", opacity: pinnedIds.includes(p.id) ? 1 : 0.2, transition: "opacity 0.15s", lineHeight: 1 }}
+                            onMouseEnter={e => e.currentTarget.style.opacity = "1"}
+                            onMouseLeave={e => e.currentTarget.style.opacity = pinnedIds.includes(p.id) ? "1" : "0.2"}>
+                            📌
+                          </button>
+                        </td>
                         <td>
                           <label style={{ cursor: "pointer", display: "block" }}>
                             <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => e.target.files[0] && handleImageUpload(p, e.target.files[0])} />
