@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 
 const SUPABASE_URL = "https://slwbzbnomsugffyzjyuv.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsd2J6Ym5vbXN1Z2ZmeXpqeXV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MjIxMDcsImV4cCI6MjA5NTI5ODEwN30.qG3CPT6J_evddK8qmpF7P3bVswn_Du43MEHo33bUnqA";
@@ -882,12 +882,11 @@ export default function WarehouseApp() {
     else { setSortCol(col); setSortDir("asc"); }
   };
 
-  const filteredProducts = (() => {
+  const filteredProducts = useMemo(() => {
     const cutoff15 = new Date(); cutoff15.setDate(cutoff15.getDate() - 15);
     const recentIds15 = new Set(transactions.filter(tx => new Date(tx.date) >= cutoff15).map(tx => tx.productId));
     let arr = products.filter(p => {
       const matchSearch = p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.toLowerCase().includes(search.toLowerCase());
-      const matchCat = categoryFilter === "ทั้งหมด" || p.category === categoryFilter;
       const matchStatus = (() => {
         if (statusFilter === "ทั้งหมด") return true;
         if (statusFilter === "ปกติ") return p.quantity > 0 && !(p.minStock > 0 && p.quantity <= p.minStock);
@@ -896,7 +895,7 @@ export default function WarehouseApp() {
         if (statusFilter === "ไม่เคลื่อนไหว") return p.quantity > 0 && !recentIds15.has(p.id);
         return true;
       })();
-      return matchSearch && matchCat && matchStatus;
+      return matchSearch && matchStatus;
     });
     if (sortCol) {
       arr = [...arr].sort((a, b) => {
@@ -905,8 +904,10 @@ export default function WarehouseApp() {
         return sortDir === "asc" ? r : -r;
       });
     }
-    return arr;
-  })();
+    const pinned = arr.filter(p => pinnedIds.includes(String(p.id)));
+    const rest   = arr.filter(p => !pinnedIds.includes(String(p.id)));
+    return [...pinned, ...rest];
+  }, [products, search, statusFilter, sortCol, sortDir, pinnedIds, transactions]);
 
   const lowStock = products.filter(p => p.minStock > 0 && p.quantity <= p.minStock);
   const totalValue = products.reduce((s, p) => s + Math.max(0, p.quantity) * p.price, 0);
