@@ -889,6 +889,95 @@ export default function WarehouseApp() {
   const totalValue = products.reduce((s, p) => s + Math.max(0, p.quantity) * p.price, 0);
   const totalItems = products.reduce((s, p) => s + p.quantity, 0);
 
+  // สินค้าไม่เคลื่อนไหว 15 วัน — หาจาก transactions
+  const dormantProducts = (() => {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - 15);
+    const recentProductIds = new Set(
+      transactions
+        .filter(tx => new Date(tx.date) >= cutoff)
+        .map(tx => tx.productId)
+    );
+    // สินค้าที่มีสต็อก > 0 และไม่มี transaction ใน 15 วัน
+    return products.filter(p => p.quantity > 0 && !recentProductIds.has(p.id));
+  })();
+
+  // Export สินค้าคงคลัง Excel
+  const [exportingInventory, setExportingInventory] = useState(false);
+  const handleExportInventory = async () => {
+    setExportingInventory(true);
+    try {
+      const XLSX = await loadXLSX();
+      const HEADER = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "1A3C5E" } } };
+      const GREEN  = { fill: { fgColor: { rgb: "C6EFCE" } } };
+      const RED    = { fill: { fgColor: { rgb: "FFCCCC" } } };
+      const ORANGE = { fill: { fgColor: { rgb: "FFE0B2" } } };
+      const GRAY   = { fill: { fgColor: { rgb: "EEEEEE" } } };
+      const wb = XLSX.utils.book_new();
+      const dateStr = new Date().toLocaleDateString("th-TH", { dateStyle: "long" });
+
+      // Sheet 1: สินค้าทั้งหมด
+      const ws1 = XLSX.utils.aoa_to_sheet([
+        [{ v: "รายการสินค้าคงคลัง N2P", s: { font: { bold: true, sz: 14 } } },"","","","","",""],
+        ["วันที่เช็คสต็อค", dateStr,"","","","",""],
+        ["","","","","","",""],
+        [
+          { v: "SKU", s: HEADER }, { v: "ชื่อสินค้า", s: HEADER }, { v: "หมวดหมู่", s: HEADER },
+          { v: "คงเหลือ", s: HEADER }, { v: "หน่วย", s: HEADER },
+          { v: "ราคาทุน (฿)", s: HEADER }, { v: "มูลค่ารวม (฿)", s: HEADER },
+          { v: "สถานะ", s: HEADER },
+        ],
+        ...products.map(p => {
+          const status = p.quantity <= 0 ? "หมดสต็อก" : (p.minStock > 0 && p.quantity <= p.minStock) ? "ใกล้หมด" : "ปกติ";
+          const style = p.quantity <= 0 ? RED : (p.minStock > 0 && p.quantity <= p.minStock) ? ORANGE : GREEN;
+          return [
+            { v: p.sku }, { v: p.name }, { v: p.category },
+            { v: p.quantity, s: style }, { v: p.unit },
+            { v: p.price }, { v: Math.max(0, p.quantity) * p.price },
+            { v: status, s: style },
+          ];
+        }),
+        ["","","","","","",""],
+        [{ v: "รวมมูลค่าทั้งหมด", s: { font: { bold: true } } },"","",{ v: totalItems },"",
+         "",{ v: totalValue, s: { font: { bold: true } } },""],
+      ]);
+      ws1["!cols"] = [{wch:14},{wch:32},{wch:14},{wch:10},{wch:8},{wch:14},{wch:16},{wch:12}];
+      XLSX.utils.book_append_sheet(wb, ws1, "สินค้าทั้งหมด");
+
+      // Sheet 2: สินค้าใกล้หมด/หมด
+      const needRestock = products.filter(p => p.minStock > 0 && p.quantity <= p.minStock);
+      const ws2 = XLSX.utils.aoa_to_sheet([
+        [{ v: "SKU", s: HEADER }, { v: "ชื่อสินค้า", s: HEADER }, { v: "คงเหลือ", s: HEADER },
+         { v: "สต็อกขั้นต่ำ", s: HEADER }, { v: "ขาดอีก", s: HEADER }, { v: "หน่วย", s: HEADER }],
+        ...needRestock.map(p => [
+          p.sku, p.name,
+          { v: p.quantity, s: p.quantity <= 0 ? RED : ORANGE },
+          p.minStock,
+          { v: Math.max(0, p.minStock - p.quantity), s: RED },
+          p.unit,
+        ]),
+      ]);
+      ws2["!cols"] = [{wch:14},{wch:32},{wch:10},{wch:14},{wch:10},{wch:8}];
+      XLSX.utils.book_append_sheet(wb, ws2, "ต้องสั่งเพิ่ม");
+
+      // Sheet 3: ไม่เคลื่อนไหว 15 วัน
+      const ws3 = XLSX.utils.aoa_to_sheet([
+        [{ v: "SKU", s: HEADER }, { v: "ชื่อสินค้า", s: HEADER }, { v: "คงเหลือ", s: HEADER },
+         { v: "หน่วย", s: HEADER }, { v: "ราคาทุน", s: HEADER }, { v: "มูลค่า", s: HEADER }],
+        ...dormantProducts.map(p => [
+          { v: p.sku, s: GRAY }, p.name,
+          { v: p.quantity }, p.unit, { v: p.price },
+          { v: p.quantity * p.price },
+        ]),
+      ]);
+      ws3["!cols"] = [{wch:14},{wch:32},{wch:10},{wch:8},{wch:12},{wch:14}];
+      XLSX.utils.book_append_sheet(wb, ws3, "ไม่เคลื่อนไหว 15 วัน");
+
+      XLSX.writeFile(wb, `stock_check_${new Date().toISOString().slice(0,10)}.xlsx`);
+    } catch (e) { alert("Export ไม่สำเร็จ: " + e.message); }
+    setExportingInventory(false);
+  };
+
   const SortTh = ({ col, label }) => {
     const active = sortCol === col;
     return (
@@ -1064,6 +1153,7 @@ export default function WarehouseApp() {
                 { label: "รายการสินค้า", value: `${products.length} รายการ`, icon: "🗂️", color: "#82aaff" },
                 { label: "จำนวนชิ้นทั้งหมด", value: totalItems.toLocaleString("th-TH"), icon: "📦", color: "#c3e88d" },
                 { label: "สินค้าใกล้หมด", value: `${lowStock.length} รายการ`, icon: "⚠️", color: "#ffa500" },
+                { label: "ไม่เคลื่อนไหว 15 วัน", value: `${dormantProducts.length} รายการ`, icon: "😴", color: "#82aaff" },
               ].map((s, i) => (
                 <div key={i} className="stat-card">
                   <div style={{ fontSize: 28, marginBottom: 12 }}>{s.icon}</div>
@@ -1097,6 +1187,38 @@ export default function WarehouseApp() {
                 </div>
               </div>
             )}
+            {dormantProducts.length > 0 && (
+              <div className="card" style={{ marginBottom: 24, border: "1px solid rgba(130,130,180,0.3)" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontSize: 20 }}>😴</span>
+                    <h2 style={{ fontSize: 17, fontWeight: 700, color: "#82aaff" }}>สินค้าไม่เคลื่อนไหว 15 วัน ({dormantProducts.length} รายการ)</h2>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#8892b0" }}>มูลค่ารวม ฿{dormantProducts.reduce((s,p)=>s+p.quantity*p.price,0).toLocaleString("th-TH")}</div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {dormantProducts.slice(0, 5).map(p => (
+                    <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(130,130,180,0.05)", borderRadius: 10, padding: "10px 14px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        {p.imageUrl && <img src={p.imageUrl} style={{ width: 32, height: 32, borderRadius: 6, objectFit: "cover" }} />}
+                        <div>
+                          <div style={{ fontWeight: 600, color: "#ccd6f6", fontSize: 14 }}>{p.name}</div>
+                          <div style={{ fontSize: 12, color: "#8892b0" }}>{p.sku}</div>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontFamily: "monospace", fontWeight: 700, color: "#82aaff" }}>{p.quantity} {p.unit}</div>
+                        <div style={{ fontSize: 12, color: "#8892b0" }}>฿{(p.quantity*p.price).toLocaleString()}</div>
+                      </div>
+                    </div>
+                  ))}
+                  {dormantProducts.length > 5 && (
+                    <div style={{ textAlign: "center", fontSize: 13, color: "#8892b0", padding: "6px 0" }}>และอีก {dormantProducts.length - 5} รายการ</div>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div className="card">
               <h2 style={{ fontSize: 17, fontWeight: 700, color: "#ccd6f6", marginBottom: 16 }}>รายการล่าสุด</h2>
               {transactions.length === 0 && <div style={{ color: "#8892b0", textAlign: "center", padding: 24 }}>ยังไม่มีรายการเคลื่อนไหว</div>}
@@ -1130,6 +1252,10 @@ export default function WarehouseApp() {
               <div style={{ display: "flex", gap: 10 }}>
                 <button className="btn btn-secondary" onClick={() => { setTxType("in"); setShowModal("transaction"); }}>▲ รับสินค้า</button>
                 <button className="btn btn-secondary" style={{ color: "#ff5555", borderColor: "rgba(255,85,85,0.3)", background: "rgba(255,85,85,0.05)" }} onClick={() => { setTxType("out"); setShowModal("transaction"); }}>▼ เบิกสินค้า</button>
+                <button className="btn btn-secondary" onClick={handleExportInventory} disabled={exportingInventory}
+                  style={{ color: "#64ffda", borderColor: "rgba(100,255,218,0.3)", background: "rgba(100,255,218,0.05)" }}>
+                  {exportingInventory ? "⏳..." : "📥 Export Excel"}
+                </button>
                 <button className="btn btn-primary" onClick={() => { setForm({}); setShowModal("add-product"); }}>+ เพิ่มสินค้า</button>
               </div>
             </div>
