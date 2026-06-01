@@ -847,8 +847,9 @@ export default function WarehouseApp() {
   });
 
   const togglePin = (id) => {
+    const sid = String(id);
     setPinnedIds(prev => {
-      const next = prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id];
+      const next = prev.includes(sid) ? prev.filter(x => x !== sid) : [...prev, sid];
       localStorage.setItem("pinnedProducts", JSON.stringify(next));
       return next;
     });
@@ -1317,12 +1318,12 @@ export default function WarehouseApp() {
                   {filteredProducts.map(p => {
                     const status = p.quantity <= 0 ? "out" : (p.minStock > 0 && p.quantity <= p.minStock) ? "low" : "ok";
                     return (
-                      <tr key={p.id} style={{ background: pinnedIds.includes(p.id) ? "rgba(100,255,218,0.04)" : undefined }}>
+                      <tr key={p.id} style={{ background: pinnedIds.includes(String(p.id)) ? "rgba(100,255,218,0.04)" : undefined }}>
                         <td style={{ textAlign: "center" }}>
                           <button onClick={() => togglePin(p.id)} title={pinnedIds.includes(p.id) ? "ถอนหมุด" : "ปักหมุด"}
-                            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 15, padding: "2px", opacity: pinnedIds.includes(p.id) ? 1 : 0.2, transition: "opacity 0.15s", lineHeight: 1 }}
+                            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 15, padding: "2px", opacity: pinnedIds.includes(String(p.id)) ? 1 : 0.2, transition: "opacity 0.15s", lineHeight: 1 }}
                             onMouseEnter={e => e.currentTarget.style.opacity = "1"}
-                            onMouseLeave={e => e.currentTarget.style.opacity = pinnedIds.includes(p.id) ? "1" : "0.2"}>
+                            onMouseLeave={e => e.currentTarget.style.opacity = pinnedIds.includes(String(p.id)) ? "1" : "0.2"}>
                             📌
                           </button>
                         </td>
