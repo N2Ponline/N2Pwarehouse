@@ -250,14 +250,14 @@ function ReturnAdminPanel() {
       </div>
       <textarea value={flashText} onChange={e => setFlashText(e.target.value)}
         placeholder="วางข้อความจาก Flash Express ที่นี่...&#10;รองรับทุก format เช่น TH27218RHRH38A 15:02/TH27218RJD230A 15:11/..."
-        style={{ width: "100%", height: 180, background: "#f0f2ff", border: "1px solid #2a2f45", borderRadius: 10, padding: 16, color: "#1a1040", fontSize: 13, resize: "vertical", outline: "none", lineHeight: 1.8, fontFamily: "'Sarabun', sans-serif" }} />
+        style={{ width: "100%", height: 180, background: "rgba(255,255,255,0.82)", border: "1.5px solid rgba(124,58,237,0.16)", borderRadius: 14, padding: 16, color: "#11143d", fontSize: 13, resize: "vertical", outline: "none", lineHeight: 1.8, fontFamily: "'Sarabun', sans-serif", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.8), 0 10px 26px rgba(79,70,229,0.06)" }} />
       {flashText.trim() && (
         <div style={{ marginTop: 8, fontSize: 13, color: "#6b7ab5" }}>
           พบเลข tracking <span style={{ color: "#7c3aed", fontWeight: 700 }}>{preview.length}</span> รายการ
         </div>
       )}
       <button onClick={handleCreate} disabled={!flashText.trim() || loading}
-        style={{ marginTop: 14, background: flashText.trim() && !loading ? "#7c3aed" : "#ffffff", color: flashText.trim() && !loading ? "#f0f2ff" : "#aab0cc", border: "none", borderRadius: 10, padding: "12px 28px", fontSize: 15, fontWeight: 700, cursor: flashText.trim() ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
+        style={{ marginTop: 14, background: flashText.trim() && !loading ? "linear-gradient(135deg,#7c3aed,#3b82f6)" : "#ffffff", color: flashText.trim() && !loading ? "#ffffff" : "#aab0cc", border: "1px solid rgba(124,58,237,0.14)", borderRadius: 12, padding: "12px 28px", fontSize: 15, fontWeight: 700, cursor: flashText.trim() ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif", boxShadow: flashText.trim() && !loading ? "0 14px 28px rgba(79,70,229,0.22)" : "none" }}>
         {loading ? "กำลังสร้าง..." : "✅ สร้างเซสชัน"}
       </button>
 
@@ -268,8 +268,8 @@ function ReturnAdminPanel() {
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input type="date" value={dateFilter} onChange={e => setDateFilter(e.target.value)}
-              style={{ background: "#f0f2ff", border: "1px solid #2a2f45", borderRadius: 8, padding: "6px 12px", color: "#1a1040", fontSize: 13, outline: "none", fontFamily: "'Sarabun', sans-serif", cursor: "pointer" }} />
-            {dateFilter && <button onClick={() => setDateFilter("")} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#6b7ab5", borderRadius: 8, padding: "6px 12px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>✕ ล้าง</button>}
+              style={{ background: "rgba(255,255,255,0.86)", border: "1px solid rgba(124,58,237,0.16)", borderRadius: 10, padding: "7px 12px", color: "#11143d", fontSize: 13, outline: "none", fontFamily: "'Sarabun', sans-serif", cursor: "pointer", boxShadow: "0 6px 16px rgba(79,70,229,0.06)" }} />
+            {dateFilter && <button onClick={() => setDateFilter("")} style={{ background: "rgba(255,255,255,0.76)", border: "1px solid rgba(124,58,237,0.16)", color: "#6b7ab5", borderRadius: 10, padding: "7px 12px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>✕ ล้าง</button>}
           </div>
         </div>
         {loadingSessions && <div style={{ color: "#9ba3c7", fontSize: 14 }}>กำลังโหลด...</div>}
@@ -280,7 +280,7 @@ function ReturnAdminPanel() {
           const pct = total > 0 ? Math.round((scannedCount / total) * 100) : 0;
           const isExpanded = expandedId === s.id;
           return (
-            <div key={s.id} style={{ background: "#ffffff", border: "1px solid #2a2f45", borderRadius: 10, marginBottom: 10, overflow: "hidden" }}>
+            <div key={s.id} style={{ background: "rgba(255,255,255,0.86)", border: "1px solid rgba(124,58,237,0.14)", borderRadius: 14, marginBottom: 12, overflow: "hidden", boxShadow: "0 10px 26px rgba(79,70,229,0.08)", backdropFilter: "blur(12px)" }}>
               <div style={{ padding: "14px 16px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                   <div style={{ cursor: "pointer", flex: 1 }} onClick={() => { const next = isExpanded ? null : s.id; setExpandedId(next); if (next) loadScans(next); }}>
@@ -296,12 +296,12 @@ function ReturnAdminPanel() {
                     <span style={{ color: "#9ba3c7", cursor: "pointer", fontSize: 14 }} onClick={() => { const next = isExpanded ? null : s.id; setExpandedId(next); if (next) loadScans(next); }}>{isExpanded ? "▲" : "▼"}</span>
                   </div>
                 </div>
-                <div style={{ height: 4, background: "#f0f2ff", borderRadius: 2 }}>
-                  <div style={{ height: "100%", width: `${pct}%`, background: pct === 100 ? "#7c3aed" : "#ff5555", borderRadius: 2 }} />
+                <div style={{ height: 7, background: "rgba(124,58,237,0.10)", borderRadius: 999 }}>
+                  <div style={{ height: "100%", width: `${pct}%`, background: pct === 100 ? "linear-gradient(90deg,#22c55e,#4fd1c5)" : "linear-gradient(90deg,#7c3aed,#3b82f6)", borderRadius: 999 }} />
                 </div>
               </div>
               {isExpanded && (
-                <div style={{ borderTop: "1px solid #2a2f45", background: "#ffffff" }}>
+                <div style={{ borderTop: "1px solid rgba(124,58,237,0.12)", background: "rgba(248,250,255,0.62)" }}>
                   {/* Sub-tabs */}
                   {(() => {
                     const scans = scansCache[s.id] || [];
@@ -310,7 +310,7 @@ function ReturnAdminPanel() {
                       <div>
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0 }}>
                           {/* Left: ระบบแจ้ง */}
-                          <div style={{ padding: "12px 14px", borderRight: "1px solid #2a2f45", maxHeight: 260, overflowY: "auto" }}>
+                          <div style={{ padding: "12px 14px", borderRight: "1px solid rgba(124,58,237,0.12)", maxHeight: 260, overflowY: "auto" }}>
                             <div style={{ fontSize: 11, color: "#6b7ab5", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
                               📋 แจ้งจากระบบ ({total})
                             </div>
@@ -318,7 +318,7 @@ function ReturnAdminPanel() {
                               const ok = scannedSet.has(code);
                               const scan = scans.find(x => x.tracking_code === code);
                               return (
-                                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: "1px solid #1a1d27" }}>
+                                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: "1px solid rgba(124,58,237,0.08)" }}>
                                   <span style={{ fontFamily: "monospace", fontSize: 11, color: ok ? "#7c3aed" : "#ff5555" }}>{code}</span>
                                   <span style={{ fontSize: 11, color: ok ? "#7c3aed" : "#9ba3c7" }}>
                                     {ok ? `✓ ${scan?.scanned_by || ""}` : "รอรับ"}
@@ -337,7 +337,7 @@ function ReturnAdminPanel() {
                             {scans.map((sc, i) => {
                               const inList = (s.tracking_list || []).includes(sc.tracking_code);
                               return (
-                                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: "1px solid #1a1d27" }}>
+                                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: "1px solid rgba(124,58,237,0.08)" }}>
                                   <span style={{ fontFamily: "monospace", fontSize: 11, color: inList ? "#7c3aed" : "#ffa500" }}>{sc.tracking_code}</span>
                                   <div style={{ textAlign: "right" }}>
                                     <div style={{ fontSize: 11, color: "#1a1040" }}>{sc.scanned_by || "-"}</div>
@@ -357,7 +357,7 @@ function ReturnAdminPanel() {
           );
         })}
         <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-          <button onClick={fetchSessions} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#6b7ab5", borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 โหลดใหม่</button>
+          <button onClick={fetchSessions} style={{ background: "rgba(255,255,255,0.76)", border: "1px solid rgba(124,58,237,0.16)", color: "#6b7ab5", borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 โหลดใหม่</button>
           <button onClick={handleExport} disabled={exporting || sessions.length === 0}
             style={{ background: sessions.length > 0 && !exporting ? "rgba(124,58,237,0.1)" : "#ffffff", border: `1px solid ${sessions.length > 0 ? "rgba(124,58,237,0.3)" : "#d4d8f0"}`, color: sessions.length > 0 && !exporting ? "#7c3aed" : "#aab0cc", borderRadius: 8, padding: "8px 20px", fontSize: 13, fontWeight: 600, cursor: sessions.length > 0 ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
             {exporting ? "⏳ กำลัง Export..." : "📊 Export รายงาน Excel (ทุกเซสชัน)"}
@@ -627,7 +627,7 @@ function ReturnStaffPanel() {
       <h2 style={{ fontSize: 18, fontWeight: 700, color: "#1a1040", marginBottom: 8 }}>ระบุชื่อพนักงานก่อน</h2>
       <p style={{ color: "#6b7ab5", fontSize: 14, marginBottom: 24 }}>ใช้บันทึกว่าใครยิงบาร์โค้ด</p>
       <input placeholder="ชื่อพนักงาน" autoFocus
-        style={{ background: "#f0f2ff", border: "1px solid #2a2f45", borderRadius: 8, padding: "10px 16px", color: "#1a1040", fontSize: 15, outline: "none", fontFamily: "'Sarabun', sans-serif", width: 240, textAlign: "center" }}
+        style={{ background: "rgba(248,250,255,0.86)", border: "1px solid rgba(124,58,237,0.14)", borderRadius: 8, padding: "10px 16px", color: "#1a1040", fontSize: 15, outline: "none", fontFamily: "'Sarabun', sans-serif", width: 240, textAlign: "center" }}
         onKeyDown={e => { if (e.key === "Enter" && e.target.value.trim()) { const n = e.target.value.trim(); setStaffName(n); localStorage.setItem("staffName", n); } }} />
       <div style={{ color: "#9ba3c7", fontSize: 13, marginTop: 10 }}>กด Enter เพื่อยืนยัน</div>
     </div>
@@ -650,8 +650,8 @@ function ReturnStaffPanel() {
             style={{ background: "rgba(124,58,237,0.1)", border: "1px solid rgba(124,58,237,0.3)", color: "#7c3aed", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
             {exporting ? "⏳..." : "📥 Export Excel"}
           </button>
-          <button onClick={loadData} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#6b7ab5", borderRadius: 8, padding: "7px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 รีเฟรช</button>
-          <button onClick={() => { localStorage.removeItem("staffName"); setStaffName(""); }} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#9ba3c7", borderRadius: 8, padding: "7px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>เปลี่ยนชื่อ</button>
+          <button onClick={loadData} style={{ background: "rgba(255,255,255,0.76)", border: "1px solid rgba(124,58,237,0.16)", color: "#6b7ab5", borderRadius: 8, padding: "7px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 รีเฟรช</button>
+          <button onClick={() => { localStorage.removeItem("staffName"); setStaffName(""); }} style={{ background: "transparent", border: "1px solid rgba(124,58,237,0.14)", color: "#9ba3c7", borderRadius: 8, padding: "7px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>เปลี่ยนชื่อ</button>
         </div>
       </div>
 
@@ -665,7 +665,7 @@ function ReturnStaffPanel() {
             value: missing.length > 0 ? missing.length : extra.length > 0 ? extra.length : "🎉",
             color: missing.length > 0 ? "#ff5555" : extra.length > 0 ? "#ffa500" : "#7c3aed" },
         ].map((s, i) => (
-          <div key={i} style={{ background: "#ffffff", border: "1px solid #2a2f45", borderRadius: 10, padding: "12px 14px", textAlign: "center" }}>
+          <div key={i} style={{ background: "rgba(255,255,255,0.86)", border: "1px solid rgba(124,58,237,0.14)", borderRadius: 14, padding: "12px 14px", textAlign: "center" }}>
             <div style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 700, color: s.color }}>{s.value}</div>
             <div style={{ fontSize: 11, color: "#9ba3c7", marginTop: 4 }}>{s.label}</div>
           </div>
@@ -675,7 +675,7 @@ function ReturnStaffPanel() {
       {/* Progress */}
       {systemList.length > 0 && (
         <div style={{ marginBottom: 14 }}>
-          <div style={{ height: 6, background: "#f0f2ff", borderRadius: 3, overflow: "hidden" }}>
+          <div style={{ height: 6, background: "rgba(248,250,255,0.86)", borderRadius: 3, overflow: "hidden" }}>
             <div style={{ height: "100%", width: `${progress}%`, background: progress === 100 ? "#7c3aed" : "#ff5555", borderRadius: 3, transition: "width 0.3s" }} />
           </div>
           <div style={{ fontSize: 12, color: "#9ba3c7", marginTop: 3, textAlign: "right" }}>{progress}%</div>
@@ -685,14 +685,14 @@ function ReturnStaffPanel() {
       {/* Start button */}
       <div style={{ textAlign: "center", marginBottom: 16 }}>
         <button onClick={() => { setMode("scanning"); setStaging([]); setLastScan(null); }}
-          style={{ background: "#7c3aed", color: "#f0f2ff", border: "none", borderRadius: 10, padding: "13px 36px", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+          style={{ background: "linear-gradient(135deg,#7c3aed,#3b82f6)", color: "#fff", border: "none", borderRadius: 10, padding: "13px 36px", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
           📦 เริ่มยิงบาร์โค้ด
         </button>
       </div>
 
       {/* Submitted list (newest first) */}
       {submitted.length > 0 && (
-        <div style={{ background: "#ffffff", border: "1px solid #2a2f45", borderRadius: 10, padding: 12, maxHeight: 220, overflowY: "auto" }}>
+        <div style={{ background: "rgba(255,255,255,0.86)", border: "1px solid rgba(124,58,237,0.14)", borderRadius: 14, padding: 12, maxHeight: 220, overflowY: "auto" }}>
           <div style={{ fontSize: 11, color: "#6b7ab5", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
             ยิงและบันทึกแล้ว ({submitted.length})
           </div>
@@ -712,10 +712,10 @@ function ReturnStaffPanel() {
       {/* SCANNING POPUP */}
       {mode === "scanning" && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(79,70,229,0.2)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-          <div style={{ background: "#ffffff", border: "1px solid #2a2f45", borderRadius: 18, width: "100%", maxWidth: 520, maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+          <div style={{ background: "#ffffff", border: "1px solid rgba(124,58,237,0.14)", borderRadius: 18, width: "100%", maxWidth: 520, maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column" }}>
 
             {/* Popup header */}
-            <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid #2a2f45" }}>
+            <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid rgba(124,58,237,0.14)" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div>
                   <div style={{ fontWeight: 700, color: "#1a1040", fontSize: 17 }}>📦 ยิงบาร์โค้ด</div>
@@ -729,7 +729,7 @@ function ReturnStaffPanel() {
               {/* Scan input - auto focus, auto newline on scan */}
               <input ref={scanRef} value={scanInput} onChange={e => setScanInput(e.target.value)} onKeyDown={handleScan}
                 placeholder="ยิงบาร์โค้ดที่นี่... (ขึ้นบรรทัดใหม่ทุกครั้งที่ยิง)"
-                style={{ width: "100%", background: "#f0f2ff", border: `2px solid ${lastScan?.status === "match" ? "#7c3aed" : lastScan?.status === "duplicate" ? "#ffa500" : lastScan?.status === "extra" ? "#ffa500" : "#d4d8f0"}`, borderRadius: 10, padding: "12px 14px", color: "#1a1040", fontSize: 14, outline: "none", fontFamily: "monospace", transition: "border-color 0.2s" }} />
+                style={{ width: "100%", background: "rgba(248,250,255,0.86)", border: `2px solid ${lastScan?.status === "match" ? "#7c3aed" : lastScan?.status === "duplicate" ? "#ffa500" : lastScan?.status === "extra" ? "#ffa500" : "#d4d8f0"}`, borderRadius: 10, padding: "12px 14px", color: "#1a1040", fontSize: 14, outline: "none", fontFamily: "monospace", transition: "border-color 0.2s" }} />
 
               {/* Last scan feedback */}
               {lastScan && (
@@ -791,13 +791,13 @@ function ReturnStaffPanel() {
             </div>
 
             {/* Popup footer */}
-            <div style={{ padding: "14px 20px", borderTop: "1px solid #2a2f45", display: "flex", gap: 10 }}>
+            <div style={{ padding: "14px 20px", borderTop: "1px solid rgba(124,58,237,0.14)", display: "flex", gap: 10 }}>
               <button onClick={handleConfirm} disabled={staging.length === 0 || saving}
-                style={{ flex: 1, background: staging.length > 0 && !saving ? "#7c3aed" : "#f0f2ff", color: staging.length > 0 && !saving ? "#f0f2ff" : "#aab0cc", border: "none", borderRadius: 10, padding: "13px", fontSize: 15, fontWeight: 700, cursor: staging.length > 0 ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
+                style={{ flex: 1, background: staging.length > 0 && !saving ? "#7c3aed" : "rgba(248,250,255,0.86)", color: staging.length > 0 && !saving ? "rgba(248,250,255,0.86)" : "#aab0cc", border: "none", borderRadius: 10, padding: "13px", fontSize: 15, fontWeight: 700, cursor: staging.length > 0 ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
                 {saving ? "⏳ กำลังบันทึก..." : `✅ ยืนยัน ${staging.length} รายการ`}
               </button>
               <button onClick={handleCancel}
-                style={{ background: "#f0f2ff", border: "1px solid #2a2f45", color: "#6b7ab5", borderRadius: 10, padding: "13px 18px", fontSize: 14, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+                style={{ background: "rgba(248,250,255,0.86)", border: "1px solid rgba(124,58,237,0.14)", color: "#6b7ab5", borderRadius: 10, padding: "13px 18px", fontSize: 14, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
                 ยกเลิก
               </button>
             </div>
@@ -1083,7 +1083,7 @@ export default function WarehouseApp() {
   };
 
   if (loading) return (
-    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "#f0f2ff", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
+    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "rgba(248,250,255,0.86)", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');`}</style>
       <div style={{ width: 48, height: 48, border: "3px solid #e0e0f0", borderTop: "3px solid #7c3aed", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
       <div style={{ color: "#6b7ab5", fontSize: 15 }}>กำลังโหลดข้อมูลจาก Supabase...</div>
@@ -1092,94 +1092,128 @@ export default function WarehouseApp() {
   );
 
   if (dbError) return (
-    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "#f0f2ff", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16, padding: 32 }}>
+    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "rgba(248,250,255,0.86)", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16, padding: 32 }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');`}</style>
       <div style={{ fontSize: 40 }}>⚠️</div>
       <div style={{ color: "#ff5555", fontWeight: 700, fontSize: 18 }}>เชื่อมต่อฐานข้อมูลไม่สำเร็จ</div>
       <div style={{ color: "#6b7ab5", fontSize: 13, background: "#ffffff", padding: "12px 20px", borderRadius: 8, fontFamily: "monospace", maxWidth: 500, wordBreak: "break-all" }}>{dbError}</div>
-      <button onClick={loadAll} style={{ background: "#7c3aed", color: "#f0f2ff", border: "none", borderRadius: 8, padding: "10px 24px", fontWeight: 700, cursor: "pointer", fontSize: 15, fontFamily: "'Sarabun', sans-serif" }}>ลองใหม่</button>
+      <button onClick={loadAll} style={{ background: "linear-gradient(135deg,#7c3aed,#3b82f6)", color: "#fff", border: "none", borderRadius: 8, padding: "10px 24px", fontWeight: 700, cursor: "pointer", fontSize: 15, fontFamily: "'Sarabun', sans-serif" }}>ลองใหม่</button>
     </div>
   );
 
   return (
-    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "#F8FAFC", color: "#111827" }}>
+    <div className="app-shell" style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", color: "#111827" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
         ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #F1F5F9; } ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
         input, select, textarea { font-family: 'Sarabun', sans-serif; }
 
-        .tab-btn { background: none; border: none; cursor: pointer; padding: 8px 16px; border-radius: 8px; font-family: 'Sarabun', sans-serif; font-size: 14px; transition: all 0.2s; color: rgba(255,255,255,0.7); }
-        .tab-btn.active { background: rgba(255,255,255,0.2); color: #fff; font-weight: 600; }
-        .tab-btn:hover:not(.active) { background: rgba(255,255,255,0.12); color: #fff; }
+        :root {
+          --ink: #11143d;
+          --muted: #68749d;
+          --purple: #7c3aed;
+          --indigo: #4f46e5;
+          --blue: #3b82f6;
+          --sky: #60a5fa;
+          --paper: rgba(255,255,255,0.88);
+          --line: rgba(124,58,237,0.14);
+          --shadow: 0 18px 45px rgba(79,70,229,0.13);
+        }
+        .app-shell {
+          background:
+            radial-gradient(circle at 8% 0%, rgba(124,58,237,0.24), transparent 32%),
+            radial-gradient(circle at 92% 8%, rgba(59,130,246,0.22), transparent 34%),
+            linear-gradient(180deg,#fbfbff 0%,#f3f6ff 45%,#eef3ff 100%);
+          position: relative;
+          overflow-x: hidden;
+        }
+        .app-shell::before {
+          content: "";
+          position: fixed;
+          inset: 0;
+          pointer-events: none;
+          background:
+            linear-gradient(120deg, rgba(124,58,237,0.08), transparent 34%),
+            linear-gradient(300deg, rgba(59,130,246,0.10), transparent 38%);
+          mask-image: linear-gradient(#000, transparent 70%);
+        }
 
-        .card { background: #ffffff; border: 1px solid #E5E7EB; border-radius: 20px; padding: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
-        .btn { border: none; cursor: pointer; border-radius: 10px; font-family: 'Sarabun', sans-serif; font-weight: 600; transition: all 0.2s; font-size: 14px; }
-        .btn-primary { background: linear-gradient(135deg,#7C3AED,#3B82F6); color: #fff; padding: 10px 22px; }
-        .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 14px rgba(124,58,237,0.35); }
+        .tab-btn { background: transparent; border: 1px solid transparent; cursor: pointer; padding: 9px 16px; border-radius: 12px; font-family: 'Sarabun', sans-serif; font-size: 14px; transition: all 0.2s; color: #6f75a4; white-space: nowrap; }
+        .tab-btn.active { background: linear-gradient(135deg,rgba(124,58,237,0.13),rgba(59,130,246,0.12)); color: var(--ink); font-weight: 700; border-color: rgba(124,58,237,0.16); box-shadow: inset 0 1px 0 rgba(255,255,255,0.75); }
+        .tab-btn:hover:not(.active) { background: rgba(255,255,255,0.74); color: var(--indigo); border-color: rgba(124,58,237,0.14); }
+
+        .card { background: var(--paper); border: 1px solid rgba(255,255,255,0.72); border-radius: 18px; padding: 24px; box-shadow: var(--shadow); backdrop-filter: blur(16px); }
+        .btn { border: none; cursor: pointer; border-radius: 12px; font-family: 'Sarabun', sans-serif; font-weight: 700; transition: all 0.2s; font-size: 14px; }
+        .btn-primary { background: linear-gradient(135deg,#7C3AED 0%,#5B6FF4 48%,#38BDF8 100%); color: #fff; padding: 10px 22px; box-shadow: 0 12px 28px rgba(79,70,229,0.24); }
+        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 16px 34px rgba(79,70,229,0.30); }
         .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
         .btn-danger { background: #FEF2F2; color: #DC2626; padding: 6px 12px; border: 1px solid #FECACA; border-radius: 8px; }
         .btn-danger:hover { background: #FEE2E2; }
-        .btn-secondary { background: #fff; color: #7C3AED; padding: 7px 14px; border: 1.5px solid #DDD6FE; border-radius: 8px; }
-        .btn-secondary:hover { background: #F5F3FF; }
+        .btn-secondary { background: rgba(255,255,255,0.86); color: var(--purple); padding: 8px 15px; border: 1.5px solid rgba(124,58,237,0.18); border-radius: 11px; box-shadow: 0 6px 18px rgba(79,70,229,0.07); }
+        .btn-secondary:hover { background: #fff; border-color: rgba(59,130,246,0.32); color: var(--blue); }
 
-        .inp { background: #F9FAFB; border: 1.5px solid #E5E7EB; border-radius: 10px; padding: 10px 14px; color: #111827; width: 100%; font-size: 14px; outline: none; transition: border 0.2s; }
-        .inp:focus { border-color: #7C3AED; background: #fff; box-shadow: 0 0 0 3px rgba(124,58,237,0.08); }
+        .inp { background: rgba(255,255,255,0.82); border: 1.5px solid rgba(124,58,237,0.14); border-radius: 12px; padding: 11px 14px; color: var(--ink); width: 100%; font-size: 14px; outline: none; transition: all 0.2s; box-shadow: inset 0 1px 0 rgba(255,255,255,0.7); }
+        .inp:focus { border-color: rgba(59,130,246,0.72); background: #fff; box-shadow: 0 0 0 4px rgba(59,130,246,0.10); }
 
         .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
         .badge-ok { background: #D1FAE5; color: #065F46; }
         .badge-low { background: #FEF3C7; color: #92400E; }
         .badge-out { background: #FEE2E2; color: #991B1B; }
 
-        .overlay { position: fixed; inset: 0; background: rgba(17,24,39,0.45); z-index: 100; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(6px); }
-        .modal { background: #fff; border: 1px solid #E5E7EB; border-radius: 24px; padding: 32px; width: 500px; max-width: 95vw; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.12); }
+        .overlay { position: fixed; inset: 0; background: rgba(17,24,39,0.42); z-index: 100; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(10px); }
+        .modal { background: rgba(255,255,255,0.96); border: 1px solid rgba(255,255,255,0.75); border-radius: 22px; padding: 32px; width: 500px; max-width: 95vw; max-height: 90vh; overflow-y: auto; box-shadow: 0 26px 70px rgba(49,46,129,0.22); }
 
-        .toast { position: fixed; bottom: 28px; right: 28px; z-index: 999; background: #fff; border: 1px solid #E5E7EB; border-radius: 14px; padding: 14px 22px; font-weight: 600; display: flex; align-items: center; gap: 10px; animation: slideIn 0.3s ease; box-shadow: 0 8px 24px rgba(0,0,0,0.1); color: #111827; }
+        .toast { position: fixed; bottom: 28px; right: 28px; z-index: 999; background: rgba(255,255,255,0.96); border: 1px solid rgba(124,58,237,0.16); border-radius: 14px; padding: 14px 22px; font-weight: 700; display: flex; align-items: center; gap: 10px; animation: slideIn 0.3s ease; box-shadow: 0 16px 34px rgba(79,70,229,0.16); color: var(--ink); }
         @keyframes slideIn { from { transform: translateX(60px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
-        .stat-card { background: #fff; border: 1px solid #E5E7EB; border-radius: 16px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
-        .stat-card::before { display: none; }
+        .stat-card { background: linear-gradient(180deg,rgba(255,255,255,0.94),rgba(255,255,255,0.78)); border: 1px solid rgba(255,255,255,0.82); border-radius: 18px; padding: 20px; box-shadow: var(--shadow); position: relative; overflow: hidden; }
+        .stat-card::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 4px; background: linear-gradient(90deg,#7c3aed,#3b82f6,#60a5fa); }
         .mono { font-family: 'Space Mono', monospace; }
-        .tx-row { border-left: 3px solid; padding: 12px 16px; border-radius: 0 10px 10px 0; background: #FAFAFA; margin-bottom: 8px; }
+        .tx-row { border-left: 4px solid; padding: 12px 16px; border-radius: 12px; background: rgba(255,255,255,0.72); margin-bottom: 8px; box-shadow: inset 0 0 0 1px rgba(124,58,237,0.07); }
 
         table { width: 100%; border-collapse: collapse; }
-        th { text-align: left; padding: 12px 16px; font-size: 11px; font-weight: 700; color: #7C3AED; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1.5px solid #EDE9FE; background: #FAFAFA; }
-        td { padding: 13px 16px; border-bottom: 1px solid #F3F4F6; font-size: 14px; vertical-align: middle; color: #111827; }
-        tr:hover td { background: #FAFAFE; }
+        th { text-align: left; padding: 13px 16px; font-size: 11px; font-weight: 800; color: var(--purple); text-transform: uppercase; letter-spacing: 1px; border-bottom: 1.5px solid rgba(124,58,237,0.12); background: linear-gradient(90deg,rgba(124,58,237,0.06),rgba(59,130,246,0.05)); }
+        td { padding: 14px 16px; border-bottom: 1px solid rgba(124,58,237,0.07); font-size: 14px; vertical-align: middle; color: var(--ink); }
+        tr:hover td { background: rgba(239,246,255,0.72); }
 
-        .label { font-size: 12px; color: #6B7280; margin-bottom: 6px; font-weight: 500; }
+        .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 700; }
         .db-dot { width: 7px; height: 7px; background: #10B981; border-radius: 50%; display: inline-block; margin-right: 5px; animation: pulse 2s infinite; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
         @keyframes scanLine { from { transform: translateY(-40px); opacity: 0.6; } to { transform: translateY(40px); opacity: 1; } }
 
-        .section-title { font-size: 22px; font-weight: 700; color: #111827; }
-        .section-sub { font-size: 14px; color: #6B7280; margin-top: 4px; }
+        .section-title { font-size: 24px; font-weight: 800; color: var(--ink); }
+        .section-sub { font-size: 14px; color: var(--muted); margin-top: 4px; }
+        @media (max-width: 780px) {
+          .topbar-inner { height: auto !important; padding: 14px 0; align-items: flex-start !important; }
+          .nav-tabs { width: 100%; overflow-x: auto; padding-bottom: 4px; }
+        }
       `}</style>
 
       {/* HEADER — Gradient Nav */}
-      <div style={{ background: "linear-gradient(135deg,#7C3AED 0%,#4F46E5 50%,#3B82F6 100%)", padding: "0 32px", boxShadow: "0 2px 12px rgba(124,58,237,0.25)" }}>
-        <div style={{ maxWidth: 1200, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", height: 64 }}>
+      <div style={{ background: "rgba(255,255,255,0.78)", padding: "0 32px", boxShadow: "0 12px 34px rgba(79,70,229,0.10)", borderBottom: "1px solid rgba(124,58,237,0.12)", backdropFilter: "blur(18px)", position: "sticky", top: 0, zIndex: 40 }}>
+        <div className="topbar-inner" style={{ maxWidth: 1200, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 72, gap: 16, flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 38, height: 38, background: "rgba(255,255,255,0.2)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, backdropFilter: "blur(4px)" }}>📦</div>
+            <div style={{ width: 42, height: 42, background: "linear-gradient(135deg,#7C3AED,#3B82F6)", color: "#fff", borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 21, boxShadow: "0 10px 24px rgba(79,70,229,0.28)" }}>📦</div>
             <div>
-              <div style={{ fontWeight: 700, fontSize: 17, color: "#fff", letterSpacing: "-0.3px" }}>StockMaster</div>
-              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)", display: "flex", alignItems: "center", gap: 4 }}>
+              <div style={{ fontWeight: 800, fontSize: 18, color: "#151341" }}>StockMaster</div>
+              <div style={{ fontSize: 11, color: "#6973a4", display: "flex", alignItems: "center", gap: 4 }}>
                 <span className="db-dot" style={{ background: "#10B981" }} />เชื่อมต่อ Supabase แล้ว
               </div>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 2 }}>
+          <div className="nav-tabs" style={{ display: "flex", gap: 4, background: "rgba(248,250,255,0.72)", padding: 5, borderRadius: 16, border: "1px solid rgba(124,58,237,0.10)" }}>
             {[["dashboard","ภาพรวม"],["inventory","สินค้าคงคลัง"],["transactions","รายการเคลื่อนไหว"],["returns","พัสดุตีกลับ"]].map(([t,label]) => (
               <button key={t} className={`tab-btn ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>{label}</button>
             ))}
           </div>
-          <button onClick={loadAll} style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", padding: "8px 18px", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", backdropFilter: "blur(4px)" }}>
+          <button onClick={loadAll} style={{ background: "#fff", border: "1px solid rgba(124,58,237,0.14)", color: "#4f46e5", padding: "8px 18px", borderRadius: 12, fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", boxShadow: "0 8px 20px rgba(79,70,229,0.10)" }}>
             🔄 รีเฟรช
           </button>
         </div>
       </div>
 
-      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 28px" }}>
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "34px 28px 56px", position: "relative", zIndex: 1 }}>
 
         {/* DASHBOARD */}
         {tab === "dashboard" && (
@@ -1353,8 +1387,8 @@ export default function WarehouseApp() {
                           <label style={{ cursor: "pointer", display: "block" }}>
                             <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => e.target.files[0] && handleImageUpload(p, e.target.files[0])} />
                             {p.imageUrl
-                              ? <img src={p.imageUrl} alt={p.name} style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 8, border: "1px solid #2a2f45" }} />
-                              : <div style={{ width: 44, height: 44, borderRadius: 8, border: "2px dashed #2a2f45", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "#c0c4da", background: "#ffffff" }}>📷</div>
+                              ? <img src={p.imageUrl} alt={p.name} style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 8, border: "1px solid rgba(124,58,237,0.14)" }} />
+                              : <div style={{ width: 44, height: 44, borderRadius: 8, border: "2px dashed rgba(124,58,237,0.14)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "#c0c4da", background: "#ffffff" }}>📷</div>
                             }
                           </label>
                         </td>
@@ -1469,7 +1503,7 @@ export default function WarehouseApp() {
               </div>
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 22, justifyContent: "flex-end" }}>
-              <button className="btn" style={{ background: "#f0f2ff", color: "#6b7ab5", padding: "10px 20px" }} onClick={() => setShowModal(null)}>ยกเลิก</button>
+              <button className="btn" style={{ background: "rgba(248,250,255,0.86)", color: "#6b7ab5", padding: "10px 20px" }} onClick={() => setShowModal(null)}>ยกเลิก</button>
               <button className="btn btn-primary" disabled={saving} onClick={showModal === "edit" ? handleEditProduct : handleAddProduct}>
                 {saving ? "กำลังบันทึก..." : showModal === "edit" ? "บันทึก" : "เพิ่มสินค้า"}
               </button>
@@ -1483,7 +1517,7 @@ export default function WarehouseApp() {
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
               {[["in","▲ รับสินค้าเข้า"],["out","▼ เบิกสินค้าออก"]].map(([t, l]) => (
-                <button key={t} className="btn" style={{ flex: 1, padding: "10px", background: txType === t ? (t === "in" ? "rgba(124,58,237,0.15)" : "rgba(255,85,85,0.15)") : "#f0f2ff", color: t === "in" ? "#7c3aed" : "#ff5555", border: `1px solid ${txType === t ? (t === "in" ? "#7c3aed" : "#ff5555") : "#d4d8f0"}`, fontWeight: 700 }} onClick={() => setTxType(t)}>{l}</button>
+                <button key={t} className="btn" style={{ flex: 1, padding: "10px", background: txType === t ? (t === "in" ? "rgba(124,58,237,0.15)" : "rgba(255,85,85,0.15)") : "rgba(248,250,255,0.86)", color: t === "in" ? "#7c3aed" : "#ff5555", border: `1px solid ${txType === t ? (t === "in" ? "#7c3aed" : "#ff5555") : "#d4d8f0"}`, fontWeight: 700 }} onClick={() => setTxType(t)}>{l}</button>
               ))}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1506,7 +1540,7 @@ export default function WarehouseApp() {
                           p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q)
                         ).slice(0, 30);
                         return filtered.length > 0 ? (
-                          <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "#ffffff", border: "1px solid #2a2f45", borderRadius: 8, maxHeight: 240, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
+                          <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "#ffffff", border: "1px solid rgba(124,58,237,0.14)", borderRadius: 8, maxHeight: 240, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
                             {filtered.map(p => (
                               <div key={p.id}
                                 onMouseDown={() => setTxForm(f => ({ ...f, productId: String(p.id), _productSearch: p.name, _showDrop: false }))}
@@ -1523,7 +1557,7 @@ export default function WarehouseApp() {
                             ))}
                           </div>
                         ) : q ? (
-                          <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "#ffffff", border: "1px solid #2a2f45", borderRadius: 8, padding: "12px 14px", color: "#9ba3c7", fontSize: 13 }}>
+                          <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "#ffffff", border: "1px solid rgba(124,58,237,0.14)", borderRadius: 8, padding: "12px 14px", color: "#9ba3c7", fontSize: 13 }}>
                             ไม่พบสินค้า "{txForm._productSearch}"
                           </div>
                         ) : null;
@@ -1546,8 +1580,8 @@ export default function WarehouseApp() {
               </div>
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 22, justifyContent: "flex-end" }}>
-              <button className="btn" style={{ background: "#f0f2ff", color: "#6b7ab5", padding: "10px 20px" }} onClick={() => setShowModal(null)}>ยกเลิก</button>
-              <button className="btn btn-primary" disabled={saving} style={{ background: txType === "out" ? "#ff5555" : "#7c3aed", color: "#f0f2ff" }} onClick={handleTransaction}>
+              <button className="btn" style={{ background: "rgba(248,250,255,0.86)", color: "#6b7ab5", padding: "10px 20px" }} onClick={() => setShowModal(null)}>ยกเลิก</button>
+              <button className="btn btn-primary" disabled={saving} style={{ background: txType === "out" ? "#ff5555" : "linear-gradient(135deg,#7c3aed,#3b82f6)", color: "#fff" }} onClick={handleTransaction}>
                 {saving ? "กำลังบันทึก..." : txType === "in" ? "รับสินค้าเข้า" : "เบิกสินค้าออก"}
               </button>
             </div>
