@@ -245,63 +245,63 @@ function ReturnAdminPanel() {
   return (
     <div>
       <div style={{ marginBottom: 24 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: "#ccd6f6", marginBottom: 6 }}>ตีกลับในระบบ — ลงรายการจาก Flash</h2>
-        <p style={{ color: "#8892b0", fontSize: 14 }}>Copy ข้อความจากหน้า Flash Express แล้ววางด้านล่าง เพื่อชนกับรายการที่คลังรับเข้า</p>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: "#1a1040", marginBottom: 6 }}>ตีกลับในระบบ — ลงรายการจาก Flash</h2>
+        <p style={{ color: "#6b7ab5", fontSize: 14 }}>Copy ข้อความจากหน้า Flash Express แล้ววางด้านล่าง เพื่อชนกับรายการที่คลังรับเข้า</p>
       </div>
       <textarea value={flashText} onChange={e => setFlashText(e.target.value)}
         placeholder="วางข้อความจาก Flash Express ที่นี่...&#10;รองรับทุก format เช่น TH27218RHRH38A 15:02/TH27218RJD230A 15:11/..."
-        style={{ width: "100%", height: 180, background: "#0f1117", border: "1px solid #2a2f45", borderRadius: 10, padding: 16, color: "#e8eaf0", fontSize: 13, resize: "vertical", outline: "none", lineHeight: 1.8, fontFamily: "'Sarabun', sans-serif" }} />
+        style={{ width: "100%", height: 180, background: "#f0f2ff", border: "1px solid #2a2f45", borderRadius: 10, padding: 16, color: "#1a1040", fontSize: 13, resize: "vertical", outline: "none", lineHeight: 1.8, fontFamily: "'Sarabun', sans-serif" }} />
       {flashText.trim() && (
-        <div style={{ marginTop: 8, fontSize: 13, color: "#8892b0" }}>
-          พบเลข tracking <span style={{ color: "#64ffda", fontWeight: 700 }}>{preview.length}</span> รายการ
+        <div style={{ marginTop: 8, fontSize: 13, color: "#6b7ab5" }}>
+          พบเลข tracking <span style={{ color: "#7c3aed", fontWeight: 700 }}>{preview.length}</span> รายการ
         </div>
       )}
       <button onClick={handleCreate} disabled={!flashText.trim() || loading}
-        style={{ marginTop: 14, background: flashText.trim() && !loading ? "#64ffda" : "#1a1d27", color: flashText.trim() && !loading ? "#0f1117" : "#444", border: "none", borderRadius: 10, padding: "12px 28px", fontSize: 15, fontWeight: 700, cursor: flashText.trim() ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
+        style={{ marginTop: 14, background: flashText.trim() && !loading ? "#7c3aed" : "#ffffff", color: flashText.trim() && !loading ? "#f0f2ff" : "#aab0cc", border: "none", borderRadius: 10, padding: "12px 28px", fontSize: 15, fontWeight: 700, cursor: flashText.trim() ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
         {loading ? "กำลังสร้าง..." : "✅ สร้างเซสชัน"}
       </button>
 
       <div style={{ marginTop: 32 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
-          <div style={{ fontSize: 13, color: "#8892b0", fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>
+          <div style={{ fontSize: 13, color: "#6b7ab5", fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>
             เซสชัน {dateFilter ? `วันที่ ${new Date(dateFilter).toLocaleDateString("th-TH")}` : "ทั้งหมด"} ({sessions.length} เซสชัน)
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <input type="date" value={dateFilter} onChange={e => setDateFilter(e.target.value)}
-              style={{ background: "#0f1117", border: "1px solid #2a2f45", borderRadius: 8, padding: "6px 12px", color: "#e8eaf0", fontSize: 13, outline: "none", fontFamily: "'Sarabun', sans-serif", cursor: "pointer" }} />
-            {dateFilter && <button onClick={() => setDateFilter("")} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "6px 12px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>✕ ล้าง</button>}
+              style={{ background: "#f0f2ff", border: "1px solid #2a2f45", borderRadius: 8, padding: "6px 12px", color: "#1a1040", fontSize: 13, outline: "none", fontFamily: "'Sarabun', sans-serif", cursor: "pointer" }} />
+            {dateFilter && <button onClick={() => setDateFilter("")} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#6b7ab5", borderRadius: 8, padding: "6px 12px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>✕ ล้าง</button>}
           </div>
         </div>
-        {loadingSessions && <div style={{ color: "#555", fontSize: 14 }}>กำลังโหลด...</div>}
-        {!loadingSessions && sessions.length === 0 && <div style={{ color: "#444", fontSize: 14 }}>ยังไม่มีเซสชัน</div>}
+        {loadingSessions && <div style={{ color: "#9ba3c7", fontSize: 14 }}>กำลังโหลด...</div>}
+        {!loadingSessions && sessions.length === 0 && <div style={{ color: "#aab0cc", fontSize: 14 }}>ยังไม่มีเซสชัน</div>}
         {sessions.map(s => {
           const scannedCount = s.return_scans?.[0]?.count ?? 0;
           const total = s.tracking_list?.length ?? 0;
           const pct = total > 0 ? Math.round((scannedCount / total) * 100) : 0;
           const isExpanded = expandedId === s.id;
           return (
-            <div key={s.id} style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, marginBottom: 10, overflow: "hidden" }}>
+            <div key={s.id} style={{ background: "#ffffff", border: "1px solid #2a2f45", borderRadius: 10, marginBottom: 10, overflow: "hidden" }}>
               <div style={{ padding: "14px 16px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                   <div style={{ cursor: "pointer", flex: 1 }} onClick={() => { const next = isExpanded ? null : s.id; setExpandedId(next); if (next) loadScans(next); }}>
-                    <span style={{ fontWeight: 600, color: "#ccd6f6", fontSize: 14 }}>{s.courier} — {new Date(s.created_at).toLocaleDateString("th-TH", { dateStyle: "medium" })}</span>
-                    <span style={{ marginLeft: 10, color: "#8892b0", fontSize: 12 }}>{new Date(s.created_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</span>
+                    <span style={{ fontWeight: 600, color: "#1a1040", fontSize: 14 }}>{s.courier} — {new Date(s.created_at).toLocaleDateString("th-TH", { dateStyle: "medium" })}</span>
+                    <span style={{ marginLeft: 10, color: "#6b7ab5", fontSize: 12 }}>{new Date(s.created_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })}</span>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontFamily: "monospace", fontSize: 13, color: pct === 100 ? "#64ffda" : "#ccd6f6" }}>{scannedCount}/{total}</span>
+                    <span style={{ fontFamily: "monospace", fontSize: 13, color: pct === 100 ? "#7c3aed" : "#1a1040" }}>{scannedCount}/{total}</span>
                     <button onClick={() => exportToCSV(`session_${s.id}_${new Date(s.created_at).toISOString().slice(0,10)}.csv`, ["tracking_number", ...(s.tracking_list || [])])}
-                      style={{ background: "rgba(100,255,218,0.08)", border: "1px solid rgba(100,255,218,0.2)", color: "#64ffda", borderRadius: 6, padding: "4px 10px", fontSize: 12, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+                      style={{ background: "rgba(124,58,237,0.08)", border: "1px solid rgba(124,58,237,0.2)", color: "#7c3aed", borderRadius: 6, padding: "4px 10px", fontSize: 12, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
                       📥 Excel
                     </button>
-                    <span style={{ color: "#555", cursor: "pointer", fontSize: 14 }} onClick={() => { const next = isExpanded ? null : s.id; setExpandedId(next); if (next) loadScans(next); }}>{isExpanded ? "▲" : "▼"}</span>
+                    <span style={{ color: "#9ba3c7", cursor: "pointer", fontSize: 14 }} onClick={() => { const next = isExpanded ? null : s.id; setExpandedId(next); if (next) loadScans(next); }}>{isExpanded ? "▲" : "▼"}</span>
                   </div>
                 </div>
-                <div style={{ height: 4, background: "#0f1117", borderRadius: 2 }}>
-                  <div style={{ height: "100%", width: `${pct}%`, background: pct === 100 ? "#64ffda" : "#ff5555", borderRadius: 2 }} />
+                <div style={{ height: 4, background: "#f0f2ff", borderRadius: 2 }}>
+                  <div style={{ height: "100%", width: `${pct}%`, background: pct === 100 ? "#7c3aed" : "#ff5555", borderRadius: 2 }} />
                 </div>
               </div>
               {isExpanded && (
-                <div style={{ borderTop: "1px solid #2a2f45", background: "#12151f" }}>
+                <div style={{ borderTop: "1px solid #2a2f45", background: "#ffffff" }}>
                   {/* Sub-tabs */}
                   {(() => {
                     const scans = scansCache[s.id] || [];
@@ -311,7 +311,7 @@ function ReturnAdminPanel() {
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0 }}>
                           {/* Left: ระบบแจ้ง */}
                           <div style={{ padding: "12px 14px", borderRight: "1px solid #2a2f45", maxHeight: 260, overflowY: "auto" }}>
-                            <div style={{ fontSize: 11, color: "#8892b0", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
+                            <div style={{ fontSize: 11, color: "#6b7ab5", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
                               📋 แจ้งจากระบบ ({total})
                             </div>
                             {(s.tracking_list || []).map((code, i) => {
@@ -319,8 +319,8 @@ function ReturnAdminPanel() {
                               const scan = scans.find(x => x.tracking_code === code);
                               return (
                                 <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: "1px solid #1a1d27" }}>
-                                  <span style={{ fontFamily: "monospace", fontSize: 11, color: ok ? "#64ffda" : "#ff5555" }}>{code}</span>
-                                  <span style={{ fontSize: 11, color: ok ? "#64ffda" : "#555" }}>
+                                  <span style={{ fontFamily: "monospace", fontSize: 11, color: ok ? "#7c3aed" : "#ff5555" }}>{code}</span>
+                                  <span style={{ fontSize: 11, color: ok ? "#7c3aed" : "#9ba3c7" }}>
                                     {ok ? `✓ ${scan?.scanned_by || ""}` : "รอรับ"}
                                   </span>
                                 </div>
@@ -329,19 +329,19 @@ function ReturnAdminPanel() {
                           </div>
                           {/* Right: พนักงานยิง */}
                           <div style={{ padding: "12px 14px", maxHeight: 260, overflowY: "auto" }}>
-                            <div style={{ fontSize: 11, color: "#8892b0", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
+                            <div style={{ fontSize: 11, color: "#6b7ab5", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
                               📦 พนักงานยิง ({scans.length})
-                              {loadingScans === s.id && <span style={{ color: "#555", marginLeft: 8 }}>กำลังโหลด...</span>}
+                              {loadingScans === s.id && <span style={{ color: "#9ba3c7", marginLeft: 8 }}>กำลังโหลด...</span>}
                             </div>
-                            {scans.length === 0 && loadingScans !== s.id && <div style={{ color: "#444", fontSize: 12 }}>ยังไม่มีการยิง</div>}
+                            {scans.length === 0 && loadingScans !== s.id && <div style={{ color: "#aab0cc", fontSize: 12 }}>ยังไม่มีการยิง</div>}
                             {scans.map((sc, i) => {
                               const inList = (s.tracking_list || []).includes(sc.tracking_code);
                               return (
                                 <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "4px 0", borderBottom: "1px solid #1a1d27" }}>
-                                  <span style={{ fontFamily: "monospace", fontSize: 11, color: inList ? "#64ffda" : "#ffa500" }}>{sc.tracking_code}</span>
+                                  <span style={{ fontFamily: "monospace", fontSize: 11, color: inList ? "#7c3aed" : "#ffa500" }}>{sc.tracking_code}</span>
                                   <div style={{ textAlign: "right" }}>
-                                    <div style={{ fontSize: 11, color: "#ccd6f6" }}>{sc.scanned_by || "-"}</div>
-                                    <div style={{ fontSize: 10, color: "#555" }}>{sc.scanned_at ? new Date(sc.scanned_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : ""}</div>
+                                    <div style={{ fontSize: 11, color: "#1a1040" }}>{sc.scanned_by || "-"}</div>
+                                    <div style={{ fontSize: 10, color: "#9ba3c7" }}>{sc.scanned_at ? new Date(sc.scanned_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : ""}</div>
                                   </div>
                                 </div>
                               );
@@ -357,9 +357,9 @@ function ReturnAdminPanel() {
           );
         })}
         <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-          <button onClick={fetchSessions} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 โหลดใหม่</button>
+          <button onClick={fetchSessions} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#6b7ab5", borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 โหลดใหม่</button>
           <button onClick={handleExport} disabled={exporting || sessions.length === 0}
-            style={{ background: sessions.length > 0 && !exporting ? "rgba(100,255,218,0.1)" : "#1a1d27", border: `1px solid ${sessions.length > 0 ? "rgba(100,255,218,0.3)" : "#2a2f45"}`, color: sessions.length > 0 && !exporting ? "#64ffda" : "#444", borderRadius: 8, padding: "8px 20px", fontSize: 13, fontWeight: 600, cursor: sessions.length > 0 ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
+            style={{ background: sessions.length > 0 && !exporting ? "rgba(124,58,237,0.1)" : "#ffffff", border: `1px solid ${sessions.length > 0 ? "rgba(124,58,237,0.3)" : "#d4d8f0"}`, color: sessions.length > 0 && !exporting ? "#7c3aed" : "#aab0cc", borderRadius: 8, padding: "8px 20px", fontSize: 13, fontWeight: 600, cursor: sessions.length > 0 ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
             {exporting ? "⏳ กำลัง Export..." : "📊 Export รายงาน Excel (ทุกเซสชัน)"}
           </button>
         </div>
@@ -624,50 +624,50 @@ function ReturnStaffPanel() {
   if (!staffName) return (
     <div style={{ textAlign: "center", paddingTop: 60 }}>
       <div style={{ fontSize: 36, marginBottom: 16 }}>👤</div>
-      <h2 style={{ fontSize: 18, fontWeight: 700, color: "#ccd6f6", marginBottom: 8 }}>ระบุชื่อพนักงานก่อน</h2>
-      <p style={{ color: "#8892b0", fontSize: 14, marginBottom: 24 }}>ใช้บันทึกว่าใครยิงบาร์โค้ด</p>
+      <h2 style={{ fontSize: 18, fontWeight: 700, color: "#1a1040", marginBottom: 8 }}>ระบุชื่อพนักงานก่อน</h2>
+      <p style={{ color: "#6b7ab5", fontSize: 14, marginBottom: 24 }}>ใช้บันทึกว่าใครยิงบาร์โค้ด</p>
       <input placeholder="ชื่อพนักงาน" autoFocus
-        style={{ background: "#0f1117", border: "1px solid #2a2f45", borderRadius: 8, padding: "10px 16px", color: "#e8eaf0", fontSize: 15, outline: "none", fontFamily: "'Sarabun', sans-serif", width: 240, textAlign: "center" }}
+        style={{ background: "#f0f2ff", border: "1px solid #2a2f45", borderRadius: 8, padding: "10px 16px", color: "#1a1040", fontSize: 15, outline: "none", fontFamily: "'Sarabun', sans-serif", width: 240, textAlign: "center" }}
         onKeyDown={e => { if (e.key === "Enter" && e.target.value.trim()) { const n = e.target.value.trim(); setStaffName(n); localStorage.setItem("staffName", n); } }} />
-      <div style={{ color: "#555", fontSize: 13, marginTop: 10 }}>กด Enter เพื่อยืนยัน</div>
+      <div style={{ color: "#9ba3c7", fontSize: 13, marginTop: 10 }}>กด Enter เพื่อยืนยัน</div>
     </div>
   );
 
-  if (loading) return <div style={{ textAlign: "center", paddingTop: 60, color: "#555" }}>กำลังโหลดข้อมูลวันนี้...</div>;
+  if (loading) return <div style={{ textAlign: "center", paddingTop: 60, color: "#9ba3c7" }}>กำลังโหลดข้อมูลวันนี้...</div>;
 
   return (
     <div>
       {/* Header row: title + export + refresh + rename */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
         <div>
-          <h2 style={{ fontSize: 20, fontWeight: 700, color: "#ccd6f6", marginBottom: 2 }}>ตีกลับถึงคลัง — ยิงบาร์โค้ด</h2>
-          <div style={{ fontSize: 12, color: "#8892b0" }}>
-            <span style={{ color: "#64ffda" }}>{staffName}</span> · {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: "#1a1040", marginBottom: 2 }}>ตีกลับถึงคลัง — ยิงบาร์โค้ด</h2>
+          <div style={{ fontSize: 12, color: "#6b7ab5" }}>
+            <span style={{ color: "#7c3aed" }}>{staffName}</span> · {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
           <button onClick={handleStaffExport} disabled={exporting}
-            style={{ background: "rgba(100,255,218,0.1)", border: "1px solid rgba(100,255,218,0.3)", color: "#64ffda", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+            style={{ background: "rgba(124,58,237,0.1)", border: "1px solid rgba(124,58,237,0.3)", color: "#7c3aed", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
             {exporting ? "⏳..." : "📥 Export Excel"}
           </button>
-          <button onClick={loadData} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 8, padding: "7px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 รีเฟรช</button>
-          <button onClick={() => { localStorage.removeItem("staffName"); setStaffName(""); }} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#555", borderRadius: 8, padding: "7px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>เปลี่ยนชื่อ</button>
+          <button onClick={loadData} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#6b7ab5", borderRadius: 8, padding: "7px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>🔄 รีเฟรช</button>
+          <button onClick={() => { localStorage.removeItem("staffName"); setStaffName(""); }} style={{ background: "transparent", border: "1px solid #2a2f45", color: "#9ba3c7", borderRadius: 8, padding: "7px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>เปลี่ยนชื่อ</button>
         </div>
       </div>
 
       {/* Stats */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 14 }}>
         {[
-          { label: "ระบบแจ้ง", value: systemList.length, color: "#8892b0" },
-          { label: "ถึงคลังแล้ว", value: submitted.length, color: "#ccd6f6" },
-          { label: "✓ ตรง", value: matched.length, color: "#64ffda" },
+          { label: "ระบบแจ้ง", value: systemList.length, color: "#6b7ab5" },
+          { label: "ถึงคลังแล้ว", value: submitted.length, color: "#1a1040" },
+          { label: "✓ ตรง", value: matched.length, color: "#7c3aed" },
           { label: missing.length > 0 ? "✗ ขาด" : extra.length > 0 ? "⚠ เกิน" : "✓ ครบ!",
             value: missing.length > 0 ? missing.length : extra.length > 0 ? extra.length : "🎉",
-            color: missing.length > 0 ? "#ff5555" : extra.length > 0 ? "#ffa500" : "#64ffda" },
+            color: missing.length > 0 ? "#ff5555" : extra.length > 0 ? "#ffa500" : "#7c3aed" },
         ].map((s, i) => (
-          <div key={i} style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: "12px 14px", textAlign: "center" }}>
+          <div key={i} style={{ background: "#ffffff", border: "1px solid #2a2f45", borderRadius: 10, padding: "12px 14px", textAlign: "center" }}>
             <div style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 700, color: s.color }}>{s.value}</div>
-            <div style={{ fontSize: 11, color: "#555", marginTop: 4 }}>{s.label}</div>
+            <div style={{ fontSize: 11, color: "#9ba3c7", marginTop: 4 }}>{s.label}</div>
           </div>
         ))}
       </div>
@@ -675,25 +675,25 @@ function ReturnStaffPanel() {
       {/* Progress */}
       {systemList.length > 0 && (
         <div style={{ marginBottom: 14 }}>
-          <div style={{ height: 6, background: "#0f1117", borderRadius: 3, overflow: "hidden" }}>
-            <div style={{ height: "100%", width: `${progress}%`, background: progress === 100 ? "#64ffda" : "#ff5555", borderRadius: 3, transition: "width 0.3s" }} />
+          <div style={{ height: 6, background: "#f0f2ff", borderRadius: 3, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${progress}%`, background: progress === 100 ? "#7c3aed" : "#ff5555", borderRadius: 3, transition: "width 0.3s" }} />
           </div>
-          <div style={{ fontSize: 12, color: "#555", marginTop: 3, textAlign: "right" }}>{progress}%</div>
+          <div style={{ fontSize: 12, color: "#9ba3c7", marginTop: 3, textAlign: "right" }}>{progress}%</div>
         </div>
       )}
 
       {/* Start button */}
       <div style={{ textAlign: "center", marginBottom: 16 }}>
         <button onClick={() => { setMode("scanning"); setStaging([]); setLastScan(null); }}
-          style={{ background: "#64ffda", color: "#0f1117", border: "none", borderRadius: 10, padding: "13px 36px", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+          style={{ background: "#7c3aed", color: "#f0f2ff", border: "none", borderRadius: 10, padding: "13px 36px", fontSize: 16, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
           📦 เริ่มยิงบาร์โค้ด
         </button>
       </div>
 
       {/* Submitted list (newest first) */}
       {submitted.length > 0 && (
-        <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 10, padding: 12, maxHeight: 220, overflowY: "auto" }}>
-          <div style={{ fontSize: 11, color: "#8892b0", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
+        <div style={{ background: "#ffffff", border: "1px solid #2a2f45", borderRadius: 10, padding: 12, maxHeight: 220, overflowY: "auto" }}>
+          <div style={{ fontSize: 11, color: "#6b7ab5", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>
             ยิงและบันทึกแล้ว ({submitted.length})
           </div>
           {submitted.map((s, i) => {
@@ -701,8 +701,8 @@ function ReturnStaffPanel() {
             const timeStr = s.scanned_at ? new Date(s.scanned_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : "";
             return (
               <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid #1e2235" }}>
-                <span style={{ fontFamily: "monospace", fontSize: 11, color: ok ? "#64ffda" : "#ffa500" }}>{s.tracking_code}</span>
-                <span style={{ fontSize: 11, color: "#555" }}>{s.scanned_by} {timeStr}</span>
+                <span style={{ fontFamily: "monospace", fontSize: 11, color: ok ? "#7c3aed" : "#ffa500" }}>{s.tracking_code}</span>
+                <span style={{ fontSize: 11, color: "#9ba3c7" }}>{s.scanned_by} {timeStr}</span>
               </div>
             );
           })}
@@ -711,33 +711,33 @@ function ReturnStaffPanel() {
 
       {/* SCANNING POPUP */}
       {mode === "scanning" && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.88)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
-          <div style={{ background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 18, width: "100%", maxWidth: 520, maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(79,70,229,0.2)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ background: "#ffffff", border: "1px solid #2a2f45", borderRadius: 18, width: "100%", maxWidth: 520, maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column" }}>
 
             {/* Popup header */}
             <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid #2a2f45" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
                 <div>
-                  <div style={{ fontWeight: 700, color: "#ccd6f6", fontSize: 17 }}>📦 ยิงบาร์โค้ด</div>
-                  <div style={{ fontSize: 12, color: "#8892b0", marginTop: 2 }}>
-                    รอยืนยัน <span style={{ color: "#64ffda", fontWeight: 700 }}>{staging.length}</span> รายการ — ยังไม่บันทึก
+                  <div style={{ fontWeight: 700, color: "#1a1040", fontSize: 17 }}>📦 ยิงบาร์โค้ด</div>
+                  <div style={{ fontSize: 12, color: "#6b7ab5", marginTop: 2 }}>
+                    รอยืนยัน <span style={{ color: "#7c3aed", fontWeight: 700 }}>{staging.length}</span> รายการ — ยังไม่บันทึก
                   </div>
                 </div>
-                <div style={{ fontFamily: "monospace", fontSize: 28, fontWeight: 700, color: "#64ffda" }}>{staging.length}</div>
+                <div style={{ fontFamily: "monospace", fontSize: 28, fontWeight: 700, color: "#7c3aed" }}>{staging.length}</div>
               </div>
 
               {/* Scan input - auto focus, auto newline on scan */}
               <input ref={scanRef} value={scanInput} onChange={e => setScanInput(e.target.value)} onKeyDown={handleScan}
                 placeholder="ยิงบาร์โค้ดที่นี่... (ขึ้นบรรทัดใหม่ทุกครั้งที่ยิง)"
-                style={{ width: "100%", background: "#0f1117", border: `2px solid ${lastScan?.status === "match" ? "#64ffda" : lastScan?.status === "duplicate" ? "#ffa500" : lastScan?.status === "extra" ? "#ffa500" : "#2a2f45"}`, borderRadius: 10, padding: "12px 14px", color: "#e8eaf0", fontSize: 14, outline: "none", fontFamily: "monospace", transition: "border-color 0.2s" }} />
+                style={{ width: "100%", background: "#f0f2ff", border: `2px solid ${lastScan?.status === "match" ? "#7c3aed" : lastScan?.status === "duplicate" ? "#ffa500" : lastScan?.status === "extra" ? "#ffa500" : "#d4d8f0"}`, borderRadius: 10, padding: "12px 14px", color: "#1a1040", fontSize: 14, outline: "none", fontFamily: "monospace", transition: "border-color 0.2s" }} />
 
               {/* Last scan feedback */}
               {lastScan && (
-                <div style={{ marginTop: 8, padding: "7px 12px", borderRadius: 8, background: lastScan.status === "match" ? "rgba(100,255,218,0.08)" : "rgba(255,165,0,0.08)", border: `1px solid ${lastScan.status === "match" ? "rgba(100,255,218,0.25)" : "rgba(255,165,0,0.25)"}`, display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ marginTop: 8, padding: "7px 12px", borderRadius: 8, background: lastScan.status === "match" ? "rgba(124,58,237,0.08)" : "rgba(255,165,0,0.08)", border: `1px solid ${lastScan.status === "match" ? "rgba(124,58,237,0.25)" : "rgba(255,165,0,0.25)"}`, display: "flex", alignItems: "center", gap: 10 }}>
                   <span>{lastScan.status === "match" ? "✅" : lastScan.status === "duplicate" ? "⚠️" : "📌"}</span>
                   <div>
-                    <span style={{ fontFamily: "monospace", fontSize: 12, color: "#ccd6f6" }}>{lastScan.code}</span>
-                    <span style={{ fontSize: 11, color: lastScan.status === "match" ? "#64ffda" : "#ffa500", marginLeft: 10 }}>
+                    <span style={{ fontFamily: "monospace", fontSize: 12, color: "#1a1040" }}>{lastScan.code}</span>
+                    <span style={{ fontSize: 11, color: lastScan.status === "match" ? "#7c3aed" : "#ffa500", marginLeft: 10 }}>
                       {lastScan.status === "match" ? "✓ อยู่ในรายการ" : lastScan.status === "duplicate" ? "⚠ ยิงซ้ำ" : "📌 บันทึกไว้ก่อน"}
                     </span>
                   </div>
@@ -749,14 +749,14 @@ function ReturnStaffPanel() {
             <div style={{ padding: "0 20px 10px" }}>
               {!cameraOpen ? (
                 <button onClick={openCamera} disabled={cameraLoading}
-                  style={{ width: "100%", background: "rgba(100,255,218,0.08)", border: "1px solid rgba(100,255,218,0.25)", color: "#64ffda", borderRadius: 10, padding: "13px", fontSize: 15, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+                  style={{ width: "100%", background: "rgba(124,58,237,0.08)", border: "1px solid rgba(124,58,237,0.25)", color: "#7c3aed", borderRadius: 10, padding: "13px", fontSize: 15, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
                   {cameraLoading ? "⏳ กำลังเปิดกล้อง..." : "📷 เปิดกล้องสแกน"}
                 </button>
               ) : (
                 <div>
                   <div id={scannerDivId} style={{ borderRadius: 12, overflow: "hidden", background: "#000", width: "100%" }} />
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
-                    <div style={{ fontSize: 12, color: "#8892b0" }}>🟢 กำลังสแกน — ส่องบาร์โค้ดให้อยู่ในกรอบ</div>
+                    <div style={{ fontSize: 12, color: "#6b7ab5" }}>🟢 กำลังสแกน — ส่องบาร์โค้ดให้อยู่ในกรอบ</div>
                     <button onClick={closeCamera}
                       style={{ background: "rgba(255,85,85,0.1)", border: "1px solid rgba(255,85,85,0.3)", color: "#ff5555", borderRadius: 6, padding: "4px 12px", fontSize: 12, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
                       ✕ ปิดกล้อง
@@ -769,7 +769,7 @@ function ReturnStaffPanel() {
             {/* Staged list — newest first, each item on its own row */}
             <div ref={listRef} style={{ flex: 1, overflowY: "auto", padding: "10px 20px" }}>
               {staging.length === 0 && (
-                <div style={{ color: "#3a3f5c", fontSize: 13, textAlign: "center", paddingTop: 20 }}>ยังไม่มีรายการ — เริ่มยิงได้เลย</div>
+                <div style={{ color: "#c0c4da", fontSize: 13, textAlign: "center", paddingTop: 20 }}>ยังไม่มีรายการ — เริ่มยิงได้เลย</div>
               )}
               {staging.map((entry, i) => {
                 const ok = systemList.includes(entry.code);
@@ -778,13 +778,13 @@ function ReturnStaffPanel() {
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <span style={{ fontSize: 14 }}>{ok ? "✅" : "📌"}</span>
                       <div>
-                        <div style={{ fontFamily: "monospace", fontSize: 13, color: ok ? "#64ffda" : "#ffa500" }}>{entry.code}</div>
-                        <div style={{ fontSize: 10, color: "#555", marginTop: 1 }}>{entry.time}</div>
+                        <div style={{ fontFamily: "monospace", fontSize: 13, color: ok ? "#7c3aed" : "#ffa500" }}>{entry.code}</div>
+                        <div style={{ fontSize: 10, color: "#9ba3c7", marginTop: 1 }}>{entry.time}</div>
                       </div>
                     </div>
                     <button onClick={() => removeFromStaging(entry.code)}
-                      style={{ background: "none", border: "none", color: "#3a3f5c", cursor: "pointer", fontSize: 16, padding: "0 4px" }}
-                      onMouseEnter={e => e.target.style.color="#ff5555"} onMouseLeave={e => e.target.style.color="#3a3f5c"}>✕</button>
+                      style={{ background: "none", border: "none", color: "#c0c4da", cursor: "pointer", fontSize: 16, padding: "0 4px" }}
+                      onMouseEnter={e => e.target.style.color="#ff5555"} onMouseLeave={e => e.target.style.color="#c0c4da"}>✕</button>
                   </div>
                 );
               })}
@@ -793,11 +793,11 @@ function ReturnStaffPanel() {
             {/* Popup footer */}
             <div style={{ padding: "14px 20px", borderTop: "1px solid #2a2f45", display: "flex", gap: 10 }}>
               <button onClick={handleConfirm} disabled={staging.length === 0 || saving}
-                style={{ flex: 1, background: staging.length > 0 && !saving ? "#64ffda" : "#1e2235", color: staging.length > 0 && !saving ? "#0f1117" : "#444", border: "none", borderRadius: 10, padding: "13px", fontSize: 15, fontWeight: 700, cursor: staging.length > 0 ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
+                style={{ flex: 1, background: staging.length > 0 && !saving ? "#7c3aed" : "#f0f2ff", color: staging.length > 0 && !saving ? "#f0f2ff" : "#aab0cc", border: "none", borderRadius: 10, padding: "13px", fontSize: 15, fontWeight: 700, cursor: staging.length > 0 ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
                 {saving ? "⏳ กำลังบันทึก..." : `✅ ยืนยัน ${staging.length} รายการ`}
               </button>
               <button onClick={handleCancel}
-                style={{ background: "#0f1117", border: "1px solid #2a2f45", color: "#8892b0", borderRadius: 10, padding: "13px 18px", fontSize: 14, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+                style={{ background: "#f0f2ff", border: "1px solid #2a2f45", color: "#6b7ab5", borderRadius: 10, padding: "13px 18px", fontSize: 14, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
                 ยกเลิก
               </button>
             </div>
@@ -1083,74 +1083,74 @@ export default function WarehouseApp() {
   };
 
   if (loading) return (
-    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "#0f1117", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
+    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "#f0f2ff", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');`}</style>
-      <div style={{ width: 48, height: 48, border: "3px solid #2a2f45", borderTop: "3px solid #64ffda", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-      <div style={{ color: "#8892b0", fontSize: 15 }}>กำลังโหลดข้อมูลจาก Supabase...</div>
+      <div style={{ width: 48, height: 48, border: "3px solid #e0e0f0", borderTop: "3px solid #7c3aed", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+      <div style={{ color: "#6b7ab5", fontSize: 15 }}>กำลังโหลดข้อมูลจาก Supabase...</div>
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 
   if (dbError) return (
-    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "#0f1117", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16, padding: 32 }}>
+    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "#f0f2ff", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16, padding: 32 }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');`}</style>
       <div style={{ fontSize: 40 }}>⚠️</div>
       <div style={{ color: "#ff5555", fontWeight: 700, fontSize: 18 }}>เชื่อมต่อฐานข้อมูลไม่สำเร็จ</div>
-      <div style={{ color: "#8892b0", fontSize: 13, background: "#1a1d27", padding: "12px 20px", borderRadius: 8, fontFamily: "monospace", maxWidth: 500, wordBreak: "break-all" }}>{dbError}</div>
-      <button onClick={loadAll} style={{ background: "#64ffda", color: "#0f1117", border: "none", borderRadius: 8, padding: "10px 24px", fontWeight: 700, cursor: "pointer", fontSize: 15, fontFamily: "'Sarabun', sans-serif" }}>ลองใหม่</button>
+      <div style={{ color: "#6b7ab5", fontSize: 13, background: "#ffffff", padding: "12px 20px", borderRadius: 8, fontFamily: "monospace", maxWidth: 500, wordBreak: "break-all" }}>{dbError}</div>
+      <button onClick={loadAll} style={{ background: "#7c3aed", color: "#f0f2ff", border: "none", borderRadius: 8, padding: "10px 24px", fontWeight: 700, cursor: "pointer", fontSize: 15, fontFamily: "'Sarabun', sans-serif" }}>ลองใหม่</button>
     </div>
   );
 
   return (
-    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "#0f1117", color: "#e8eaf0" }}>
+    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "#f0f2ff", color: "#1a1040" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #1a1d27; } ::-webkit-scrollbar-thumb { background: #3a3f5c; border-radius: 3px; }
+        ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #e8eaff; } ::-webkit-scrollbar-thumb { background: #b0b8e8; border-radius: 3px; }
         input, select, textarea { font-family: 'Sarabun', sans-serif; }
         .tab-btn { background: none; border: none; cursor: pointer; padding: 10px 20px; border-radius: 8px; font-family: 'Sarabun', sans-serif; font-size: 15px; transition: all 0.2s; color: #8892b0; }
-        .tab-btn.active { background: #1e2235; color: #64ffda; font-weight: 600; }
-        .tab-btn:hover:not(.active) { background: #161924; color: #ccd6f6; }
+        .tab-btn.active { background: #ede9fe; color: #7c3aed; font-weight: 600; }
+        .tab-btn:hover:not(.active) { background: #f5f3ff; color: #4f46e5; }
         .card { background: #1a1d27; border: 1px solid #2a2f45; border-radius: 14px; padding: 20px; }
         .btn { border: none; cursor: pointer; border-radius: 8px; font-family: 'Sarabun', sans-serif; font-weight: 600; transition: all 0.2s; font-size: 14px; }
-        .btn-primary { background: #64ffda; color: #0f1117; padding: 10px 20px; }
-        .btn-primary:hover { background: #4de8c4; transform: translateY(-1px); }
+        .btn-primary { background: #7c3aed; color: #ffffff; padding: 10px 20px; }
+        .btn-primary:hover { background: #6d28d9; transform: translateY(-1px); }
         .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
         .btn-danger { background: rgba(255,85,85,0.1); color: #ff5555; padding: 6px 12px; border: 1px solid rgba(255,85,85,0.3); }
         .btn-danger:hover { background: rgba(255,85,85,0.2); }
-        .btn-secondary { background: rgba(100,255,218,0.08); color: #64ffda; padding: 6px 12px; border: 1px solid rgba(100,255,218,0.2); }
-        .btn-secondary:hover { background: rgba(100,255,218,0.15); }
-        .inp { background: #0f1117; border: 1px solid #2a2f45; border-radius: 8px; padding: 10px 14px; color: #e8eaf0; width: 100%; font-size: 14px; outline: none; transition: border 0.2s; }
-        .inp:focus { border-color: #64ffda; }
+        .btn-secondary { background: rgba(124,58,237,0.08); color: #64ffda; padding: 6px 12px; border: 1px solid rgba(124,58,237,0.2); }
+        .btn-secondary:hover { background: rgba(124,58,237,0.15); }
+        .inp { background: #f8f9ff; border: 1px solid #d4d8f0; border-radius: 8px; padding: 10px 14px; color: #1a1040; width: 100%; font-size: 14px; outline: none; transition: border 0.2s; }
+        .inp:focus { border-color: #7c3aed; }
         .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
-        .badge-ok { background: rgba(100,255,218,0.1); color: #64ffda; }
+        .badge-ok { background: rgba(124,58,237,0.1); color: #64ffda; }
         .badge-low { background: rgba(255,165,0,0.1); color: #ffa500; }
         .badge-out { background: rgba(255,85,85,0.1); color: #ff5555; }
         .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
-        .modal { background: #1a1d27; border: 1px solid #2a2f45; border-radius: 18px; padding: 28px; width: 480px; max-width: 95vw; max-height: 90vh; overflow-y: auto; }
-        .toast { position: fixed; bottom: 28px; right: 28px; z-index: 999; background: #1a1d27; border: 1px solid #2a2f45; border-radius: 12px; padding: 14px 22px; font-weight: 600; display: flex; align-items: center; gap: 10px; animation: slideIn 0.3s ease; box-shadow: 0 8px 32px rgba(0,0,0,0.4); }
+        .modal { background: #ffffff; border: 1px solid #d4d8f0; border-radius: 18px; padding: 28px; width: 480px; max-width: 95vw; max-height: 90vh; overflow-y: auto; }
+        .toast { position: fixed; bottom: 28px; right: 28px; z-index: 999; background: #ffffff; border: 1px solid #d4d8f0; border-radius: 12px; padding: 14px 22px; font-weight: 600; display: flex; align-items: center; gap: 10px; animation: slideIn 0.3s ease; box-shadow: 0 8px 32px rgba(79,70,229,0.15); }
         @keyframes slideIn { from { transform: translateX(60px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-        .stat-card { background: linear-gradient(135deg, #1a1d27 0%, #1e2235 100%); border: 1px solid #2a2f45; border-radius: 14px; padding: 22px; position: relative; overflow: hidden; }
+        .stat-card { background: linear-gradient(135deg, #ffffff 0%, #f0f2ff 100%); border: 1px solid #2a2f45; border-radius: 14px; padding: 22px; position: relative; overflow: hidden; }
         .mono { font-family: 'Space Mono', monospace; }
-        .tx-row { border-left: 3px solid; padding: 12px 16px; border-radius: 0 8px 8px 0; background: rgba(255,255,255,0.02); margin-bottom: 8px; }
+        .tx-row { border-left: 3px solid; padding: 12px 16px; border-radius: 0 8px 8px 0; background: rgba(124,58,237,0.04); margin-bottom: 8px; }
         table { width: 100%; border-collapse: collapse; }
-        th { text-align: left; padding: 12px 16px; font-size: 12px; font-weight: 600; color: #64ffda; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #2a2f45; }
-        td { padding: 13px 16px; border-bottom: 1px solid #1e2235; font-size: 14px; vertical-align: middle; }
-        tr:hover td { background: rgba(255,255,255,0.02); }
-        .label { font-size: 12px; color: #8892b0; margin-bottom: 6px; font-weight: 500; }
-        .db-dot { width: 8px; height: 8px; background: #64ffda; border-radius: 50%; display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
+        th { text-align: left; padding: 12px 16px; font-size: 12px; font-weight: 600; color: #7c3aed; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #e8eaff; }
+        td { padding: 13px 16px; border-bottom: 1px solid #eceef8; font-size: 14px; vertical-align: middle; }
+        tr:hover td { background: rgba(124,58,237,0.04); }
+        .label { font-size: 12px; color: #6b7ab5; margin-bottom: 6px; font-weight: 500; }
+        .db-dot { width: 8px; height: 8px; background: #7c3aed; border-radius: 50%; display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
         @keyframes scanLine { from { transform: translateY(-40px); opacity: 0.6; } to { transform: translateY(40px); opacity: 1; } }
       `}</style>
 
       {/* HEADER */}
-      <div style={{ background: "#12151f", borderBottom: "1px solid #2a2f45", padding: "0 28px" }}>
+      <div style={{ background: "#ffffff", borderBottom: "1px solid #2a2f45", padding: "0 28px" }}>
         <div style={{ maxWidth: 1200, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", height: 64 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 36, height: 36, background: "linear-gradient(135deg, #64ffda, #0a8f6e)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>📦</div>
+            <div style={{ width: 36, height: 36, background: "linear-gradient(135deg, #7c3aed, #4f46e5)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>📦</div>
             <div>
-              <div style={{ fontWeight: 700, fontSize: 17, color: "#ccd6f6" }}>StockMaster</div>
-              <div style={{ fontSize: 11, color: "#8892b0" }}><span className="db-dot" />เชื่อมต่อ Supabase แล้ว</div>
+              <div style={{ fontWeight: 700, fontSize: 17, color: "#1a1040" }}>StockMaster</div>
+              <div style={{ fontSize: 11, color: "#6b7ab5" }}><span className="db-dot" />เชื่อมต่อ Supabase แล้ว</div>
             </div>
           </div>
           <div style={{ display: "flex", gap: 4 }}>
@@ -1168,12 +1168,12 @@ export default function WarehouseApp() {
         {tab === "dashboard" && (
           <div>
             <div style={{ marginBottom: 28 }}>
-              <h1 style={{ fontSize: 26, fontWeight: 700, color: "#ccd6f6" }}>ภาพรวมคลังสินค้า</h1>
-              <p style={{ color: "#8892b0", marginTop: 4 }}>อัปเดตล่าสุด: {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}</p>
+              <h1 style={{ fontSize: 26, fontWeight: 700, color: "#1a1040" }}>ภาพรวมคลังสินค้า</h1>
+              <p style={{ color: "#6b7ab5", marginTop: 4 }}>อัปเดตล่าสุด: {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}</p>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 16, marginBottom: 28 }}>
               {[
-                { label: "มูลค่าสินค้าทั้งหมด", value: `฿${totalValue.toLocaleString("th-TH")}`, icon: "💰", color: "#64ffda" },
+                { label: "มูลค่าสินค้าทั้งหมด", value: `฿${totalValue.toLocaleString("th-TH")}`, icon: "💰", color: "#7c3aed" },
                 { label: "รายการสินค้า", value: `${products.length} รายการ`, icon: "🗂️", color: "#82aaff" },
                 { label: "จำนวนชิ้นทั้งหมด", value: totalItems.toLocaleString("th-TH"), icon: "📦", color: "#c3e88d" },
                 { label: "สินค้าใกล้หมด", value: `${lowStock.length} รายการ`, icon: "⚠️", color: "#ffa500" },
@@ -1182,7 +1182,7 @@ export default function WarehouseApp() {
                 <div key={i} className="stat-card">
                   <div style={{ fontSize: 28, marginBottom: 12 }}>{s.icon}</div>
                   <div className="mono" style={{ fontSize: 24, fontWeight: 700, color: s.color }}>{s.value}</div>
-                  <div style={{ color: "#8892b0", marginTop: 4, fontSize: 14 }}>{s.label}</div>
+                  <div style={{ color: "#6b7ab5", marginTop: 4, fontSize: 14 }}>{s.label}</div>
                 </div>
               ))}
             </div>
@@ -1198,13 +1198,13 @@ export default function WarehouseApp() {
                       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                         {p.imageUrl && <img src={p.imageUrl} style={{ width: 36, height: 36, borderRadius: 6, objectFit: "cover" }} />}
                         <div>
-                          <div style={{ fontWeight: 600, color: "#ccd6f6" }}>{p.name}</div>
-                          <div style={{ fontSize: 12, color: "#8892b0" }}>{p.sku}</div>
+                          <div style={{ fontWeight: 600, color: "#1a1040" }}>{p.name}</div>
+                          <div style={{ fontSize: 12, color: "#6b7ab5" }}>{p.sku}</div>
                         </div>
                       </div>
                       <div style={{ textAlign: "right" }}>
                         <div className={`badge ${p.quantity <= 0 ? "badge-out" : "badge-low"}`}>{p.quantity <= 0 ? "หมดสต็อก" : `เหลือ ${p.quantity} ${p.unit}`}</div>
-                        <div style={{ fontSize: 12, color: "#8892b0", marginTop: 4 }}>ขั้นต่ำ: {p.minStock} {p.unit}</div>
+                        <div style={{ fontSize: 12, color: "#6b7ab5", marginTop: 4 }}>ขั้นต่ำ: {p.minStock} {p.unit}</div>
                       </div>
                     </div>
                   ))}
@@ -1218,7 +1218,7 @@ export default function WarehouseApp() {
                     <span style={{ fontSize: 20 }}>😴</span>
                     <h2 style={{ fontSize: 17, fontWeight: 700, color: "#82aaff" }}>สินค้าไม่เคลื่อนไหว 15 วัน ({dormantProducts.length} รายการ)</h2>
                   </div>
-                  <div style={{ fontSize: 12, color: "#8892b0" }}>มูลค่ารวม ฿{dormantProducts.reduce((s,p)=>s+p.quantity*p.price,0).toLocaleString("th-TH")}</div>
+                  <div style={{ fontSize: 12, color: "#6b7ab5" }}>มูลค่ารวม ฿{dormantProducts.reduce((s,p)=>s+p.quantity*p.price,0).toLocaleString("th-TH")}</div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {dormantProducts.slice(0, 5).map(p => (
@@ -1226,41 +1226,41 @@ export default function WarehouseApp() {
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         {p.imageUrl && <img src={p.imageUrl} style={{ width: 32, height: 32, borderRadius: 6, objectFit: "cover" }} />}
                         <div>
-                          <div style={{ fontWeight: 600, color: "#ccd6f6", fontSize: 14 }}>{p.name}</div>
-                          <div style={{ fontSize: 12, color: "#8892b0" }}>{p.sku}</div>
+                          <div style={{ fontWeight: 600, color: "#1a1040", fontSize: 14 }}>{p.name}</div>
+                          <div style={{ fontSize: 12, color: "#6b7ab5" }}>{p.sku}</div>
                         </div>
                       </div>
                       <div style={{ textAlign: "right" }}>
                         <div style={{ fontFamily: "monospace", fontWeight: 700, color: "#82aaff" }}>{p.quantity} {p.unit}</div>
-                        <div style={{ fontSize: 12, color: "#8892b0" }}>฿{(p.quantity*p.price).toLocaleString()}</div>
+                        <div style={{ fontSize: 12, color: "#6b7ab5" }}>฿{(p.quantity*p.price).toLocaleString()}</div>
                       </div>
                     </div>
                   ))}
                   {dormantProducts.length > 5 && (
-                    <div style={{ textAlign: "center", fontSize: 13, color: "#8892b0", padding: "6px 0" }}>และอีก {dormantProducts.length - 5} รายการ</div>
+                    <div style={{ textAlign: "center", fontSize: 13, color: "#6b7ab5", padding: "6px 0" }}>และอีก {dormantProducts.length - 5} รายการ</div>
                   )}
                 </div>
               </div>
             )}
 
             <div className="card">
-              <h2 style={{ fontSize: 17, fontWeight: 700, color: "#ccd6f6", marginBottom: 16 }}>รายการล่าสุด</h2>
-              {transactions.length === 0 && <div style={{ color: "#8892b0", textAlign: "center", padding: 24 }}>ยังไม่มีรายการเคลื่อนไหว</div>}
+              <h2 style={{ fontSize: 17, fontWeight: 700, color: "#1a1040", marginBottom: 16 }}>รายการล่าสุด</h2>
+              {transactions.length === 0 && <div style={{ color: "#6b7ab5", textAlign: "center", padding: 24 }}>ยังไม่มีรายการเคลื่อนไหว</div>}
               {transactions.slice(0, 5).map(tx => {
                 const p = products.find(x => x.id === tx.productId);
                 return (
-                  <div key={tx.id} className="tx-row" style={{ borderColor: tx.type === "in" ? "#64ffda" : "#ff5555" }}>
+                  <div key={tx.id} className="tx-row" style={{ borderColor: tx.type === "in" ? "#7c3aed" : "#ff5555" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <div>
-                        <span style={{ fontWeight: 600, color: tx.type === "in" ? "#64ffda" : "#ff5555", marginRight: 8 }}>{tx.type === "in" ? "▲ รับเข้า" : "▼ เบิกออก"}</span>
-                        <span style={{ color: "#ccd6f6" }}>{p?.name}</span>
+                        <span style={{ fontWeight: 600, color: tx.type === "in" ? "#7c3aed" : "#ff5555", marginRight: 8 }}>{tx.type === "in" ? "▲ รับเข้า" : "▼ เบิกออก"}</span>
+                        <span style={{ color: "#1a1040" }}>{p?.name}</span>
                       </div>
                       <div style={{ textAlign: "right" }}>
-                        <div className="mono" style={{ color: tx.type === "in" ? "#64ffda" : "#ff5555", fontWeight: 700 }}>{tx.type === "in" ? "+" : "-"}{tx.quantity} {p?.unit}</div>
-                        <div style={{ fontSize: 12, color: "#8892b0" }}>{tx.date} · {tx.by}</div>
+                        <div className="mono" style={{ color: tx.type === "in" ? "#7c3aed" : "#ff5555", fontWeight: 700 }}>{tx.type === "in" ? "+" : "-"}{tx.quantity} {p?.unit}</div>
+                        <div style={{ fontSize: 12, color: "#6b7ab5" }}>{tx.date} · {tx.by}</div>
                       </div>
                     </div>
-                    {tx.note && <div style={{ fontSize: 13, color: "#8892b0", marginTop: 4 }}>📝 {tx.note}</div>}
+                    {tx.note && <div style={{ fontSize: 13, color: "#6b7ab5", marginTop: 4 }}>📝 {tx.note}</div>}
                   </div>
                 );
               })}
@@ -1272,12 +1272,12 @@ export default function WarehouseApp() {
         {tab === "inventory" && (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
-              <h1 style={{ fontSize: 24, fontWeight: 700, color: "#ccd6f6" }}>สินค้าคงคลัง <span style={{ fontSize: 14, color: "#8892b0", fontWeight: 400 }}>({filteredProducts.length} รายการ)</span></h1>
+              <h1 style={{ fontSize: 24, fontWeight: 700, color: "#1a1040" }}>สินค้าคงคลัง <span style={{ fontSize: 14, color: "#6b7ab5", fontWeight: 400 }}>({filteredProducts.length} รายการ)</span></h1>
               <div style={{ display: "flex", gap: 10 }}>
                 <button className="btn btn-secondary" onClick={() => { setTxType("in"); setShowModal("transaction"); }}>▲ รับสินค้า</button>
                 <button className="btn btn-secondary" style={{ color: "#ff5555", borderColor: "rgba(255,85,85,0.3)", background: "rgba(255,85,85,0.05)" }} onClick={() => { setTxType("out"); setShowModal("transaction"); }}>▼ เบิกสินค้า</button>
                 <button className="btn btn-secondary" onClick={handleExportInventory} disabled={exportingInventory}
-                  style={{ color: "#64ffda", borderColor: "rgba(100,255,218,0.3)", background: "rgba(100,255,218,0.05)" }}>
+                  style={{ color: "#7c3aed", borderColor: "rgba(124,58,237,0.3)", background: "rgba(100,255,218,0.05)" }}>
                   {exportingInventory ? "⏳..." : "📥 Export Excel"}
                 </button>
                 <button className="btn btn-primary" onClick={() => { setForm({}); setShowModal("add-product"); }}>+ เพิ่มสินค้า</button>
@@ -1319,7 +1319,7 @@ export default function WarehouseApp() {
                   {filteredProducts.map(p => {
                     const status = p.quantity <= 0 ? "out" : (p.minStock > 0 && p.quantity <= p.minStock) ? "low" : "ok";
                     return (
-                      <tr key={p.id} style={{ background: pinnedIds.includes(String(p.id)) ? "rgba(100,255,218,0.04)" : undefined }}>
+                      <tr key={p.id} style={{ background: pinnedIds.includes(String(p.id)) ? "rgba(124,58,237,0.04)" : undefined }}>
                         <td style={{ textAlign: "center" }}>
                           <button onClick={() => togglePin(p.id)} title={pinnedIds.includes(p.id) ? "ถอนหมุด" : "ปักหมุด"}
                             style={{ background: "none", border: "none", cursor: "pointer", fontSize: 15, padding: "2px", opacity: pinnedIds.includes(String(p.id)) ? 1 : 0.2, transition: "opacity 0.15s", lineHeight: 1 }}
@@ -1333,14 +1333,14 @@ export default function WarehouseApp() {
                             <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => e.target.files[0] && handleImageUpload(p, e.target.files[0])} />
                             {p.imageUrl
                               ? <img src={p.imageUrl} alt={p.name} style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 8, border: "1px solid #2a2f45" }} />
-                              : <div style={{ width: 44, height: 44, borderRadius: 8, border: "2px dashed #2a2f45", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "#3a3f5c", background: "#12151f" }}>📷</div>
+                              : <div style={{ width: 44, height: 44, borderRadius: 8, border: "2px dashed #2a2f45", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "#c0c4da", background: "#ffffff" }}>📷</div>
                             }
                           </label>
                         </td>
-                        <td><span className="mono" style={{ color: "#8892b0", fontSize: 12 }}>{p.sku}</span></td>
-                        <td style={{ fontWeight: 500, color: "#ccd6f6" }}>{p.name}</td>
+                        <td><span className="mono" style={{ color: "#6b7ab5", fontSize: 12 }}>{p.sku}</span></td>
+                        <td style={{ fontWeight: 500, color: "#1a1040" }}>{p.name}</td>
 
-                        <td className="mono" style={{ fontWeight: 700, color: p.quantity < 0 ? "#ff5555" : undefined }}>{p.quantity} <span style={{ color: "#8892b0", fontSize: 12, fontWeight: 400 }}>{p.unit}</span></td>
+                        <td className="mono" style={{ fontWeight: 700, color: p.quantity < 0 ? "#ff5555" : undefined }}>{p.quantity} <span style={{ color: "#6b7ab5", fontSize: 12, fontWeight: 400 }}>{p.unit}</span></td>
                         <td><span className={`badge badge-${status}`}>{status === "ok" ? "✓ ปกติ" : status === "low" ? "⚠ ใกล้หมด" : "✗ หมด"}</span></td>
                         <td className="mono" style={{ color: "#c3e88d" }}>฿{p.price.toLocaleString()}</td>
                         <td>
@@ -1354,7 +1354,7 @@ export default function WarehouseApp() {
                   })}
                 </tbody>
               </table>
-              {filteredProducts.length === 0 && <div style={{ textAlign: "center", padding: 48, color: "#8892b0" }}>ไม่พบสินค้าที่ค้นหา</div>}
+              {filteredProducts.length === 0 && <div style={{ textAlign: "center", padding: 48, color: "#6b7ab5" }}>ไม่พบสินค้าที่ค้นหา</div>}
             </div>
           </div>
         )}
@@ -1370,7 +1370,7 @@ export default function WarehouseApp() {
         {tab === "transactions" && (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-              <h1 style={{ fontSize: 24, fontWeight: 700, color: "#ccd6f6" }}>รายการเคลื่อนไหวสินค้า</h1>
+              <h1 style={{ fontSize: 24, fontWeight: 700, color: "#1a1040" }}>รายการเคลื่อนไหวสินค้า</h1>
               <div style={{ display: "flex", gap: 10 }}>
                 <button className="btn btn-secondary" onClick={() => { setTxType("in"); setShowModal("transaction"); }}>▲ รับสินค้า</button>
                 <button className="btn btn-secondary" style={{ color: "#ff5555", borderColor: "rgba(255,85,85,0.3)", background: "rgba(255,85,85,0.05)" }} onClick={() => { setTxType("out"); setShowModal("transaction"); }}>▼ เบิกสินค้า</button>
@@ -1384,26 +1384,26 @@ export default function WarehouseApp() {
                     const p = products.find(x => x.id === tx.productId);
                     return (
                       <tr key={tx.id}>
-                        <td className="mono" style={{ color: "#8892b0", fontSize: 13 }}>{tx.date}</td>
+                        <td className="mono" style={{ color: "#6b7ab5", fontSize: 13 }}>{tx.date}</td>
                         <td><span className={`badge ${tx.type === "in" ? "badge-ok" : "badge-out"}`}>{tx.type === "in" ? "▲ รับเข้า" : "▼ เบิกออก"}</span></td>
                         <td>
                           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                             {p?.imageUrl && <img src={p.imageUrl} style={{ width: 28, height: 28, borderRadius: 4, objectFit: "cover" }} />}
                             <div>
-                              <div style={{ fontWeight: 500, color: "#ccd6f6" }}>{p?.name || "ไม่ทราบ"}</div>
-                              <div style={{ fontSize: 12, color: "#8892b0" }}>{p?.sku}</div>
+                              <div style={{ fontWeight: 500, color: "#1a1040" }}>{p?.name || "ไม่ทราบ"}</div>
+                              <div style={{ fontSize: 12, color: "#6b7ab5" }}>{p?.sku}</div>
                             </div>
                           </div>
                         </td>
-                        <td className="mono" style={{ fontWeight: 700, color: tx.type === "in" ? "#64ffda" : "#ff5555" }}>{tx.type === "in" ? "+" : "-"}{tx.quantity} {p?.unit}</td>
-                        <td style={{ color: "#8892b0", fontSize: 14 }}>{tx.note || "-"}</td>
-                        <td style={{ color: "#ccd6f6" }}>{tx.by}</td>
+                        <td className="mono" style={{ fontWeight: 700, color: tx.type === "in" ? "#7c3aed" : "#ff5555" }}>{tx.type === "in" ? "+" : "-"}{tx.quantity} {p?.unit}</td>
+                        <td style={{ color: "#6b7ab5", fontSize: 14 }}>{tx.note || "-"}</td>
+                        <td style={{ color: "#1a1040" }}>{tx.by}</td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
-              {transactions.length === 0 && <div style={{ textAlign: "center", padding: 48, color: "#8892b0" }}>ยังไม่มีรายการเคลื่อนไหว</div>}
+              {transactions.length === 0 && <div style={{ textAlign: "center", padding: 48, color: "#6b7ab5" }}>ยังไม่มีรายการเคลื่อนไหว</div>}
             </div>
           </div>
         )}
@@ -1413,7 +1413,7 @@ export default function WarehouseApp() {
       {(showModal === "add-product" || showModal === "edit") && (
         <div className="overlay" onClick={() => setShowModal(null)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
-            <h2 style={{ fontSize: 20, fontWeight: 700, color: "#ccd6f6", marginBottom: 20 }}>
+            <h2 style={{ fontSize: 20, fontWeight: 700, color: "#1a1040", marginBottom: 20 }}>
               {showModal === "edit" ? "✏️ แก้ไขสินค้า" : "📦 เพิ่มสินค้าใหม่"}
             </h2>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
@@ -1448,7 +1448,7 @@ export default function WarehouseApp() {
               </div>
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 22, justifyContent: "flex-end" }}>
-              <button className="btn" style={{ background: "#1e2235", color: "#8892b0", padding: "10px 20px" }} onClick={() => setShowModal(null)}>ยกเลิก</button>
+              <button className="btn" style={{ background: "#f0f2ff", color: "#6b7ab5", padding: "10px 20px" }} onClick={() => setShowModal(null)}>ยกเลิก</button>
               <button className="btn btn-primary" disabled={saving} onClick={showModal === "edit" ? handleEditProduct : handleAddProduct}>
                 {saving ? "กำลังบันทึก..." : showModal === "edit" ? "บันทึก" : "เพิ่มสินค้า"}
               </button>
@@ -1462,7 +1462,7 @@ export default function WarehouseApp() {
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
               {[["in","▲ รับสินค้าเข้า"],["out","▼ เบิกสินค้าออก"]].map(([t, l]) => (
-                <button key={t} className="btn" style={{ flex: 1, padding: "10px", background: txType === t ? (t === "in" ? "rgba(100,255,218,0.15)" : "rgba(255,85,85,0.15)") : "#0f1117", color: t === "in" ? "#64ffda" : "#ff5555", border: `1px solid ${txType === t ? (t === "in" ? "#64ffda" : "#ff5555") : "#2a2f45"}`, fontWeight: 700 }} onClick={() => setTxType(t)}>{l}</button>
+                <button key={t} className="btn" style={{ flex: 1, padding: "10px", background: txType === t ? (t === "in" ? "rgba(124,58,237,0.15)" : "rgba(255,85,85,0.15)") : "#f0f2ff", color: t === "in" ? "#7c3aed" : "#ff5555", border: `1px solid ${txType === t ? (t === "in" ? "#7c3aed" : "#ff5555") : "#d4d8f0"}`, fontWeight: 700 }} onClick={() => setTxType(t)}>{l}</button>
               ))}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -1485,24 +1485,24 @@ export default function WarehouseApp() {
                           p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q)
                         ).slice(0, 30);
                         return filtered.length > 0 ? (
-                          <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 8, maxHeight: 240, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
+                          <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "#ffffff", border: "1px solid #2a2f45", borderRadius: 8, maxHeight: 240, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
                             {filtered.map(p => (
                               <div key={p.id}
                                 onMouseDown={() => setTxForm(f => ({ ...f, productId: String(p.id), _productSearch: p.name, _showDrop: false }))}
                                 style={{ padding: "10px 14px", cursor: "pointer", borderBottom: "1px solid #1e2235", fontSize: 14 }}
-                                onMouseEnter={e => e.currentTarget.style.background = "rgba(100,255,218,0.08)"}
+                                onMouseEnter={e => e.currentTarget.style.background = "rgba(124,58,237,0.08)"}
                                 onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                               >
-                                <span style={{ color: "#ccd6f6", fontWeight: 500 }}>{p.name}</span>
-                                <span style={{ color: "#555", fontSize: 12, marginLeft: 8 }}>{p.sku}</span>
-                                <span style={{ float: "right", color: p.quantity <= 0 ? "#ff5555" : "#64ffda", fontSize: 12, fontFamily: "monospace" }}>
+                                <span style={{ color: "#1a1040", fontWeight: 500 }}>{p.name}</span>
+                                <span style={{ color: "#9ba3c7", fontSize: 12, marginLeft: 8 }}>{p.sku}</span>
+                                <span style={{ float: "right", color: p.quantity <= 0 ? "#ff5555" : "#7c3aed", fontSize: 12, fontFamily: "monospace" }}>
                                   {p.quantity} {p.unit}
                                 </span>
                               </div>
                             ))}
                           </div>
                         ) : q ? (
-                          <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "#1a1d27", border: "1px solid #2a2f45", borderRadius: 8, padding: "12px 14px", color: "#555", fontSize: 13 }}>
+                          <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "#ffffff", border: "1px solid #2a2f45", borderRadius: 8, padding: "12px 14px", color: "#9ba3c7", fontSize: 13 }}>
                             ไม่พบสินค้า "{txForm._productSearch}"
                           </div>
                         ) : null;
@@ -1525,8 +1525,8 @@ export default function WarehouseApp() {
               </div>
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 22, justifyContent: "flex-end" }}>
-              <button className="btn" style={{ background: "#1e2235", color: "#8892b0", padding: "10px 20px" }} onClick={() => setShowModal(null)}>ยกเลิก</button>
-              <button className="btn btn-primary" disabled={saving} style={{ background: txType === "out" ? "#ff5555" : "#64ffda", color: "#0f1117" }} onClick={handleTransaction}>
+              <button className="btn" style={{ background: "#f0f2ff", color: "#6b7ab5", padding: "10px 20px" }} onClick={() => setShowModal(null)}>ยกเลิก</button>
+              <button className="btn btn-primary" disabled={saving} style={{ background: txType === "out" ? "#ff5555" : "#7c3aed", color: "#f0f2ff" }} onClick={handleTransaction}>
                 {saving ? "กำลังบันทึก..." : txType === "in" ? "รับสินค้าเข้า" : "เบิกสินค้าออก"}
               </button>
             </div>
@@ -1535,7 +1535,7 @@ export default function WarehouseApp() {
       )}
 
       {toast && (
-        <div className="toast" style={{ borderColor: toast.type === "error" ? "rgba(255,85,85,0.4)" : "rgba(100,255,218,0.3)", color: toast.type === "error" ? "#ff5555" : "#64ffda" }}>
+        <div className="toast" style={{ borderColor: toast.type === "error" ? "rgba(255,85,85,0.4)" : "rgba(124,58,237,0.3)", color: toast.type === "error" ? "#ff5555" : "#7c3aed" }}>
           <span>{toast.type === "error" ? "❌" : "✅"}</span>
           <span>{toast.msg}</span>
         </div>
