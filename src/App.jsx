@@ -1102,74 +1102,95 @@ export default function WarehouseApp() {
   );
 
   return (
-    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "#f0f2ff", color: "#1a1040" }}>
+    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "#F8FAFC", color: "#111827" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #e8eaff; } ::-webkit-scrollbar-thumb { background: #b0b8e8; border-radius: 3px; }
+        ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #F1F5F9; } ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
         input, select, textarea { font-family: 'Sarabun', sans-serif; }
-        .tab-btn { background: none; border: none; cursor: pointer; padding: 10px 20px; border-radius: 8px; font-family: 'Sarabun', sans-serif; font-size: 15px; transition: all 0.2s; color: #8892b0; }
-        .tab-btn.active { background: #ede9fe; color: #7c3aed; font-weight: 600; }
-        .tab-btn:hover:not(.active) { background: #f5f3ff; color: #4f46e5; }
-        .card { background: #1a1d27; border: 1px solid #2a2f45; border-radius: 14px; padding: 20px; }
-        .btn { border: none; cursor: pointer; border-radius: 8px; font-family: 'Sarabun', sans-serif; font-weight: 600; transition: all 0.2s; font-size: 14px; }
-        .btn-primary { background: #7c3aed; color: #ffffff; padding: 10px 20px; }
-        .btn-primary:hover { background: #6d28d9; transform: translateY(-1px); }
-        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-        .btn-danger { background: rgba(255,85,85,0.1); color: #ff5555; padding: 6px 12px; border: 1px solid rgba(255,85,85,0.3); }
-        .btn-danger:hover { background: rgba(255,85,85,0.2); }
-        .btn-secondary { background: rgba(124,58,237,0.08); color: #64ffda; padding: 6px 12px; border: 1px solid rgba(124,58,237,0.2); }
-        .btn-secondary:hover { background: rgba(124,58,237,0.15); }
-        .inp { background: #f8f9ff; border: 1px solid #d4d8f0; border-radius: 8px; padding: 10px 14px; color: #1a1040; width: 100%; font-size: 14px; outline: none; transition: border 0.2s; }
-        .inp:focus { border-color: #7c3aed; }
+
+        .tab-btn { background: none; border: none; cursor: pointer; padding: 8px 16px; border-radius: 8px; font-family: 'Sarabun', sans-serif; font-size: 14px; transition: all 0.2s; color: rgba(255,255,255,0.7); }
+        .tab-btn.active { background: rgba(255,255,255,0.2); color: #fff; font-weight: 600; }
+        .tab-btn:hover:not(.active) { background: rgba(255,255,255,0.12); color: #fff; }
+
+        .card { background: #ffffff; border: 1px solid #E5E7EB; border-radius: 20px; padding: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+        .btn { border: none; cursor: pointer; border-radius: 10px; font-family: 'Sarabun', sans-serif; font-weight: 600; transition: all 0.2s; font-size: 14px; }
+        .btn-primary { background: linear-gradient(135deg,#7C3AED,#3B82F6); color: #fff; padding: 10px 22px; }
+        .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 14px rgba(124,58,237,0.35); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+        .btn-danger { background: #FEF2F2; color: #DC2626; padding: 6px 12px; border: 1px solid #FECACA; border-radius: 8px; }
+        .btn-danger:hover { background: #FEE2E2; }
+        .btn-secondary { background: #fff; color: #7C3AED; padding: 7px 14px; border: 1.5px solid #DDD6FE; border-radius: 8px; }
+        .btn-secondary:hover { background: #F5F3FF; }
+
+        .inp { background: #F9FAFB; border: 1.5px solid #E5E7EB; border-radius: 10px; padding: 10px 14px; color: #111827; width: 100%; font-size: 14px; outline: none; transition: border 0.2s; }
+        .inp:focus { border-color: #7C3AED; background: #fff; box-shadow: 0 0 0 3px rgba(124,58,237,0.08); }
+
         .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
-        .badge-ok { background: rgba(124,58,237,0.1); color: #64ffda; }
-        .badge-low { background: rgba(255,165,0,0.1); color: #ffa500; }
-        .badge-out { background: rgba(255,85,85,0.1); color: #ff5555; }
-        .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
-        .modal { background: #ffffff; border: 1px solid #d4d8f0; border-radius: 18px; padding: 28px; width: 480px; max-width: 95vw; max-height: 90vh; overflow-y: auto; }
-        .toast { position: fixed; bottom: 28px; right: 28px; z-index: 999; background: #ffffff; border: 1px solid #d4d8f0; border-radius: 12px; padding: 14px 22px; font-weight: 600; display: flex; align-items: center; gap: 10px; animation: slideIn 0.3s ease; box-shadow: 0 8px 32px rgba(79,70,229,0.15); }
+        .badge-ok { background: #D1FAE5; color: #065F46; }
+        .badge-low { background: #FEF3C7; color: #92400E; }
+        .badge-out { background: #FEE2E2; color: #991B1B; }
+
+        .overlay { position: fixed; inset: 0; background: rgba(17,24,39,0.45); z-index: 100; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(6px); }
+        .modal { background: #fff; border: 1px solid #E5E7EB; border-radius: 24px; padding: 32px; width: 500px; max-width: 95vw; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.12); }
+
+        .toast { position: fixed; bottom: 28px; right: 28px; z-index: 999; background: #fff; border: 1px solid #E5E7EB; border-radius: 14px; padding: 14px 22px; font-weight: 600; display: flex; align-items: center; gap: 10px; animation: slideIn 0.3s ease; box-shadow: 0 8px 24px rgba(0,0,0,0.1); color: #111827; }
         @keyframes slideIn { from { transform: translateX(60px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-        .stat-card { background: linear-gradient(135deg, #ffffff 0%, #f0f2ff 100%); border: 1px solid #2a2f45; border-radius: 14px; padding: 22px; position: relative; overflow: hidden; }
+
+        .stat-card { background: #fff; border: 1px solid #E5E7EB; border-radius: 16px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+        .stat-card::before { display: none; }
         .mono { font-family: 'Space Mono', monospace; }
-        .tx-row { border-left: 3px solid; padding: 12px 16px; border-radius: 0 8px 8px 0; background: rgba(124,58,237,0.04); margin-bottom: 8px; }
+        .tx-row { border-left: 3px solid; padding: 12px 16px; border-radius: 0 10px 10px 0; background: #FAFAFA; margin-bottom: 8px; }
+
         table { width: 100%; border-collapse: collapse; }
-        th { text-align: left; padding: 12px 16px; font-size: 12px; font-weight: 600; color: #7c3aed; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid #e8eaff; }
-        td { padding: 13px 16px; border-bottom: 1px solid #eceef8; font-size: 14px; vertical-align: middle; }
-        tr:hover td { background: rgba(124,58,237,0.04); }
-        .label { font-size: 12px; color: #6b7ab5; margin-bottom: 6px; font-weight: 500; }
-        .db-dot { width: 8px; height: 8px; background: #7c3aed; border-radius: 50%; display: inline-block; margin-right: 6px; animation: pulse 2s infinite; }
+        th { text-align: left; padding: 12px 16px; font-size: 11px; font-weight: 700; color: #7C3AED; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1.5px solid #EDE9FE; background: #FAFAFA; }
+        td { padding: 13px 16px; border-bottom: 1px solid #F3F4F6; font-size: 14px; vertical-align: middle; color: #111827; }
+        tr:hover td { background: #FAFAFE; }
+
+        .label { font-size: 12px; color: #6B7280; margin-bottom: 6px; font-weight: 500; }
+        .db-dot { width: 7px; height: 7px; background: #10B981; border-radius: 50%; display: inline-block; margin-right: 5px; animation: pulse 2s infinite; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
         @keyframes scanLine { from { transform: translateY(-40px); opacity: 0.6; } to { transform: translateY(40px); opacity: 1; } }
+
+        .section-title { font-size: 22px; font-weight: 700; color: #111827; }
+        .section-sub { font-size: 14px; color: #6B7280; margin-top: 4px; }
       `}</style>
 
-      {/* HEADER */}
-      <div style={{ background: "#ffffff", borderBottom: "1px solid #2a2f45", padding: "0 28px" }}>
+      {/* HEADER — Gradient Nav */}
+      <div style={{ background: "linear-gradient(135deg,#7C3AED 0%,#4F46E5 50%,#3B82F6 100%)", padding: "0 32px", boxShadow: "0 2px 12px rgba(124,58,237,0.25)" }}>
         <div style={{ maxWidth: 1200, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", height: 64 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 36, height: 36, background: "linear-gradient(135deg, #7c3aed, #4f46e5)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>📦</div>
+            <div style={{ width: 38, height: 38, background: "rgba(255,255,255,0.2)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, backdropFilter: "blur(4px)" }}>📦</div>
             <div>
-              <div style={{ fontWeight: 700, fontSize: 17, color: "#1a1040" }}>StockMaster</div>
-              <div style={{ fontSize: 11, color: "#6b7ab5" }}><span className="db-dot" />เชื่อมต่อ Supabase แล้ว</div>
+              <div style={{ fontWeight: 700, fontSize: 17, color: "#fff", letterSpacing: "-0.3px" }}>StockMaster</div>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)", display: "flex", alignItems: "center", gap: 4 }}>
+                <span className="db-dot" style={{ background: "#10B981" }} />เชื่อมต่อ Supabase แล้ว
+              </div>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 4 }}>
-            {[["dashboard","📊","ภาพรวม"],["inventory","📦","สินค้าคงคลัง"],["transactions","🔄","รายการเคลื่อนไหว"],["returns","↩","พัสดุตีกลับ"]].map(([t,icon,label]) => (
-              <button key={t} className={`tab-btn ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>{icon} {label}</button>
+          <div style={{ display: "flex", gap: 2 }}>
+            {[["dashboard","ภาพรวม"],["inventory","สินค้าคงคลัง"],["transactions","รายการเคลื่อนไหว"],["returns","พัสดุตีกลับ"]].map(([t,label]) => (
+              <button key={t} className={`tab-btn ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>{label}</button>
             ))}
           </div>
-          <button onClick={loadAll} className="btn btn-secondary" style={{ fontSize: 13 }}>🔄 รีเฟรช</button>
+          <button onClick={loadAll} style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", padding: "8px 18px", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", backdropFilter: "blur(4px)" }}>
+            🔄 รีเฟรช
+          </button>
         </div>
       </div>
 
-      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "28px" }}>
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 28px" }}>
 
         {/* DASHBOARD */}
         {tab === "dashboard" && (
           <div>
             <div style={{ marginBottom: 28 }}>
-              <h1 style={{ fontSize: 26, fontWeight: 700, color: "#1a1040" }}>ภาพรวมคลังสินค้า</h1>
-              <p style={{ color: "#6b7ab5", marginTop: 4 }}>อัปเดตล่าสุด: {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}</p>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+                <div>
+                  <h1 className="section-title">ภาพรวมคลังสินค้า</h1>
+                  <p className="section-sub">อัปเดตล่าสุด: {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}</p>
+                </div>
+              </div>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 16, marginBottom: 28 }}>
               {[
@@ -1187,7 +1208,7 @@ export default function WarehouseApp() {
               ))}
             </div>
             {lowStock.length > 0 && (
-              <div className="card" style={{ marginBottom: 24, border: "1px solid rgba(255,165,0,0.3)" }}>
+              <div style={{ background: "#fff", border: "1.5px solid #FDE68A", borderRadius: 20, padding: 20, marginBottom: 24, boxShadow: "0 1px 4px rgba(0,0,0,0.05)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
                   <span style={{ fontSize: 20 }}>⚠️</span>
                   <h2 style={{ fontSize: 17, fontWeight: 700, color: "#ffa500" }}>สินค้าที่ต้องเติม ({lowStock.length} รายการ)</h2>
@@ -1212,7 +1233,7 @@ export default function WarehouseApp() {
               </div>
             )}
             {dormantProducts.length > 0 && (
-              <div className="card" style={{ marginBottom: 24, border: "1px solid rgba(130,130,180,0.3)" }}>
+              <div style={{ background: "#fff", border: "1.5px solid #DDD6FE", borderRadius: 20, padding: 20, marginBottom: 24, boxShadow: "0 1px 4px rgba(0,0,0,0.05)" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <span style={{ fontSize: 20 }}>😴</span>
@@ -1300,7 +1321,7 @@ export default function WarehouseApp() {
                 </button>
               )}
             </div>
-            <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+            <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, overflow: "hidden", boxShadow: "0 1px 4px rgba(0,0,0,0.05)" }}>
               <table>
                 <thead>
                   <tr>
