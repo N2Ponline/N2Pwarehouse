@@ -9,8 +9,8 @@ const sb = async (path, opts = {}) => {
       apikey: SUPABASE_ANON_KEY,
       Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
       "Content-Type": "application/json",
+      Prefer: opts.prefer || "return=representation",
       ...opts.headers,
-Prefer: opts.headers?.Prefer || opts.prefer || "return=representation",
     },
     ...opts,
   });
@@ -26,7 +26,7 @@ const api = {
   getProducts: () => sb("products?select=*&order=name.asc"),
   addProduct: (p) => sb("products", { method: "POST", body: JSON.stringify(p) }),
   updateProduct: (id, p) => sb(`products?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(p) }),
- deleteProduct: (id) => sb(`products?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
+  deleteProduct: (id) => sb(`products?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" }),
   getTransactions: () => sb("transactions?select=*&order=created_at.desc"),
   addTransaction: (t) => sb("transactions", { method: "POST", body: JSON.stringify(t) }),
 };
