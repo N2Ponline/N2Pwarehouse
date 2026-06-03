@@ -9,8 +9,8 @@ const sb = async (path, opts = {}) => {
       apikey: SUPABASE_ANON_KEY,
       Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
       "Content-Type": "application/json",
-      Prefer: opts.prefer || "return=representation",
       ...opts.headers,
+Prefer: opts.headers?.Prefer || opts.prefer || "return=representation",
     },
     ...opts,
   });
