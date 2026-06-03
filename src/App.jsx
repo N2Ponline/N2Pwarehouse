@@ -26,7 +26,7 @@ const api = {
   getProducts: () => sb("products?select=*&order=name.asc"),
   addProduct: (p) => sb("products", { method: "POST", body: JSON.stringify(p) }),
   updateProduct: (id, p) => sb(`products?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(p) }),
-  deleteProduct: (id) => sb(`products?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal", headers: { Prefer: "return=minimal" } }),
+ deleteProduct: (id) => sb(`products?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
   getTransactions: () => sb("transactions?select=*&order=created_at.desc"),
   addTransaction: (t) => sb("transactions", { method: "POST", body: JSON.stringify(t) }),
 };
