@@ -389,12 +389,12 @@ function ReturnAdminPanel() {
               {dayData.systemList.map((code, i) => {
                 const ok = dayData.scans.find(s => s.tracking_code === code);
                 const sessInfo = dayData.codeToSession?.[code];
-                const addedAt = sessInfo?.createdAt ? new Date(sessInfo.createdAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : "";
+                const addedAt = sessInfo?.createdAt ? new Date(sessInfo.createdAt).toLocaleDateString("th-TH", { day: "numeric", month: "short" }) + " " + new Date(sessInfo.createdAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : "";
                 return (
                   <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid #F3F4F6", fontSize: 12 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1 }}>
-                      <span style={{ fontFamily: "monospace", color: ok ? "#065F46" : "#991B1B" }}>{code}</span>
-                      {addedAt && <span style={{ fontSize: 10, color: "#9CA3AF" }}>{addedAt}</span>}
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, flexWrap: "wrap" }}>
+                      <span style={{ fontFamily: "monospace", color: ok ? "#065F46" : "#991B1B", fontSize: 12 }}>{code}</span>
+                      {addedAt && <span style={{ fontSize: 10, color: "#9CA3AF", background: "#F3F4F6", borderRadius: 4, padding: "1px 5px" }}>📅 {addedAt}</span>}
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <span style={{ color: ok ? "#10B981" : "#EF4444", fontSize: 11 }}>{ok ? `✓ ${ok.scanned_by||""}` : "รอรับ"}</span>
@@ -483,12 +483,25 @@ function ReturnAdminPanel() {
 
       {/* Import section */}
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, padding: 20, marginTop: 24 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: "#111827", marginBottom: 12 }}>📋 เพิ่มรายการจาก Flash Express</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>📋 เพิ่มรายการจาก Flash Express</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 13, color: "#6B7280" }}>บันทึกเข้าวันที่:</span>
+            <input type="date" value={dateFilter} onChange={e => setDateFilter(e.target.value)}
+              style={{ background: "#F9FAFB", border: "1.5px solid #DDD6FE", borderRadius: 8, padding: "6px 12px", color: "#7C3AED", fontSize: 13, outline: "none", fontFamily: "'Sarabun', sans-serif", fontWeight: 600 }} />
+            <span style={{ background: "#EDE9FE", color: "#7C3AED", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 600 }}>
+              📅 {dateFilter ? new Date(dateFilter).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" }) : ""}
+            </span>
+          </div>
+        </div>
         <textarea value={flashText} onChange={e => setFlashText(e.target.value)}
           placeholder="วางข้อความจาก Flash Express ที่นี่...&#10;รองรับทุก format เช่น TH27218RHRH38A 15:02/TH27218RJD230A 15:11/..."
           style={{ width: "100%", height: 120, background: "#F9FAFB", border: "1.5px solid #E5E7EB", borderRadius: 12, padding: 14, color: "#111827", fontSize: 13, resize: "vertical", outline: "none", lineHeight: 1.8, fontFamily: "'Sarabun', sans-serif" }} />
         {flashText.trim() && (
-          <div style={{ marginTop: 6, fontSize: 13, color: "#6B7280" }}>พบ <span style={{ color: "#7C3AED", fontWeight: 700 }}>{preview.length}</span> รายการ — จะเพิ่มเข้าวันที่ {new Date(dateFilter).toLocaleDateString("th-TH")}</div>
+          <div style={{ marginTop: 6, fontSize: 13, color: "#6B7280" }}>
+            พบ <span style={{ color: "#7C3AED", fontWeight: 700 }}>{preview.length}</span> รายการ
+            — จะบันทึกเข้า <span style={{ color: "#7C3AED", fontWeight: 700 }}>{dateFilter ? new Date(dateFilter).toLocaleDateString("th-TH", { dateStyle: "long" }) : ""}</span>
+          </div>
         )}
         <div style={{ display: "flex", gap: 10, marginTop: 12, justifyContent: "flex-end" }}>
           <button onClick={handleExport} disabled={!dayData || exporting}
@@ -781,7 +794,9 @@ function ReturnStaffPanel() {
             return (
               <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid #F3F4F6" }}>
                 <span style={{ fontFamily: "monospace", fontSize: 11, color: ok ? "#065F46" : "#92400E" }}>{s.tracking_code}</span>
-                <span style={{ fontSize: 11, color: "#6B7280" }}>{s.scanned_by} {s.scanned_at ? new Date(s.scanned_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : ""}</span>
+                <span style={{ fontSize: 11, color: "#6B7280" }}>
+                  {s.scanned_by} · {s.scanned_at ? new Date(s.scanned_at).toLocaleDateString("th-TH", { day: "numeric", month: "short" }) + " " + new Date(s.scanned_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : ""}
+                </span>
               </div>
             );
           })}
@@ -870,7 +885,10 @@ function ReturnCheckerTab() {
     <div>
       <div style={{ display: "flex", gap: 8, marginBottom: 28 }}>
         {[["admin","🗂 ตีกลับในระบบ"],["staff","📦 ตีกลับถึงคลัง"]].map(([v,l]) => (
-          <button key={v} onClick={() => setAndSave(v)} className={`tab-btn ${subTab === v ? "active" : ""}`}>{l}</button>
+          <button key={v} onClick={() => setAndSave(v)}
+            style={{ background: subTab === v ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#fff", color: subTab === v ? "#fff" : "#6B7280", border: subTab === v ? "none" : "1px solid #E5E7EB", borderRadius: 10, padding: "9px 20px", fontSize: 14, fontWeight: subTab === v ? 700 : 400, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", transition: "all 0.2s", boxShadow: subTab === v ? "0 4px 12px rgba(124,58,237,0.3)" : "none" }}>
+            {l}
+          </button>
         ))}
       </div>
       {subTab === "admin" ? <ReturnAdminPanel /> : <ReturnStaffPanel />}
