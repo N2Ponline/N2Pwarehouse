@@ -196,6 +196,13 @@ function ReturnAdminPanel() {
     try {
       // โหลดทุก sessions ของวันนั้น
       const sessions = await sbReturnAll("return_sessions", `select=*&session_date=eq.${date}`);
+      // เก็บ mapping code -> session info (วันที่ลง, session id)
+      const codeToSession = {};
+      sessions.forEach(s => {
+        (s.tracking_list || []).forEach(code => {
+          if (!codeToSession[code]) codeToSession[code] = { sessionId: s.id, createdAt: s.created_at };
+        });
+      });
       const systemList = [...new Set(sessions.flatMap(s => s.tracking_list || []))];
       // โหลดทุก scans ของวันนั้น
       const allScans = [];
@@ -209,7 +216,7 @@ function ReturnAdminPanel() {
       const matched = systemList.filter(c => scannedSet.has(c));
       const missing = systemList.filter(c => !scannedSet.has(c));
       const extra = uniqueScans.filter(s => !systemList.includes(s.tracking_code));
-      setDayData({ systemList, scans: uniqueScans, matched, missing, extra, sessions });
+      setDayData({ systemList, scans: uniqueScans, matched, missing, extra, sessions, codeToSession });
     } catch (e) { console.error(e); }
     setLoadingDay(false);
   };
@@ -290,6 +297,20 @@ function ReturnAdminPanel() {
     setExporting(false);
   };
 
+  const handleDeleteTracking = async (code) => {
+    if (!confirm(`ลบ ${code} ออกจากระบบ?`)) return;
+    if (!dayData) return;
+    // หา session ที่มีเลขนี้ แล้วอัปเดต tracking_list
+    const sess = dayData.sessions.find(s => (s.tracking_list||[]).includes(code));
+    if (!sess) return;
+    const newList = (sess.tracking_list || []).filter(c => c !== code);
+    try {
+      await sbReturn(`return_sessions?id=eq.${sess.id}`, { method: "PATCH", body: JSON.stringify({ tracking_list: newList }) });
+      // reload
+      await loadDayData(dateFilter);
+    } catch (e) { alert("ลบไม่สำเร็จ"); }
+  };
+
   const preview = parseFlashText(flashText);
   const pct = dayData && dayData.systemList.length > 0 ? Math.round(dayData.matched.length / dayData.systemList.length * 100) : 0;
 
@@ -367,10 +388,21 @@ function ReturnAdminPanel() {
             <div style={{ maxHeight: 280, overflowY: "auto" }}>
               {dayData.systemList.map((code, i) => {
                 const ok = dayData.scans.find(s => s.tracking_code === code);
+                const sessInfo = dayData.codeToSession?.[code];
+                const addedAt = sessInfo?.createdAt ? new Date(sessInfo.createdAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : "";
                 return (
-                  <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "5px 0", borderBottom: "1px solid #F3F4F6", fontSize: 12 }}>
-                    <span style={{ fontFamily: "monospace", color: ok ? "#065F46" : "#991B1B" }}>{code}</span>
-                    <span style={{ color: ok ? "#10B981" : "#EF4444", fontSize: 11 }}>{ok ? `✓ ${ok.scanned_by||""}` : "รอรับ"}</span>
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid #F3F4F6", fontSize: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1 }}>
+                      <span style={{ fontFamily: "monospace", color: ok ? "#065F46" : "#991B1B" }}>{code}</span>
+                      {addedAt && <span style={{ fontSize: 10, color: "#9CA3AF" }}>{addedAt}</span>}
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ color: ok ? "#10B981" : "#EF4444", fontSize: 11 }}>{ok ? `✓ ${ok.scanned_by||""}` : "รอรับ"}</span>
+                      <button onClick={() => handleDeleteTracking(code)}
+                        style={{ background: "none", border: "none", color: "#D1D5DB", cursor: "pointer", fontSize: 14, padding: "0 2px", lineHeight: 1 }}
+                        onMouseEnter={e => e.target.style.color="#EF4444"} onMouseLeave={e => e.target.style.color="#D1D5DB"}
+                        title="ลบออกจากระบบ">✕</button>
+                    </div>
                   </div>
                 );
               })}
@@ -422,9 +454,15 @@ function ReturnAdminPanel() {
           <div style={{ fontSize: 13, fontWeight: 600, color: "#991B1B", marginBottom: 12 }}>⏳ รอรับพัสดุ ({dayData.missing.length} รายการ) — Flash แจ้งแต่ยังไม่มาถึงคลัง</div>
           {dayData.missing.length === 0 && <div style={{ color: "#10B981", fontSize: 14, textAlign: "center", padding: 24 }}>🎉 รับครบทุกรายการแล้ว!</div>}
           {dayData.missing.map((code, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: 8, background: "#FEF2F2", marginBottom: 6 }}>
-              <span style={{ fontSize: 14 }}>❌</span>
-              <span style={{ fontFamily: "monospace", fontSize: 13, color: "#991B1B", fontWeight: 600 }}>{code}</span>
+            <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", borderRadius: 8, background: "#FEF2F2", marginBottom: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 14 }}>❌</span>
+                <span style={{ fontFamily: "monospace", fontSize: 13, color: "#991B1B", fontWeight: 600 }}>{code}</span>
+              </div>
+              <button onClick={() => handleDeleteTracking(code)}
+                style={{ background: "none", border: "none", color: "#FECACA", cursor: "pointer", fontSize: 14, padding: "0 4px" }}
+                onMouseEnter={e => e.target.style.color="#EF4444"} onMouseLeave={e => e.target.style.color="#FECACA"}
+                title="ลบออกจากระบบ">✕</button>
             </div>
           ))}
         </div>
