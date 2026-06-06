@@ -194,9 +194,8 @@ function ReturnAdminPanel() {
     setLoadingDay(true);
     setDayData(null);
     try {
-      // โหลดทุก sessions ของวันนั้น
+      // โหลด sessions ของวันที่เลือก (Flash แจ้ง)
       const sessions = await sbReturnAll("return_sessions", `select=*&session_date=eq.${date}`);
-      // เก็บ mapping code -> session info (วันที่ลง, session id)
       const codeToSession = {};
       sessions.forEach(s => {
         (s.tracking_list || []).forEach(code => {
@@ -204,12 +203,24 @@ function ReturnAdminPanel() {
         });
       });
       const systemList = [...new Set(sessions.flatMap(s => s.tracking_list || []))];
-      // โหลดทุก scans ของวันนั้น
+
+      // โหลด scans ทุกวัน (ไม่จำกัดวัน) เพื่อแมทช์กับ systemList
+      // ค้นหาจาก tracking_code ที่อยู่ใน systemList ของวันนี้
       const allScans = [];
       for (const s of sessions) {
         const scans = await sbReturnAll("return_scans", `session_id=eq.${s.id}&select=tracking_code,scanned_by,scanned_at`);
         allScans.push(...scans);
       }
+      // นอกจากนี้ ยังดึง scans จาก sessions วันอื่นที่อาจยิงเลขของวันนี้ด้วย
+      // โดย query return_scans ที่ tracking_code อยู่ใน systemList
+      // วิธีง่ายสุด: โหลด scans ทั้งหมดย้อนหลัง 30 วัน แล้ว filter
+      const recentScans = await sbReturnAll("return_scans", `select=tracking_code,scanned_by,scanned_at&order=scanned_at.desc&limit=5000`);
+      recentScans.forEach(sc => {
+        if (systemList.includes(sc.tracking_code) && !allScans.find(x => x.tracking_code === sc.tracking_code)) {
+          allScans.push(sc);
+        }
+      });
+
       const seen = new Set();
       const uniqueScans = allScans.filter(s => { if (seen.has(s.tracking_code)) return false; seen.add(s.tracking_code); return true; });
       const scannedSet = new Set(uniqueScans.map(s => s.tracking_code));
