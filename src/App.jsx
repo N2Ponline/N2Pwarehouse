@@ -184,18 +184,25 @@ async function exportReport(sessions) {
 function ReturnAdminPanel() {
   const [flashText, setFlashText] = useState("");
   const [loading, setLoading] = useState(false);
-  const [dateFilter, setDateFilter] = useState(new Date().toISOString().slice(0,10));
+  const [dateFilter, setDateFilter] = useState(""); // "" = ทั้งหมด
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState(new Date().toISOString().slice(0,10));
   const [dayData, setDayData] = useState(null); // { systemList, scans, matched, missing, extra }
   const [loadingDay, setLoadingDay] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [activeView, setActiveView] = useState("overview"); // overview | matched | pending
 
-  const loadDayData = async (date) => {
+  const loadDayData = async (date, from = dateFrom, to = dateTo) => {
     setLoadingDay(true);
     setDayData(null);
     try {
-      // โหลด sessions ของวันที่เลือก (Flash แจ้ง)
-      const sessions = await sbReturnAll("return_sessions", `select=*&session_date=eq.${date}`);
+      // โหลด sessions ตามเงื่อนไขวันที่
+      let sessionFilter = "select=*&order=session_date.desc";
+      if (date) sessionFilter += `&session_date=eq.${date}`;
+      else if (from && to) sessionFilter += `&session_date=gte.${from}&session_date=lte.${to}`;
+      else if (from) sessionFilter += `&session_date=gte.${from}`;
+      else if (to) sessionFilter += `&session_date=lte.${to}`;
+      const sessions = await sbReturnAll("return_sessions", sessionFilter);
       const codeToSession = {};
       sessions.forEach(s => {
         (s.tracking_list || []).forEach(code => {
@@ -232,7 +239,7 @@ function ReturnAdminPanel() {
     setLoadingDay(false);
   };
 
-  useEffect(() => { if (dateFilter) loadDayData(dateFilter); }, [dateFilter]);
+  useEffect(() => { loadDayData(dateFilter, dateFrom, dateTo); }, [dateFilter, dateFrom, dateTo]);
 
   const handleCreate = async () => {
     const list = parseFlashText(flashText);
@@ -240,7 +247,8 @@ function ReturnAdminPanel() {
     setLoading(true);
     try {
       if (list.length > 5000 && !confirm(`พบ ${list.length.toLocaleString()} รายการ ยืนยันสร้าง?`)) { setLoading(false); return; }
-      await sbReturn("return_sessions", { method: "POST", body: JSON.stringify({ tracking_list: list, courier: "Flash", session_date: dateFilter || new Date().toISOString().slice(0,10) }) });
+      const saveDate = dateFilter || new Date().toISOString().slice(0,10);
+      await sbReturn("return_sessions", { method: "POST", body: JSON.stringify({ tracking_list: list, courier: "Flash", session_date: saveDate }) });
       setFlashText("");
       if (dateFilter) loadDayData(dateFilter);
     } catch (e) { alert("เกิดข้อผิดพลาด: " + JSON.stringify(e)); }
@@ -333,11 +341,28 @@ function ReturnAdminPanel() {
           <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>ตีกลับในระบบ</h2>
           <p style={{ fontSize: 13, color: "#6B7280" }}>ดูและลงรายการพัสดุตีกลับตามวันที่</p>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input type="date" value={dateFilter} onChange={e => setDateFilter(e.target.value)}
-            style={{ background: "#fff", border: "1.5px solid #E5E7EB", borderRadius: 10, padding: "8px 14px", color: "#111827", fontSize: 13, outline: "none", fontFamily: "'Sarabun', sans-serif" }} />
-          <button onClick={() => setDateFilter(new Date().toISOString().slice(0,10))}
-            style={{ background: "#EDE9FE", color: "#7C3AED", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>วันนี้</button>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <button onClick={() => { setDateFilter(""); setDateFrom(""); setDateTo(new Date().toISOString().slice(0,10)); }}
+            style={{ background: !dateFilter && !dateFrom ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#fff", color: !dateFilter && !dateFrom ? "#fff" : "#6B7280", border: "1px solid #E5E7EB", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+            ทั้งหมด
+          </button>
+          <button onClick={() => { setDateFilter(new Date().toISOString().slice(0,10)); setDateFrom(""); setDateTo(""); }}
+            style={{ background: dateFilter === new Date().toISOString().slice(0,10) ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#fff", color: dateFilter === new Date().toISOString().slice(0,10) ? "#fff" : "#6B7280", border: "1px solid #E5E7EB", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+            วันนี้
+          </button>
+          <button onClick={() => { const d = new Date(); d.setDate(d.getDate()-1); setDateFilter(d.toISOString().slice(0,10)); setDateFrom(""); setDateTo(""); }}
+            style={{ background: "#fff", color: "#6B7280", border: "1px solid #E5E7EB", borderRadius: 8, padding: "7px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+            เมื่อวาน
+          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, background: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 8, padding: "4px 8px" }}>
+            <input type="date" value={dateFrom} onChange={e => { setDateFrom(e.target.value); setDateFilter(""); }}
+              placeholder="จากวันที่"
+              style={{ background: "transparent", border: "none", color: "#374151", fontSize: 12, outline: "none", fontFamily: "'Sarabun', sans-serif", width: 120 }} />
+            <span style={{ color: "#9CA3AF", fontSize: 12 }}>—</span>
+            <input type="date" value={dateTo} onChange={e => { setDateTo(e.target.value); setDateFilter(""); }}
+              placeholder="ถึงวันที่"
+              style={{ background: "transparent", border: "none", color: "#374151", fontSize: 12, outline: "none", fontFamily: "'Sarabun', sans-serif", width: 120 }} />
+          </div>
         </div>
       </div>
 
@@ -498,10 +523,10 @@ function ReturnAdminPanel() {
           <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>📋 เพิ่มรายการจาก Flash Express</div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 13, color: "#6B7280" }}>บันทึกเข้าวันที่:</span>
-            <input type="date" value={dateFilter} onChange={e => setDateFilter(e.target.value)}
+            <input type="date" value={dateFilter || new Date().toISOString().slice(0,10)} onChange={e => setDateFilter(e.target.value)}
               style={{ background: "#F9FAFB", border: "1.5px solid #DDD6FE", borderRadius: 8, padding: "6px 12px", color: "#7C3AED", fontSize: 13, outline: "none", fontFamily: "'Sarabun', sans-serif", fontWeight: 600 }} />
             <span style={{ background: "#EDE9FE", color: "#7C3AED", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 600 }}>
-              📅 {dateFilter ? new Date(dateFilter).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" }) : ""}
+              📅 {new Date(dateFilter || new Date().toISOString().slice(0,10)).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })}
             </span>
           </div>
         </div>
@@ -511,7 +536,7 @@ function ReturnAdminPanel() {
         {flashText.trim() && (
           <div style={{ marginTop: 6, fontSize: 13, color: "#6B7280" }}>
             พบ <span style={{ color: "#7C3AED", fontWeight: 700 }}>{preview.length}</span> รายการ
-            — จะบันทึกเข้า <span style={{ color: "#7C3AED", fontWeight: 700 }}>{dateFilter ? new Date(dateFilter).toLocaleDateString("th-TH", { dateStyle: "long" }) : ""}</span>
+            — จะบันทึกเข้า <span style={{ color: "#7C3AED", fontWeight: 700 }}>{new Date(dateFilter || new Date().toISOString().slice(0,10)).toLocaleDateString("th-TH", { dateStyle: "long" })}</span>
           </div>
         )}
         <div style={{ display: "flex", gap: 10, marginTop: 12, justifyContent: "flex-end" }}>
