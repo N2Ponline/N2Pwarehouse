@@ -20,7 +20,7 @@ const sb = async (path, opts = {}) => {
     throw new Error(err.message || res.statusText);
   }
   const text = await res.text();
-  return text ? JSON.parse(text) : null;
+  return text ? JSON.parse(text) : null
 };.
 
 const api = {
