@@ -1005,7 +1005,7 @@ export default function WarehouseApp() {
     const disposedBy = window.prompt("ชื่อผู้ทำรายการจำหน่ายออก:");
     if (!disposedBy || !disposedBy.trim()) return;
     const note = window.prompt("หมายเหตุ (ถ้ามี):", "สินค้าหมดอายุ/ยกเลิกขาย") || "";
-    if (!confirm(`ยืนยันจำหน่ายออก ${items.length} รายการ โดย "${disposedBy.trim()}"\n${"─".repeat(40)}\n${items.slice(0,10).map(p => `• ${p.name}\n  คงเหลือสุดท้าย: ${p.quantity} ${p.unit} | มูลค่า: ฿${(Math.max(0,p.quantity)*p.price).toLocaleString()}`).join("\n")}${items.length > 10 ? `\n...และอีก ${items.length-10} รายการ` : ""}\n${"─".repeat(40)}\nมูลค่ารวมที่ตัดออก: ฿${items.reduce((s,p)=>s+Math.max(0,p.quantity)*p.price,0).toLocaleString()}\n\n⚠️ การดำเนินการนี้ไม่สามารถย้อนกลับได้`)) return;
+    if (!confirm(`ยืนยันจำหน่ายออก ${items.length} รายการ โดย "${disposedBy.trim()}"\n${"─".repeat(40)}\n${items.slice(0,10).map(p => `• ${p.name}\n  คงเหลือสุดท้าย: ${p.quantity} ${p.unit} | มูลค่า: ฿${(Math.max(0,p.quantity)*p.price).toLocaleString()}`).join("\n")}${items.length > 10 ? `\n...และอีก ${items.length-10} รายการ` : ""}\n${"─".repeat(40)}\nมูลค่ารวมที่ตัดออก: ฿${items.reduce((s,p)=>s+Math.max(0,p.quantity)*p.price,0).toLocaleString()}\n\n⚠️ ⚠️ ไม่สามารถย้อนกลับได้`)) return;
     try {
       const now = new Date().toISOString();
       for (const p of items) {
