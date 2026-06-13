@@ -21,7 +21,7 @@ const sb = async (path, opts = {}) => {
   }
   const text = await res.text();
   return text ? JSON.parse(text) : null
-};.
+};
 
 const api = {
   getProducts: () => sb("products?select=*&order=name.asc"),
