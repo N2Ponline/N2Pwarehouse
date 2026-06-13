@@ -20,7 +20,7 @@ const sb = async (path, opts = {}) => {
     throw new Error(err.message || res.statusText);
   }
   const text = await res.text();
-  return text ? JSON.parse(text) : null
+  return text ? JSON.parse(text) : null;
 };
 
 const api = {
@@ -1002,15 +1002,14 @@ export default function WarehouseApp() {
   const handleConfirmDispose = async () => {
     const items = products.filter(p => selectedForDispose.has(p.id));
     if (items.length === 0) return;
-    // ถามชื่อผู้ทำรายการ
     const disposedBy = window.prompt("ชื่อผู้ทำรายการจำหน่ายออก:");
     if (!disposedBy || !disposedBy.trim()) return;
     const note = window.prompt("หมายเหตุ (ถ้ามี):", "สินค้าหมดอายุ/ยกเลิกขาย") || "";
-    if (!confirm(`ยืนยันจำหน่ายออก ${items.length} รายการ โดย "${disposedBy.trim()}"?\n\n${items.slice(0,10).map(p => `• ${p.name} (${p.quantity} ${p.unit})`).join("\n")}${items.length > 10 ? `\n...และอีก ${items.length-10} รายการ` : ""}\n\nการดำเนินการนี้ไม่สามารถย้อนกลับได้`)) return;
+    if (!confirm(`ยืนยันจำหน่ายออก ${items.length} รายการ โดย "${disposedBy.trim()}"\n${"─".repeat(40)}\n${items.slice(0,10).map(p => `• ${p.name}\n  คงเหลือสุดท้าย: ${p.quantity} ${p.unit} | มูลค่า: ฿${(Math.max(0,p.quantity)*p.price).toLocaleString()}`).join("\n")}${items.length > 10 ? `\n...และอีก ${items.length-10} รายการ` : ""}\n${"─".repeat(40)}\nมูลค่ารวมที่ตัดออก: ฿${items.reduce((s,p)=>s+Math.max(0,p.quantity)*p.price,0).toLocaleString()}\n\n⚠️ การดำเนินการนี้ไม่สามารถย้อนกลับได้`)) return;
     try {
       const now = new Date().toISOString();
-      // บันทึกลง dispose_records ก่อน
       for (const p of items) {
+        // 1. บันทึกลง dispose_records
         try {
           await sb("dispose_records", { method: "POST", body: JSON.stringify({
             product_id: p.id, sku: p.sku, name: p.name,
@@ -1019,12 +1018,15 @@ export default function WarehouseApp() {
             disposed_by: disposedBy.trim(), disposed_at: now, note,
           })});
         } catch {}
-      }
-      // แล้วค่อยลบสินค้า
-      for (const p of items) {
+        // 2. ลบ transactions ของสินค้านี้ก่อน (แก้ FK constraint)
+        try {
+          await sb(`transactions?product_id=eq.${p.id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+        } catch {}
+        // 3. ลบสินค้า
         await api.deleteProduct(p.id);
       }
       setProducts(prev => prev.filter(p => !selectedForDispose.has(p.id)));
+      setTransactions(prev => prev.filter(tx => !selectedForDispose.has(tx.productId)));
       setSelectedForDispose(new Set());
       setDisposeMode(false);
       showToast(`จำหน่ายออก ${items.length} รายการสำเร็จ บันทึกไว้ในระบบแล้ว`);
