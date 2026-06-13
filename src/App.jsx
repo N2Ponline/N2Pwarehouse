@@ -957,6 +957,18 @@ export default function WarehouseApp() {
   const [disposeMode, setDisposeMode] = useState(false);
   const [selectedForDispose, setSelectedForDispose] = useState(new Set());
   const [showAllDormant, setShowAllDormant] = useState(false);
+  const [disposeRecords, setDisposeRecords] = useState([]);
+  const [loadingDispose, setLoadingDispose] = useState(false);
+  const [disposeSearch, setDisposeSearch] = useState("");
+
+  const loadDisposeRecords = async () => {
+    setLoadingDispose(true);
+    try {
+      const data = await sb("dispose_records?select=*&order=disposed_at.desc");
+      setDisposeRecords(data || []);
+    } catch (e) { console.error(e); }
+    setLoadingDispose(false);
+  };
 
   const toggleDispose = (id) => {
     setSelectedForDispose(prev => {
@@ -1005,7 +1017,7 @@ export default function WarehouseApp() {
     const disposedBy = window.prompt("ชื่อผู้ทำรายการจำหน่ายออก:");
     if (!disposedBy || !disposedBy.trim()) return;
     const note = window.prompt("หมายเหตุ (ถ้ามี):", "สินค้าหมดอายุ/ยกเลิกขาย") || "";
-    if (!confirm(`ยืนยันจำหน่ายออก ${items.length} รายการ โดย "${disposedBy.trim()}"\n${"─".repeat(40)}\n${items.slice(0,10).map(p => `• ${p.name}\n  คงเหลือสุดท้าย: ${p.quantity} ${p.unit} | มูลค่า: ฿${(Math.max(0,p.quantity)*p.price).toLocaleString()}`).join("\n")}${items.length > 10 ? `\n...และอีก ${items.length-10} รายการ` : ""}\n${"─".repeat(40)}\nมูลค่ารวมที่ตัดออก: ฿${items.reduce((s,p)=>s+Math.max(0,p.quantity)*p.price,0).toLocaleString()}\n\n⚠️ ⚠️ ไม่สามารถย้อนกลับได้`)) return;
+    if (!confirm(`ยืนยันจำหน่ายออก ${items.length} รายการ โดย "${disposedBy.trim()}"\n${"─".repeat(40)}\n${items.slice(0,10).map(p => `• ${p.name}\n  คงเหลือสุดท้าย: ${p.quantity} ${p.unit} | มูลค่า: ฿${(Math.max(0,p.quantity)*p.price).toLocaleString()}`).join("\n")}${items.length > 10 ? `\n...และอีก ${items.length-10} รายการ` : ""}\n${"─".repeat(40)}\nมูลค่ารวมที่ตัดออก: ฿${items.reduce((s,p)=>s+Math.max(0,p.quantity)*p.price,0).toLocaleString()}\n\n⚠️ การดำเนินการนี้ไม่สามารถย้อนกลับได้`)) return;
     try {
       const now = new Date().toISOString();
       for (const p of items) {
@@ -1063,6 +1075,7 @@ export default function WarehouseApp() {
   }, []);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+  useEffect(() => { if (tab === "dispose") loadDisposeRecords(); }, [tab]);
 
   const handleSort = (col) => {
     if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -1356,7 +1369,7 @@ export default function WarehouseApp() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 2 }}>
-            {[["dashboard","ภาพรวม"],["inventory","สินค้าคงคลัง"],["transactions","รายการเคลื่อนไหว"],["returns","พัสดุตีกลับ"]].map(([t,label]) => (
+            {[["dashboard","ภาพรวม"],["inventory","สินค้าคงคลัง"],["transactions","รายการเคลื่อนไหว"],["returns","พัสดุตีกลับ"],["dispose","🗑️ จำหน่ายออก"]].map(([t,label]) => (
               <button key={t} className={`tab-btn ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>{label}</button>
             ))}
           </div>
@@ -1617,6 +1630,93 @@ export default function WarehouseApp() {
         )}
 
         {/* TRANSACTIONS */}
+        {tab === "dispose" && (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+              <div>
+                <h1 className="section-title">ประวัติการจำหน่ายออก</h1>
+                <p className="section-sub">รายการสินค้าที่ถูกตัดออกจากระบบ</p>
+              </div>
+              <button onClick={loadDisposeRecords}
+                style={{ background: "#fff", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "8px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+                🔄 โหลดข้อมูล
+              </button>
+            </div>
+
+            {disposeRecords.length === 0 && !loadingDispose && (
+              <div style={{ textAlign: "center", padding: "60px 20px", color: "#9CA3AF" }}>
+                <div style={{ fontSize: 48, marginBottom: 16 }}>🗑️</div>
+                <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>ยังไม่มีประวัติการจำหน่ายออก</div>
+                <div style={{ fontSize: 14 }}>กด "โหลดข้อมูล" เพื่อดึงข้อมูลจากระบบ</div>
+              </div>
+            )}
+
+            {loadingDispose && <div style={{ textAlign: "center", padding: 40, color: "#6B7280" }}>กำลังโหลด...</div>}
+
+            {disposeRecords.length > 0 && (
+              <div>
+                {/* Summary */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 14, marginBottom: 24 }}>
+                  {[
+                    { label: "รายการทั้งหมด", value: `${disposeRecords.length} รายการ`, color: "#6B7280", bg: "#F9FAFB" },
+                    { label: "มูลค่ารวมที่ตัดออก", value: `฿${disposeRecords.reduce((s,r)=>s+(r.total_value||0),0).toLocaleString("th-TH")}`, color: "#DC2626", bg: "#FEF2F2" },
+                  ].map((s,i) => (
+                    <div key={i} style={{ background: s.bg, border: "1px solid #E5E7EB", borderRadius: 14, padding: "16px 20px" }}>
+                      <div style={{ fontSize: 20, fontWeight: 700, color: s.color }}>{s.value}</div>
+                      <div style={{ fontSize: 13, color: "#6B7280", marginTop: 4 }}>{s.label}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Search */}
+                <input className="inp" style={{ marginBottom: 16 }} placeholder="🔍 ค้นหาชื่อสินค้าหรือ SKU..."
+                  value={disposeSearch} onChange={e => setDisposeSearch(e.target.value)} />
+
+                {/* Table */}
+                <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden" }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>วันที่จำหน่ายออก</th>
+                        <th>SKU</th>
+                        <th>ชื่อสินค้า</th>
+                        <th>คงเหลือสุดท้าย</th>
+                        <th>มูลค่า (฿)</th>
+                        <th>ผู้ทำรายการ</th>
+                        <th>หมายเหตุ</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {disposeRecords
+                        .filter(r => !disposeSearch || r.name?.toLowerCase().includes(disposeSearch.toLowerCase()) || r.sku?.toLowerCase().includes(disposeSearch.toLowerCase()))
+                        .map((r, i) => (
+                        <tr key={i}>
+                          <td style={{ fontSize: 13, color: "#6B7280", whiteSpace: "nowrap" }}>
+                            {r.disposed_at ? new Date(r.disposed_at).toLocaleDateString("th-TH", { dateStyle: "medium" }) : "-"}
+                            <div style={{ fontSize: 11, color: "#9CA3AF" }}>
+                              {r.disposed_at ? new Date(r.disposed_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : ""}
+                            </div>
+                          </td>
+                          <td style={{ fontFamily: "monospace", fontSize: 12, color: "#6B7280" }}>{r.sku}</td>
+                          <td style={{ fontWeight: 600, color: "#111827" }}>{r.name}</td>
+                          <td style={{ fontFamily: "monospace", color: r.final_quantity < 0 ? "#DC2626" : "#111827", fontWeight: 700 }}>
+                            {r.final_quantity} {r.unit}
+                          </td>
+                          <td style={{ fontFamily: "monospace", color: "#DC2626", fontWeight: 600 }}>
+                            ฿{(r.total_value || 0).toLocaleString("th-TH")}
+                          </td>
+                          <td style={{ color: "#374151" }}>{r.disposed_by || "-"}</td>
+                          <td style={{ fontSize: 13, color: "#6B7280" }}>{r.note || "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {tab === "transactions" && (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
