@@ -4,15 +4,16 @@ const SUPABASE_URL = "https://slwbzbnomsugffyzjyuv.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsd2J6Ym5vbXN1Z2ZmeXpqeXV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MjIxMDcsImV4cCI6MjA5NTI5ODEwN30.qG3CPT6J_evddK8qmpF7P3bVswn_Du43MEHo33bUnqA";
 
 const sb = async (path, opts = {}) => {
+  const { headers: extraHeaders, prefer, ...restOpts } = opts;
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     headers: {
       apikey: SUPABASE_ANON_KEY,
       Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
       "Content-Type": "application/json",
-      Prefer: opts.prefer || "return=representation",
-      ...opts.headers,
+      Prefer: extraHeaders?.Prefer || prefer || "return=representation",
+      ...extraHeaders,
     },
-    ...opts,
+    ...restOpts,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -20,13 +21,13 @@ const sb = async (path, opts = {}) => {
   }
   const text = await res.text();
   return text ? JSON.parse(text) : null;
-};
+};.
 
 const api = {
   getProducts: () => sb("products?select=*&order=name.asc"),
   addProduct: (p) => sb("products", { method: "POST", body: JSON.stringify(p) }),
   updateProduct: (id, p) => sb(`products?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(p) }),
-  deleteProduct: (id) => sb(`products?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal", headers: { Prefer: "return=minimal" } }),
+  deleteProduct: (id) => sb(`products?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
   getTransactions: () => sb("transactions?select=*&order=created_at.desc"),
   addTransaction: (t) => sb("transactions", { method: "POST", body: JSON.stringify(t) }),
 };
@@ -953,6 +954,82 @@ export default function WarehouseApp() {
   const [pinnedIds, setPinnedIds] = useState(() => {
     try { return JSON.parse(localStorage.getItem("pinnedProducts") || "[]"); } catch { return []; }
   });
+  const [disposeMode, setDisposeMode] = useState(false);
+  const [selectedForDispose, setSelectedForDispose] = useState(new Set());
+  const [showAllDormant, setShowAllDormant] = useState(false);
+
+  const toggleDispose = (id) => {
+    setSelectedForDispose(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const handleExportDispose = async () => {
+    const items = products.filter(p => selectedForDispose.has(p.id));
+    if (items.length === 0) return;
+    try {
+      const XLSX = await loadXLSX();
+      const HEADER = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "DC2626" } } };
+      const wb = XLSX.utils.book_new();
+      const dateStr = new Date().toLocaleDateString("th-TH", { dateStyle: "long" });
+      const ws = XLSX.utils.aoa_to_sheet([
+        [{ v: "รายงานสินค้าจำหน่ายออก / ตัดสต็อก", s: { font: { bold: true, sz: 14 } } }, "", "", "", ""],
+        ["วันที่ออกรายงาน", dateStr, "", "", ""],
+        ["", "", "", "", ""],
+        [
+          { v: "SKU", s: HEADER }, { v: "ชื่อสินค้า", s: HEADER },
+          { v: "คงเหลือสุดท้าย", s: HEADER }, { v: "หน่วย", s: HEADER },
+          { v: "ราคาทุน (฿)", s: HEADER }, { v: "มูลค่าที่ตัดออก (฿)", s: HEADER },
+        ],
+        ...items.map(p => [
+          p.sku, p.name,
+          { v: p.quantity, s: { fill: { fgColor: { rgb: "FFCCCC" } } } },
+          p.unit, p.price,
+          { v: Math.max(0, p.quantity) * p.price, s: { fill: { fgColor: { rgb: "FFCCCC" } } } },
+        ]),
+        ["", "", "", "", ""],
+        [{ v: "รวมมูลค่าที่ตัดออกทั้งหมด", s: { font: { bold: true } } }, "", "",
+         "", "", { v: items.reduce((s, p) => s + Math.max(0, p.quantity) * p.price, 0), s: { font: { bold: true } } }],
+      ]);
+      ws["!cols"] = [{ wch: 14 }, { wch: 32 }, { wch: 14 }, { wch: 8 }, { wch: 14 }, { wch: 18 }];
+      XLSX.utils.book_append_sheet(wb, ws, "สินค้าจำหน่ายออก");
+      XLSX.writeFile(wb, `dispose_report_${new Date().toISOString().slice(0,10)}.xlsx`);
+    } catch (e) { alert("Export ไม่สำเร็จ: " + e.message); }
+  };
+
+  const handleConfirmDispose = async () => {
+    const items = products.filter(p => selectedForDispose.has(p.id));
+    if (items.length === 0) return;
+    // ถามชื่อผู้ทำรายการ
+    const disposedBy = window.prompt("ชื่อผู้ทำรายการจำหน่ายออก:");
+    if (!disposedBy || !disposedBy.trim()) return;
+    const note = window.prompt("หมายเหตุ (ถ้ามี):", "สินค้าหมดอายุ/ยกเลิกขาย") || "";
+    if (!confirm(`ยืนยันจำหน่ายออก ${items.length} รายการ โดย "${disposedBy.trim()}"?\n\n${items.slice(0,10).map(p => `• ${p.name} (${p.quantity} ${p.unit})`).join("\n")}${items.length > 10 ? `\n...และอีก ${items.length-10} รายการ` : ""}\n\nการดำเนินการนี้ไม่สามารถย้อนกลับได้`)) return;
+    try {
+      const now = new Date().toISOString();
+      // บันทึกลง dispose_records ก่อน
+      for (const p of items) {
+        try {
+          await sb("dispose_records", { method: "POST", body: JSON.stringify({
+            product_id: p.id, sku: p.sku, name: p.name,
+            final_quantity: p.quantity, unit: p.unit, price: p.price,
+            total_value: Math.max(0, p.quantity) * p.price,
+            disposed_by: disposedBy.trim(), disposed_at: now, note,
+          })});
+        } catch {}
+      }
+      // แล้วค่อยลบสินค้า
+      for (const p of items) {
+        await api.deleteProduct(p.id);
+      }
+      setProducts(prev => prev.filter(p => !selectedForDispose.has(p.id)));
+      setSelectedForDispose(new Set());
+      setDisposeMode(false);
+      showToast(`จำหน่ายออก ${items.length} รายการสำเร็จ บันทึกไว้ในระบบแล้ว`);
+    } catch (e) { showToast(e.message, "error"); }
+  };
 
   const togglePin = (id) => {
     const sid = String(id);
@@ -1350,7 +1427,7 @@ export default function WarehouseApp() {
                   <div style={{ fontSize: 12, color: "#6b7ab5" }}>มูลค่ารวม ฿{dormantProducts.reduce((s,p)=>s+p.quantity*p.price,0).toLocaleString("th-TH")}</div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {dormantProducts.slice(0, 5).map(p => (
+                  {(showAllDormant ? dormantProducts : dormantProducts.slice(0, 5)).map(p => (
                     <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(130,130,180,0.05)", borderRadius: 10, padding: "10px 14px" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                         {p.imageUrl && <img src={p.imageUrl} style={{ width: 32, height: 32, borderRadius: 6, objectFit: "cover" }} />}
@@ -1366,7 +1443,10 @@ export default function WarehouseApp() {
                     </div>
                   ))}
                   {dormantProducts.length > 5 && (
-                    <div style={{ textAlign: "center", fontSize: 13, color: "#6b7ab5", padding: "6px 0" }}>และอีก {dormantProducts.length - 5} รายการ</div>
+                    <button onClick={() => setShowAllDormant(!showAllDormant)}
+                      style={{ width: "100%", marginTop: 8, background: "transparent", border: "1px solid #DDD6FE", color: "#7C3AED", borderRadius: 8, padding: "8px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+                      {showAllDormant ? "▲ ย่อรายการ" : `▼ ดูทั้งหมด ${dormantProducts.length} รายการ`}
+                    </button>
                   )}
                 </div>
               </div>
@@ -1410,8 +1490,40 @@ export default function WarehouseApp() {
                   {exportingInventory ? "⏳..." : "📥 Export Excel"}
                 </button>
                 <button className="btn btn-primary" onClick={() => { setForm({}); setShowModal("add-product"); }}>+ เพิ่มสินค้า</button>
+                <button onClick={() => { setDisposeMode(!disposeMode); setSelectedForDispose(new Set()); }}
+                  style={{ background: disposeMode ? "#DC2626" : "#FEF2F2", color: disposeMode ? "#fff" : "#DC2626", border: "1.5px solid #FECACA", borderRadius: 10, padding: "9px 16px", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", transition: "all 0.2s" }}>
+                  {disposeMode ? "✕ ยกเลิก" : "🗑️ จำหน่ายออก"}
+                </button>
               </div>
             </div>
+            {disposeMode && (
+              <div style={{ background: "#FEF2F2", border: "1.5px solid #FECACA", borderRadius: 14, padding: "14px 18px", marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+                <div>
+                  <div style={{ fontWeight: 700, color: "#DC2626", fontSize: 15 }}>🗑️ โหมดจำหน่ายออก</div>
+                  <div style={{ fontSize: 13, color: "#9B1C1C", marginTop: 3 }}>
+                    ติ๊กเลือกสินค้าที่ต้องการตัดออก — เลือกแล้ว <span style={{ fontWeight: 700 }}>{selectedForDispose.size}</span> รายการ
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button onClick={() => {
+                    if (selectedForDispose.size === filteredProducts.length) setSelectedForDispose(new Set());
+                    else setSelectedForDispose(new Set(filteredProducts.map(p => p.id)));
+                  }}
+                    style={{ background: "#fff", border: "1px solid #FECACA", color: "#DC2626", borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", fontWeight: 600 }}>
+                    {selectedForDispose.size === filteredProducts.length ? "ยกเลิกทั้งหมด" : "เลือกทั้งหมด"}
+                  </button>
+                  <button onClick={handleExportDispose} disabled={selectedForDispose.size === 0}
+                    style={{ background: selectedForDispose.size > 0 ? "#FEF3C7" : "#F9FAFB", color: selectedForDispose.size > 0 ? "#92400E" : "#9CA3AF", border: "1px solid " + (selectedForDispose.size > 0 ? "#FDE68A" : "#E5E7EB"), borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: selectedForDispose.size > 0 ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
+                    📥 Export รายงาน ({selectedForDispose.size})
+                  </button>
+                  <button onClick={handleConfirmDispose} disabled={selectedForDispose.size === 0}
+                    style={{ background: selectedForDispose.size > 0 ? "#DC2626" : "#F9FAFB", color: selectedForDispose.size > 0 ? "#fff" : "#9CA3AF", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: selectedForDispose.size > 0 ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
+                    🗑️ ลบออกจากระบบ ({selectedForDispose.size})
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
               <input className="inp" style={{ flex: 1, minWidth: 200 }} placeholder="🔍 ค้นหาชื่อหรือ SKU..." value={search} onChange={e => setSearch(e.target.value)} />
 
@@ -1433,6 +1545,7 @@ export default function WarehouseApp() {
               <table>
                 <thead>
                   <tr>
+                    <th style={{ width: 36 }}>{disposeMode && <input type="checkbox" checked={selectedForDispose.size === filteredProducts.length && filteredProducts.length > 0} onChange={() => { if (selectedForDispose.size === filteredProducts.length) setSelectedForDispose(new Set()); else setSelectedForDispose(new Set(filteredProducts.map(p => p.id))); }} style={{ cursor: "pointer", width: 16, height: 16, accentColor: "#DC2626" }} />}</th>
                     <th style={{ width: 36 }}></th>
                     <th style={{ width: 60 }}>รูป</th>
                     <SortTh col="sku" label="SKU" />
@@ -1448,7 +1561,13 @@ export default function WarehouseApp() {
                   {filteredProducts.map(p => {
                     const status = p.quantity <= 0 ? "out" : (p.minStock > 0 && p.quantity <= p.minStock) ? "low" : "ok";
                     return (
-                      <tr key={p.id} style={{ background: pinnedIds.includes(String(p.id)) ? "rgba(124,58,237,0.04)" : undefined }}>
+                      <tr key={p.id} style={{ background: disposeMode && selectedForDispose.has(p.id) ? "#FEF2F2" : pinnedIds.includes(String(p.id)) ? "rgba(124,58,237,0.04)" : undefined }}>
+                        <td style={{ textAlign: "center" }}>
+                          {disposeMode ? (
+                            <input type="checkbox" checked={selectedForDispose.has(p.id)} onChange={() => toggleDispose(p.id)}
+                              style={{ cursor: "pointer", width: 16, height: 16, accentColor: "#DC2626" }} />
+                          ) : null}
+                        </td>
                         <td style={{ textAlign: "center" }}>
                           <button onClick={() => togglePin(p.id)} title={pinnedIds.includes(p.id) ? "ถอนหมุด" : "ปักหมุด"}
                             style={{ background: "none", border: "none", cursor: "pointer", fontSize: 15, padding: "2px", opacity: pinnedIds.includes(String(p.id)) ? 1 : 0.2, transition: "opacity 0.15s", lineHeight: 1 }}
