@@ -961,6 +961,7 @@ export default function WarehouseApp() {
   const [loadingDispose, setLoadingDispose] = useState(false);
   const [disposeSearch, setDisposeSearch] = useState("");
   const [historyProduct, setHistoryProduct] = useState(null); // product ที่กดดูประวัติ
+  const [filterProductId, setFilterProductId] = useState(null); // filter transactions by product
 
   const loadDisposeRecords = async () => {
     setLoadingDispose(true);
@@ -1603,7 +1604,7 @@ export default function WarehouseApp() {
                         </td>
                         <td><span className="mono" style={{ color: "#6b7ab5", fontSize: 12 }}>{p.sku}</span></td>
                         <td>
-                          <span onClick={() => setHistoryProduct(p)}
+                          <span onClick={() => { setFilterProductId(p.id); setTab("transactions"); }}
                             style={{ fontWeight: 600, color: "#7C3AED", cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }}
                             title="กดเพื่อดูประวัติการเคลื่อนไหว">
                             {p.name}
@@ -1726,9 +1727,21 @@ export default function WarehouseApp() {
 
         {tab === "transactions" && (
           <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-              <h1 style={{ fontSize: 24, fontWeight: 700, color: "#1a1040" }}>รายการเคลื่อนไหวสินค้า</h1>
-              <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+              <div>
+                <h1 className="section-title">รายการเคลื่อนไหวสินค้า</h1>
+                {filterProductId && (() => {
+                  const fp = products.find(p => p.id === filterProductId);
+                  return fp ? <div style={{ fontSize: 13, color: "#7C3AED", marginTop: 4, fontWeight: 600 }}>กรอง: {fp.name}</div> : null;
+                })()}
+              </div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                {filterProductId && (
+                  <button onClick={() => setFilterProductId(null)}
+                    style={{ background: "#EDE9FE", color: "#7C3AED", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+                    ✕ ล้างตัวกรอง (ดูทั้งหมด)
+                  </button>
+                )}
                 <button className="btn btn-secondary" onClick={() => { setTxType("in"); setShowModal("transaction"); }}>▲ รับสินค้า</button>
                 <button className="btn btn-secondary" style={{ color: "#ff5555", borderColor: "rgba(255,85,85,0.3)", background: "rgba(255,85,85,0.05)" }} onClick={() => { setTxType("out"); setShowModal("transaction"); }}>▼ เบิกสินค้า</button>
               </div>
@@ -1737,7 +1750,7 @@ export default function WarehouseApp() {
               <table>
                 <thead><tr><th>วันที่</th><th>ประเภท</th><th>สินค้า</th><th>จำนวน</th><th>หมายเหตุ</th><th>ผู้ดำเนินการ</th></tr></thead>
                 <tbody>
-                  {transactions.map(tx => {
+                  {(filterProductId ? transactions.filter(tx => tx.productId === filterProductId) : transactions).map(tx => {
                     const p = products.find(x => x.id === tx.productId);
                     return (
                       <tr key={tx.id}>
@@ -1890,78 +1903,6 @@ export default function WarehouseApp() {
           </div>
         </div>
       )}
-
-      {/* Product History Modal */}
-      {historyProduct && (() => {
-        const txs = transactions.filter(tx => tx.productId === historyProduct.id);
-        const totalIn = txs.filter(t=>t.type==="in").reduce((s,t)=>s+t.quantity,0);
-        const totalOut = txs.filter(t=>t.type==="out").reduce((s,t)=>s+t.quantity,0);
-        return (
-          <div className="overlay" onClick={() => setHistoryProduct(null)}>
-            <div className="modal" style={{ maxWidth: 600 }} onClick={e => e.stopPropagation()}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
-                <div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: "#111827" }}>{historyProduct.name}</div>
-                  <div style={{ fontSize: 13, color: "#6B7280", marginTop: 2 }}>SKU: {historyProduct.sku} · คงเหลือปัจจุบัน: <span style={{ fontWeight: 700, color: "#7C3AED" }}>{historyProduct.quantity} {historyProduct.unit}</span></div>
-                </div>
-                <button onClick={() => setHistoryProduct(null)}
-                  style={{ background: "#F3F4F6", border: "none", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 18, color: "#6B7280" }}>✕</button>
-              </div>
-
-              {/* Summary */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 20 }}>
-                {[
-                  { label: "รับเข้าทั้งหมด", value: `+${totalIn}`, color: "#065F46", bg: "#D1FAE5" },
-                  { label: "เบิกออกทั้งหมด", value: `-${totalOut}`, color: "#991B1B", bg: "#FEE2E2" },
-                  { label: "รายการทั้งหมด", value: `${txs.length} รายการ`, color: "#374151", bg: "#F3F4F6" },
-                ].map((s,i) => (
-                  <div key={i} style={{ background: s.bg, borderRadius: 10, padding: "12px 14px", textAlign: "center" }}>
-                    <div style={{ fontSize: 18, fontWeight: 700, color: s.color }}>{s.value}</div>
-                    <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>{s.label}</div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Transaction list */}
-              <div style={{ maxHeight: 360, overflowY: "auto", border: "1px solid #E5E7EB", borderRadius: 12, overflow: "hidden" }}>
-                {txs.length === 0 && (
-                  <div style={{ textAlign: "center", padding: 32, color: "#9CA3AF" }}>ยังไม่มีประวัติการเคลื่อนไหว</div>
-                )}
-                {txs.length > 0 && (
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr>
-                        <th style={{ padding: "10px 14px", fontSize: 11, fontWeight: 700, color: "#7C3AED", textAlign: "left", background: "#FAFAFA", borderBottom: "1.5px solid #EDE9FE", textTransform: "uppercase", letterSpacing: 1 }}>วันที่</th>
-                        <th style={{ padding: "10px 14px", fontSize: 11, fontWeight: 700, color: "#7C3AED", textAlign: "left", background: "#FAFAFA", borderBottom: "1.5px solid #EDE9FE", textTransform: "uppercase", letterSpacing: 1 }}>ประเภท</th>
-                        <th style={{ padding: "10px 14px", fontSize: 11, fontWeight: 700, color: "#7C3AED", textAlign: "left", background: "#FAFAFA", borderBottom: "1.5px solid #EDE9FE", textTransform: "uppercase", letterSpacing: 1 }}>จำนวน</th>
-                        <th style={{ padding: "10px 14px", fontSize: 11, fontWeight: 700, color: "#7C3AED", textAlign: "left", background: "#FAFAFA", borderBottom: "1.5px solid #EDE9FE", textTransform: "uppercase", letterSpacing: 1 }}>หมายเหตุ</th>
-                        <th style={{ padding: "10px 14px", fontSize: 11, fontWeight: 700, color: "#7C3AED", textAlign: "left", background: "#FAFAFA", borderBottom: "1.5px solid #EDE9FE", textTransform: "uppercase", letterSpacing: 1 }}>ผู้ดำเนินการ</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {txs.map((tx, i) => (
-                        <tr key={i}>
-                          <td style={{ padding: "10px 14px", fontSize: 13, color: "#6B7280", borderBottom: "1px solid #F3F4F6" }}>{tx.date}</td>
-                          <td style={{ padding: "10px 14px", borderBottom: "1px solid #F3F4F6" }}>
-                            <span style={{ background: tx.type==="in" ? "#D1FAE5" : "#FEE2E2", color: tx.type==="in" ? "#065F46" : "#991B1B", borderRadius: 20, padding: "3px 10px", fontSize: 12, fontWeight: 600 }}>
-                              {tx.type==="in" ? "▲ รับเข้า" : "▼ เบิกออก"}
-                            </span>
-                          </td>
-                          <td style={{ padding: "10px 14px", fontFamily: "monospace", fontWeight: 700, color: tx.type==="in" ? "#065F46" : "#991B1B", borderBottom: "1px solid #F3F4F6" }}>
-                            {tx.type==="in" ? "+" : "-"}{tx.quantity} {historyProduct.unit}
-                          </td>
-                          <td style={{ padding: "10px 14px", fontSize: 13, color: "#6B7280", borderBottom: "1px solid #F3F4F6" }}>{tx.note || "-"}</td>
-                          <td style={{ padding: "10px 14px", fontSize: 13, color: "#374151", borderBottom: "1px solid #F3F4F6" }}>{tx.by}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-              </div>
-            </div>
-          </div>
-        );
-      })()}
 
       {toast && (
         <div className="toast" style={{ borderColor: toast.type === "error" ? "rgba(255,85,85,0.4)" : "rgba(124,58,237,0.3)", color: toast.type === "error" ? "#ff5555" : "#7c3aed" }}>
