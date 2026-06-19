@@ -279,6 +279,16 @@ function ReturnSummaryPanel() {
 
   // ── คำนวณ matched / missing / extra จากตัวกรองทั้งสองฝั่ง ──
   const systemList = useMemo(() => [...new Set(sessions.flatMap(s => s.tracking_list || []))], [sessions]);
+  // map: tracking code -> วันที่ Flash แจ้ง (session_date ของ session ที่มีโค้ดนี้)
+  const codeToSessionDate = useMemo(() => {
+    const map = {};
+    sessions.forEach(s => {
+      (s.tracking_list || []).forEach(code => {
+        if (!map[code]) map[code] = s.session_date;
+      });
+    });
+    return map;
+  }, [sessions]);
   const scannedSet = useMemo(() => new Set(scans.map(sc => sc.tracking_code)), [scans]);
   const matched = useMemo(() => systemList.filter(c => scannedSet.has(c)), [systemList, scannedSet]);
   const missing = useMemo(() => systemList.filter(c => !scannedSet.has(c)), [systemList, scannedSet]);
@@ -474,13 +484,18 @@ function ReturnSummaryPanel() {
             🔴 ยังไม่ถึงคลัง ({missing.length} รายการ)
           </div>
           {missing.length === 0 && <div style={{ color: "#10B981", fontSize: 14, textAlign: "center", padding: 24 }}>🎉 ไม่มีรายการตกค้าง — ตรงกันครบตามตัวกรองนี้</div>}
-          {missing.map((code, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: 8, background: "#FEF2F2", marginBottom: 6, border: "1px solid #FECACA" }}>
-              <span style={{ fontSize: 14 }}>🔴</span>
-              <span style={{ fontFamily: "monospace", fontSize: 13, color: "#991B1B", fontWeight: 700 }}>{code}</span>
-              <span style={{ fontSize: 11, color: "#991B1B", marginLeft: "auto" }}>ยังไม่รับ / ยังไม่ลงระบบ</span>
-            </div>
-          ))}
+          {missing.map((code, i) => {
+            const sessDate = codeToSessionDate[code];
+            const sessDateLabel = sessDate ? new Date(sessDate + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" }) : "";
+            return (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderRadius: 8, background: "#FEF2F2", marginBottom: 6, border: "1px solid #FECACA" }}>
+                <span style={{ fontSize: 14 }}>🔴</span>
+                <span style={{ fontFamily: "monospace", fontSize: 13, color: "#991B1B", fontWeight: 700 }}>{code}</span>
+                {sessDateLabel && <span style={{ fontSize: 10, color: "#991B1B", background: "#FFE4E4", borderRadius: 4, padding: "1px 6px" }}>📅 {sessDateLabel}</span>}
+                <span style={{ fontSize: 11, color: "#991B1B", marginLeft: "auto" }}>ยังไม่รับ / ยังไม่ลงระบบ</span>
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -494,9 +509,14 @@ function ReturnSummaryPanel() {
             <div style={{ maxHeight: 320, overflowY: "auto" }}>
               {systemList.map((code, i) => {
                 const ok = scannedSet.has(code);
+                const sessDate = codeToSessionDate[code];
+                const sessDateLabel = sessDate ? new Date(sessDate + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" }) : "";
                 return (
                   <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: "1px solid #F3F4F6", fontSize: 12 }}>
-                    <span style={{ fontFamily: "monospace", color: ok ? "#065F46" : "#991B1B" }}>{code}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <span style={{ fontFamily: "monospace", color: ok ? "#065F46" : "#991B1B" }}>{code}</span>
+                      {sessDateLabel && <span style={{ fontSize: 10, color: "#9CA3AF", background: "#F3F4F6", borderRadius: 4, padding: "1px 5px" }}>📅 {sessDateLabel}</span>}
+                    </div>
                     <span style={{ color: ok ? "#10B981" : "#DC2626", fontWeight: ok ? 400 : 700, fontSize: 11 }}>{ok ? "✓ ตรงกัน" : "🔴 ยังไม่ถึงคลัง"}</span>
                   </div>
                 );
@@ -537,59 +557,38 @@ function ReturnAdminPanel() {
   const [dateFilter, setDateFilter] = useState(""); // "" = ทั้งหมด
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState(new Date().toISOString().slice(0,10));
-  const [dayData, setDayData] = useState(null); // { systemList, scans, matched, missing, extra }
-  const [loadingDay, setLoadingDay] = useState(false);
-  const [exporting, setExporting] = useState(false);
-  const [activeView, setActiveView] = useState("overview"); // overview | matched | pending
+  const [sessions, setSessions] = useState([]);
+  const [loadingList, setLoadingList] = useState(false);
 
-  const loadDayData = async (date, from = dateFrom, to = dateTo) => {
-    setLoadingDay(true);
-    setDayData(null);
+  const loadList = async (date, from = dateFrom, to = dateTo) => {
+    setLoadingList(true);
     try {
-      // โหลด sessions ตามเงื่อนไขวันที่
       let sessionFilter = "select=*&order=session_date.desc";
       if (date) sessionFilter += `&session_date=eq.${date}`;
       else if (from && to) sessionFilter += `&session_date=gte.${from}&session_date=lte.${to}`;
       else if (from) sessionFilter += `&session_date=gte.${from}`;
       else if (to) sessionFilter += `&session_date=lte.${to}`;
-      const sessions = await sbReturnAll("return_sessions", sessionFilter);
-      const codeToSession = {};
-      sessions.forEach(s => {
-        (s.tracking_list || []).forEach(code => {
-          if (!codeToSession[code]) codeToSession[code] = { sessionId: s.id, createdAt: s.created_at };
-        });
-      });
-      const systemList = [...new Set(sessions.flatMap(s => s.tracking_list || []))];
-
-      // โหลด scans ทุกวัน (ไม่จำกัดวัน) เพื่อแมทช์กับ systemList
-      // ค้นหาจาก tracking_code ที่อยู่ใน systemList ของวันนี้
-      const allScans = [];
-      for (const s of sessions) {
-        const scans = await sbReturnAll("return_scans", `session_id=eq.${s.id}&select=tracking_code,scanned_by,scanned_at`);
-        allScans.push(...scans);
-      }
-      // นอกจากนี้ ยังดึง scans จาก sessions วันอื่นที่อาจยิงเลขของวันนี้ด้วย
-      // โดย query return_scans ที่ tracking_code อยู่ใน systemList
-      // วิธีง่ายสุด: โหลด scans ทั้งหมดย้อนหลัง 30 วัน แล้ว filter
-      const recentScans = await sbReturnAll("return_scans", `select=tracking_code,scanned_by,scanned_at&order=scanned_at.desc&limit=5000`);
-      recentScans.forEach(sc => {
-        if (systemList.includes(sc.tracking_code) && !allScans.find(x => x.tracking_code === sc.tracking_code)) {
-          allScans.push(sc);
-        }
-      });
-
-      const seen = new Set();
-      const uniqueScans = allScans.filter(s => { if (seen.has(s.tracking_code)) return false; seen.add(s.tracking_code); return true; });
-      const scannedSet = new Set(uniqueScans.map(s => s.tracking_code));
-      const matched = systemList.filter(c => scannedSet.has(c));
-      const missing = systemList.filter(c => !scannedSet.has(c));
-      const extra = uniqueScans.filter(s => !systemList.includes(s.tracking_code));
-      setDayData({ systemList, scans: uniqueScans, matched, missing, extra, sessions, codeToSession });
+      const rows = await sbReturnAll("return_sessions", sessionFilter);
+      setSessions(rows || []);
     } catch (e) { console.error(e); }
-    setLoadingDay(false);
+    setLoadingList(false);
   };
 
-  useEffect(() => { loadDayData(dateFilter, dateFrom, dateTo); }, [dateFilter, dateFrom, dateTo]);
+  useEffect(() => { loadList(dateFilter, dateFrom, dateTo); }, [dateFilter, dateFrom, dateTo]);
+
+  // เลข tracking ทั้งหมด พร้อมวันที่ที่ Flash แจ้งมา (เรียงตามวันที่ล่าสุดก่อน เพราะ sessions โหลดมา desc แล้ว)
+  const codeRows = useMemo(() => {
+    const seen = new Set();
+    const rows = [];
+    sessions.forEach(s => {
+      (s.tracking_list || []).forEach(code => {
+        if (seen.has(code)) return;
+        seen.add(code);
+        rows.push({ code, sessionDate: s.session_date, sessionId: s.id });
+      });
+    });
+    return rows;
+  }, [sessions]);
 
   const handleCreate = async () => {
     const list = parseFlashText(flashText);
@@ -600,92 +599,27 @@ function ReturnAdminPanel() {
       const saveDate = dateFilter || new Date().toISOString().slice(0,10);
       await sbReturn("return_sessions", { method: "POST", body: JSON.stringify({ tracking_list: list, courier: "Flash", session_date: saveDate }) });
       setFlashText("");
-      if (dateFilter) loadDayData(dateFilter);
+      loadList(dateFilter, dateFrom, dateTo);
     } catch (e) { alert("เกิดข้อผิดพลาด: " + JSON.stringify(e)); }
     setLoading(false);
   };
 
-  const handleExport = async () => {
-    if (!dayData) return;
-    setExporting(true);
-    try {
-      const XLSX = await loadXLSX();
-      const HEADER = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "4F46E5" } } };
-      const GREEN  = { fill: { fgColor: { rgb: "C6EFCE" } } };
-      const RED    = { fill: { fgColor: { rgb: "FFCCCC" } } };
-      const ORANGE = { fill: { fgColor: { rgb: "FFE0B2" } } };
-      const wb = XLSX.utils.book_new();
-      const dateStr = new Date(dateFilter).toLocaleDateString("th-TH", { dateStyle: "long" });
-      const pct = dayData.systemList.length > 0 ? Math.round(dayData.matched.length / dayData.systemList.length * 100) : 0;
-
-      // Sheet สรุป
-      const ws1 = XLSX.utils.aoa_to_sheet([
-        [{ v: `รายงานพัสดุตีกลับ — ${dateStr}`, s: { font: { bold: true, sz: 14 } } },""],
-        ["",""],
-        [{ v: "รายการ", s: HEADER }, { v: "จำนวน", s: HEADER }],
-        ["📋 ตีกลับในระบบ (Flash แจ้ง)", dayData.systemList.length],
-        ["📦 ตีกลับถึงคลัง (พนักงานยิง)", dayData.scans.length],
-        [{ v: "✅ ตรงกัน", s: GREEN }, { v: dayData.matched.length, s: GREEN }],
-        [{ v: "❌ ยังไม่รับ (รอของ)", s: RED }, { v: dayData.missing.length, s: RED }],
-        [{ v: "⚠️ ยิงแล้วแต่ไม่อยู่ในระบบ", s: ORANGE }, { v: dayData.extra.length, s: ORANGE }],
-        ["",""],
-        [{ v: `ความครบถ้วน: ${pct}%`, s: { font: { bold: true, color: { rgb: pct===100?"007A3D":"CC0000" } } } },""],
-      ]);
-      ws1["!cols"] = [{ wch: 36 }, { wch: 14 }];
-      XLSX.utils.book_append_sheet(wb, ws1, "สรุปยอด");
-
-      // Sheet ตรงกัน
-      const ws2 = XLSX.utils.aoa_to_sheet([
-        [{ v:"เลข Tracking",s:HEADER},{v:"ผู้ยิง",s:HEADER},{v:"เวลา",s:HEADER}],
-        ...dayData.matched.map(code => {
-          const sc = dayData.scans.find(s => s.tracking_code === code);
-          return [{ v:code,s:GREEN },{ v:sc?.scanned_by||"-" },{ v:sc?.scanned_at?new Date(sc.scanned_at).toLocaleString("th-TH"):"-" }];
-        })
-      ]);
-      ws2["!cols"]=[{wch:30},{wch:14},{wch:22}];
-      XLSX.utils.book_append_sheet(wb, ws2, "ตรงกัน");
-
-      // Sheet รอรับ (missing)
-      const ws3 = XLSX.utils.aoa_to_sheet([
-        [{ v:"เลข Tracking (รอรับ)",s:HEADER},{v:"สถานะ",s:HEADER}],
-        ...dayData.missing.map(c=>[{ v:c,s:RED },{ v:"❌ ยังไม่มาถึงคลัง",s:RED }])
-      ]);
-      ws3["!cols"]=[{wch:30},{wch:22}];
-      XLSX.utils.book_append_sheet(wb, ws3, "รอรับ");
-
-      // Sheet เกิน
-      const ws4 = XLSX.utils.aoa_to_sheet([
-        [{ v:"เลข Tracking (ยิงแต่ไม่อยู่ระบบ)",s:HEADER},{v:"ผู้ยิง",s:HEADER}],
-        ...dayData.extra.map(s=>[{ v:s.tracking_code,s:ORANGE },{ v:s.scanned_by||"-" }])
-      ]);
-      ws4["!cols"]=[{wch:30},{wch:14}];
-      XLSX.utils.book_append_sheet(wb, ws4, "ยิงแต่ไม่อยู่ระบบ");
-
-      XLSX.writeFile(wb, `return_${dateFilter}.xlsx`);
-    } catch (e) { alert("Export ไม่สำเร็จ: " + e.message); }
-    setExporting(false);
-  };
-
-  const handleDeleteTracking = async (code) => {
+  const handleDeleteTracking = async (code, sessionId) => {
     if (!confirm(`ลบ ${code} ออกจากระบบ?`)) return;
-    if (!dayData) return;
-    // หา session ที่มีเลขนี้ แล้วอัปเดต tracking_list
-    const sess = dayData.sessions.find(s => (s.tracking_list||[]).includes(code));
+    const sess = sessions.find(s => s.id === sessionId);
     if (!sess) return;
     const newList = (sess.tracking_list || []).filter(c => c !== code);
     try {
       await sbReturn(`return_sessions?id=eq.${sess.id}`, { method: "PATCH", body: JSON.stringify({ tracking_list: newList }) });
-      // reload
-      await loadDayData(dateFilter);
+      await loadList(dateFilter, dateFrom, dateTo);
     } catch (e) { alert("ลบไม่สำเร็จ"); }
   };
 
   const preview = parseFlashText(flashText);
-  const pct = dayData && dayData.systemList.length > 0 ? Math.round(dayData.matched.length / dayData.systemList.length * 100) : 0;
 
   return (
     <div>
-      {/* Date selector + stats bar */}
+      {/* Date selector */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24, flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>ตีกลับในระบบ</h2>
@@ -716,159 +650,36 @@ function ReturnAdminPanel() {
         </div>
       </div>
 
-      {/* KPI Cards */}
-      {dayData && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 12, marginBottom: 24 }}>
-          {[
-            { label: "Flash แจ้ง", value: dayData.systemList.length, color: "#6B7280", bg: "#F9FAFB" },
-            { label: "ถึงคลัง", value: dayData.scans.length, color: "#111827", bg: "#F9FAFB" },
-            { label: "✅ ตรงกัน", value: dayData.matched.length, color: "#065F46", bg: "#D1FAE5" },
-            { label: "❌ รอรับ", value: dayData.missing.length, color: dayData.missing.length > 0 ? "#991B1B" : "#065F46", bg: dayData.missing.length > 0 ? "#FEE2E2" : "#D1FAE5" },
-            { label: "⚠️ ยิงแต่ไม่อยู่ระบบ", value: dayData.extra.length, color: "#92400E", bg: "#FEF3C7" },
-          ].map((s,i) => (
-            <div key={i} style={{ background: s.bg, borderRadius: 14, padding: "16px 14px", textAlign: "center", border: "1px solid #E5E7EB" }}>
-              <div style={{ fontSize: 24, fontWeight: 700, color: s.color }}>{s.value}</div>
-              <div style={{ fontSize: 12, color: "#6B7280", marginTop: 4 }}>{s.label}</div>
-            </div>
-          ))}
+      {/* ลิสต์ FLASH แจ้ง — เลข tracking + วันที่ เท่านั้น */}
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16, marginBottom: 24 }}>
+        <div style={{ fontSize: 12, color: "#6B7280", fontWeight: 600, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>
+          FLASH แจ้ง ({codeRows.length})
         </div>
-      )}
-
-      {/* Progress */}
-      {dayData && dayData.systemList.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
-          <div style={{ height: 8, background: "#F3F4F6", borderRadius: 4, overflow: "hidden" }}>
-            <div style={{ height: "100%", width: `${pct}%`, background: pct === 100 ? "#10B981" : "linear-gradient(90deg,#7C3AED,#3B82F6)", borderRadius: 4, transition: "width 0.4s" }} />
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 12, color: "#6B7280" }}>
-            <span>ความครบถ้วน</span>
-            <span style={{ fontWeight: 700, color: pct === 100 ? "#10B981" : "#7C3AED" }}>{pct}%</span>
-          </div>
-        </div>
-      )}
-
-      {/* View tabs */}
-      {dayData && (
-        <div style={{ display: "flex", gap: 8, marginBottom: 20, background: "#F9FAFB", padding: 4, borderRadius: 12, border: "1px solid #E5E7EB" }}>
-          {[
-            ["overview", `📋 ภาพรวม (${dayData.systemList.length})`],
-            ["matched", `✅ ตรงกัน (${dayData.matched.length})`],
-            ["pending", `⏳ รอรับ (${dayData.missing.length})`],
-            ["extra", `⚠️ ยิงเกิน (${dayData.extra.length})`],
-          ].map(([v,l]) => (
-            <button key={v} onClick={() => setActiveView(v)}
-              style={{ flex: 1, background: activeView === v ? "#fff" : "transparent", color: activeView === v ? "#7C3AED" : "#6B7280", border: activeView === v ? "1px solid #DDD6FE" : "1px solid transparent", borderRadius: 8, padding: "8px 10px", fontSize: 13, fontWeight: activeView === v ? 700 : 400, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", transition: "all 0.15s" }}>
-              {l}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Content by view */}
-      {loadingDay && <div style={{ textAlign: "center", padding: 40, color: "#6B7280" }}>กำลังโหลดข้อมูลวันที่ {dateFilter}...</div>}
-
-      {dayData && !loadingDay && activeView === "overview" && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16 }}>
-            <div style={{ fontSize: 12, color: "#6B7280", fontWeight: 600, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>Flash แจ้ง ({dayData.systemList.length})</div>
-            <div style={{ maxHeight: 280, overflowY: "auto" }}>
-              {dayData.systemList.map((code, i) => {
-                const ok = dayData.scans.find(s => s.tracking_code === code);
-                const sessInfo = dayData.codeToSession?.[code];
-                const addedAt = sessInfo?.createdAt ? new Date(sessInfo.createdAt).toLocaleDateString("th-TH", { day: "numeric", month: "short" }) + " " + new Date(sessInfo.createdAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : "";
-                return (
-                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid #F3F4F6", fontSize: 12 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, flexWrap: "wrap" }}>
-                      <span style={{ fontFamily: "monospace", color: ok ? "#065F46" : "#991B1B", fontSize: 12 }}>{code}</span>
-                      {addedAt && <span style={{ fontSize: 10, color: "#9CA3AF", background: "#F3F4F6", borderRadius: 4, padding: "1px 5px" }}>📅 {addedAt}</span>}
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ color: ok ? "#10B981" : "#EF4444", fontSize: 11 }}>{ok ? `✓ ${ok.scanned_by||""}` : "รอรับ"}</span>
-                      <button onClick={() => handleDeleteTracking(code)}
-                        style={{ background: "none", border: "none", color: "#D1D5DB", cursor: "pointer", fontSize: 14, padding: "0 2px", lineHeight: 1 }}
-                        onMouseEnter={e => e.target.style.color="#EF4444"} onMouseLeave={e => e.target.style.color="#D1D5DB"}
-                        title="ลบออกจากระบบ">✕</button>
-                    </div>
+        {loadingList && <div style={{ textAlign: "center", padding: 40, color: "#6B7280" }}>กำลังโหลดข้อมูล...</div>}
+        {!loadingList && (
+          <div style={{ maxHeight: 480, overflowY: "auto" }}>
+            {codeRows.map((row, i) => {
+              const dateLabel = row.sessionDate ? new Date(row.sessionDate + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" }) : "";
+              return (
+                <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid #F3F4F6", fontSize: 13 }}>
+                  <span style={{ fontFamily: "monospace", color: "#111827" }}>{row.code}</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    {dateLabel && <span style={{ fontSize: 11, color: "#6B7280", background: "#F3F4F6", borderRadius: 4, padding: "2px 8px" }}>📅 {dateLabel}</span>}
+                    <button onClick={() => handleDeleteTracking(row.code, row.sessionId)}
+                      style={{ background: "none", border: "none", color: "#D1D5DB", cursor: "pointer", fontSize: 14, padding: "0 2px", lineHeight: 1 }}
+                      onMouseEnter={e => e.target.style.color="#EF4444"} onMouseLeave={e => e.target.style.color="#D1D5DB"}
+                      title="ลบออกจากระบบ">✕</button>
                   </div>
-                );
-              })}
-              {dayData.systemList.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13 }}>ยังไม่มีข้อมูลจาก Flash วันนี้</div>}
-            </div>
-          </div>
-          <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16 }}>
-            <div style={{ fontSize: 12, color: "#6B7280", fontWeight: 600, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>พนักงานยิง ({dayData.scans.length})</div>
-            <div style={{ maxHeight: 280, overflowY: "auto" }}>
-              {dayData.scans.map((s, i) => {
-                const inSystem = dayData.systemList.includes(s.tracking_code);
-                return (
-                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid #F3F4F6", fontSize: 12 }}>
-                    <span style={{ fontFamily: "monospace", color: inSystem ? "#065F46" : "#92400E" }}>{s.tracking_code}</span>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ fontSize: 11, color: "#374151" }}>{s.scanned_by}</div>
-                      <div style={{ fontSize: 10, color: "#9CA3AF" }}>{s.scanned_at ? new Date(s.scanned_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : ""}</div>
-                    </div>
-                  </div>
-                );
-              })}
-              {dayData.scans.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13 }}>ยังไม่มีการยิงวันนี้</div>}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {dayData && !loadingDay && activeView === "matched" && (
-        <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "#065F46", marginBottom: 12 }}>✅ พัสดุที่ตรงกันแล้ว ({dayData.matched.length} รายการ)</div>
-          {dayData.matched.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13, textAlign: "center", padding: 24 }}>ยังไม่มีรายการที่ตรงกัน</div>}
-          {dayData.matched.map((code, i) => {
-            const sc = dayData.scans.find(s => s.tracking_code === code);
-            return (
-              <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderRadius: 8, background: "#F0FDF4", marginBottom: 6 }}>
-                <span style={{ fontFamily: "monospace", fontSize: 13, color: "#065F46", fontWeight: 600 }}>{code}</span>
-                <div style={{ textAlign: "right" }}>
-                  <div style={{ fontSize: 12, color: "#374151" }}>👤 {sc?.scanned_by || "-"}</div>
-                  <div style={{ fontSize: 11, color: "#9CA3AF" }}>{sc?.scanned_at ? new Date(sc.scanned_at).toLocaleString("th-TH") : ""}</div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {dayData && !loadingDay && activeView === "pending" && (
-        <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "#991B1B", marginBottom: 12 }}>⏳ รอรับพัสดุ ({dayData.missing.length} รายการ) — Flash แจ้งแต่ยังไม่มาถึงคลัง</div>
-          {dayData.missing.length === 0 && <div style={{ color: "#10B981", fontSize: 14, textAlign: "center", padding: 24 }}>🎉 รับครบทุกรายการแล้ว!</div>}
-          {dayData.missing.map((code, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", borderRadius: 8, background: "#FEF2F2", marginBottom: 6 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: 14 }}>❌</span>
-                <span style={{ fontFamily: "monospace", fontSize: 13, color: "#991B1B", fontWeight: 600 }}>{code}</span>
-              </div>
-              <button onClick={() => handleDeleteTracking(code)}
-                style={{ background: "none", border: "none", color: "#FECACA", cursor: "pointer", fontSize: 14, padding: "0 4px" }}
-                onMouseEnter={e => e.target.style.color="#EF4444"} onMouseLeave={e => e.target.style.color="#FECACA"}
-                title="ลบออกจากระบบ">✕</button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {dayData && !loadingDay && activeView === "extra" && (
-        <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "#92400E", marginBottom: 12 }}>⚠️ ยิงแต่ไม่อยู่ในระบบ ({dayData.extra.length} รายการ) — แจ้งแอดมินลง Flash</div>
-          {dayData.extra.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13, textAlign: "center", padding: 24 }}>ไม่มีรายการเกิน</div>}
-          {dayData.extra.map((s, i) => (
-            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderRadius: 8, background: "#FFFBEB", marginBottom: 6 }}>
-              <span style={{ fontFamily: "monospace", fontSize: 13, color: "#92400E", fontWeight: 600 }}>{s.tracking_code}</span>
-              <span style={{ fontSize: 12, color: "#374151" }}>👤 {s.scanned_by || "-"}</span>
-            </div>
-          ))}
-        </div>
-      )}
+              );
+            })}
+            {codeRows.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13, textAlign: "center", padding: 24 }}>ไม่มีข้อมูล Flash แจ้งตามตัวกรองนี้</div>}
+          </div>
+        )}
+      </div>
 
       {/* Import section */}
-      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, padding: 20, marginTop: 24 }}>
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, padding: 20 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>📋 เพิ่มรายการจาก Flash Express</div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -890,10 +701,6 @@ function ReturnAdminPanel() {
           </div>
         )}
         <div style={{ display: "flex", gap: 10, marginTop: 12, justifyContent: "flex-end" }}>
-          <button onClick={handleExport} disabled={!dayData || exporting}
-            style={{ background: dayData ? "#EDE9FE" : "#F9FAFB", color: dayData ? "#7C3AED" : "#9CA3AF", border: "1px solid " + (dayData ? "#DDD6FE" : "#E5E7EB"), borderRadius: 10, padding: "10px 18px", fontSize: 13, fontWeight: 600, cursor: dayData ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
-            {exporting ? "⏳..." : "📥 Export Excel"}
-          </button>
           <button onClick={handleCreate} disabled={!flashText.trim() || loading}
             style={{ background: flashText.trim() && !loading ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#F3F4F6", color: flashText.trim() && !loading ? "#fff" : "#9CA3AF", border: "none", borderRadius: 10, padding: "10px 22px", fontSize: 14, fontWeight: 700, cursor: flashText.trim() ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
             {loading ? "กำลังบันทึก..." : "✅ บันทึกเข้าระบบ"}
@@ -1265,19 +1072,19 @@ function ReturnStaffPanel() {
 }
 
 function ReturnCheckerTab() {
-  const [subTab, setSubTab] = useState(() => localStorage.getItem("returnSubTab") || "staff");
+  const [subTab, setSubTab] = useState(() => localStorage.getItem("returnSubTab") || "summary");
   const setAndSave = (v) => { setSubTab(v); localStorage.setItem("returnSubTab", v); };
   return (
     <div>
       <div style={{ display: "flex", gap: 8, marginBottom: 28 }}>
-        {[["admin","🗂 ตีกลับในระบบ"],["staff","📦 ตีกลับถึงคลัง"],["summary","📊 สรุปรวม"]].map(([v,l]) => (
+        {[["summary","📊 สรุปรวม"],["admin","🗂 ตีกลับในระบบ"],["staff","📦 ตีกลับถึงคลัง"]].map(([v,l]) => (
           <button key={v} onClick={() => setAndSave(v)}
             style={{ background: subTab === v ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#fff", color: subTab === v ? "#fff" : "#6B7280", border: subTab === v ? "none" : "1px solid #E5E7EB", borderRadius: 10, padding: "9px 20px", fontSize: 14, fontWeight: subTab === v ? 700 : 400, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", transition: "all 0.2s", boxShadow: subTab === v ? "0 4px 12px rgba(124,58,237,0.3)" : "none" }}>
             {l}
           </button>
         ))}
       </div>
-      {subTab === "admin" ? <ReturnAdminPanel /> : subTab === "staff" ? <ReturnStaffPanel /> : <ReturnSummaryPanel />}
+      {subTab === "summary" ? <ReturnSummaryPanel /> : subTab === "admin" ? <ReturnAdminPanel /> : <ReturnStaffPanel />}
     </div>
   );
 }
