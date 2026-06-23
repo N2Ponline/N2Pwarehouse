@@ -1119,6 +1119,13 @@ export default function WarehouseApp() {
   const [historyProduct, setHistoryProduct] = useState(null); // product ที่กดดูประวัติ
   const [filterProductId, setFilterProductId] = useState(null); // filter transactions by product
 
+  // ── รับเข้าตีกลับ (หลายรายการ ครั้งเดียว) ──
+  const [showReturnBatchModal, setShowReturnBatchModal] = useState(false);
+  const [returnBatchSearch, setReturnBatchSearch] = useState("");
+  const [returnBatchBy, setReturnBatchBy] = useState("");
+  const [returnBatchItems, setReturnBatchItems] = useState([]); // [{productId, name, sku, unit, quantity}]
+  const [savingReturnBatch, setSavingReturnBatch] = useState(false);
+
   const loadDisposeRecords = async () => {
     setLoadingDispose(true);
     try {
@@ -1425,6 +1432,70 @@ export default function WarehouseApp() {
     setSaving(false);
   };
 
+  // ── รับเข้าตีกลับ: เลือกหลายสินค้า ใส่จำนวน แล้วบันทึกครั้งเดียว ──
+  const openReturnBatchModal = () => {
+    setReturnBatchItems([]);
+    setReturnBatchSearch("");
+    setReturnBatchBy("");
+    setShowReturnBatchModal(true);
+  };
+
+  const addToReturnBatch = (product) => {
+    setReturnBatchItems(prev => {
+      const existing = prev.find(it => it.productId === product.id);
+      if (existing) {
+        return prev.map(it => it.productId === product.id ? { ...it, quantity: it.quantity + 1 } : it);
+      }
+      return [...prev, { productId: product.id, name: product.name, sku: product.sku, unit: product.unit, quantity: 1 }];
+    });
+  };
+
+  const updateReturnBatchQty = (productId, qty) => {
+    const n = Math.max(0, parseInt(qty) || 0);
+    setReturnBatchItems(prev => prev.map(it => it.productId === productId ? { ...it, quantity: n } : it));
+  };
+
+  const removeFromReturnBatch = (productId) => {
+    setReturnBatchItems(prev => prev.filter(it => it.productId !== productId));
+  };
+
+  const handleConfirmReturnBatch = async () => {
+    const validItems = returnBatchItems.filter(it => it.quantity > 0);
+    if (validItems.length === 0) return showToast("กรุณาเลือกสินค้าและระบุจำนวนอย่างน้อย 1 รายการ", "error");
+    if (!returnBatchBy.trim()) return showToast("กรุณากรอกชื่อผู้ดำเนินการ", "error");
+    setSavingReturnBatch(true);
+    try {
+      const today = new Date().toISOString().split("T")[0];
+      const updatedProducts = [...products];
+      const newTxList = [];
+      for (const item of validItems) {
+        const idx = updatedProducts.findIndex(p => p.id === item.productId);
+        if (idx === -1) continue;
+        const newQty = updatedProducts[idx].quantity + item.quantity;
+        // 1. เพิ่มยอดสต็อกเข้าคลังอัตโนมัติ
+        await api.updateProduct(item.productId, { quantity: newQty });
+        updatedProducts[idx] = { ...updatedProducts[idx], quantity: newQty };
+        // 2. บันทึกรายการเคลื่อนไหว พร้อมหมายเหตุ "ตีกลับ" อัตโนมัติ
+        const [newTx] = await api.addTransaction({
+          type: "in",
+          product_id: item.productId,
+          quantity: item.quantity,
+          date: today,
+          note: "ตีกลับ",
+          by: returnBatchBy.trim(),
+        });
+        newTxList.push(dbToTx(newTx));
+      }
+      setProducts(updatedProducts);
+      setTransactions(prev => [...newTxList, ...prev]);
+      setShowReturnBatchModal(false);
+      setReturnBatchItems([]);
+      setReturnBatchBy("");
+      showToast(`รับเข้าตีกลับสำเร็จ ${validItems.length} รายการ — เพิ่มสต็อกเรียบร้อย`);
+    } catch (e) { showToast(e.message, "error"); }
+    setSavingReturnBatch(false);
+  };
+
   const openEdit = (product) => {
     setSelectedProduct(product);
     setForm({ ...product, quantity: String(product.quantity), minStock: String(product.minStock), price: String(product.price) });
@@ -1659,8 +1730,9 @@ export default function WarehouseApp() {
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
               <h1 style={{ fontSize: 24, fontWeight: 700, color: "#1a1040" }}>สินค้าคงคลัง <span style={{ fontSize: 14, color: "#6b7ab5", fontWeight: 400 }}>({filteredProducts.length} รายการ)</span></h1>
-              <div style={{ display: "flex", gap: 10 }}>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                 <button className="btn btn-secondary" onClick={() => { setTxType("in"); setShowModal("transaction"); }}>▲ รับสินค้า</button>
+                <button className="btn" style={{ color: "#C2410C", border: "1.5px solid #FED7AA", background: "#FFF7ED" }} onClick={openReturnBatchModal}>↩️ รับสินค้า (ตีกลับ)</button>
                 <button className="btn btn-secondary" style={{ color: "#ff5555", borderColor: "rgba(255,85,85,0.3)", background: "rgba(255,85,85,0.05)" }} onClick={() => { setTxType("out"); setShowModal("transaction"); }}>▼ เบิกสินค้า</button>
                 <button className="btn btn-secondary" onClick={handleExportInventory} disabled={exportingInventory}
                   style={{ color: "#7c3aed", borderColor: "rgba(124,58,237,0.3)", background: "rgba(100,255,218,0.05)" }}>
@@ -2059,6 +2131,87 @@ export default function WarehouseApp() {
               <button className="btn btn-primary" disabled={saving} style={{ background: txType === "out" ? "#ff5555" : "#7c3aed", color: "#f0f2ff" }} onClick={handleTransaction}>
                 {saving ? "กำลังบันทึก..." : txType === "in" ? "รับสินค้าเข้า" : "เบิกสินค้าออก"}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: รับเข้าตีกลับ (หลายรายการ ครั้งเดียว) */}
+      {showReturnBatchModal && (
+        <div className="overlay" onClick={() => setShowReturnBatchModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ width: 760, maxWidth: "95vw" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
+              <h2 style={{ fontSize: 19, fontWeight: 700, color: "#111827" }}>↩️ รับเข้าตีกลับ (หลายรายการ)</h2>
+              <span style={{ background: "#FFF7ED", color: "#C2410C", borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 600 }}>หมายเหตุ: ตีกลับ (อัตโนมัติ)</span>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <div className="label">ผู้ดำเนินการ (ใช้กับทุกรายการในรอบนี้)</div>
+              <input className="inp" value={returnBatchBy} onChange={e => setReturnBatchBy(e.target.value)} placeholder="ชื่อ-นามสกุล" />
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              {/* ซ้าย: เลือกสินค้า */}
+              <div>
+                <div className="label">เลือกสินค้า (คลิกเพื่อเพิ่ม)</div>
+                <input className="inp" style={{ marginBottom: 8 }} placeholder="🔍 ค้นหาชื่อหรือ SKU..." value={returnBatchSearch} onChange={e => setReturnBatchSearch(e.target.value)} />
+                <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, maxHeight: 360, overflowY: "auto" }}>
+                  {products
+                    .filter(p => p.name.toLowerCase().includes(returnBatchSearch.toLowerCase()) || p.sku.toLowerCase().includes(returnBatchSearch.toLowerCase()))
+                    .map(p => {
+                      const staged = returnBatchItems.find(it => it.productId === p.id);
+                      return (
+                        <div key={p.id} onClick={() => addToReturnBatch(p)}
+                          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", borderBottom: "1px solid #F3F4F6", cursor: "pointer", background: staged ? "#FFF7ED" : "transparent" }}
+                          onMouseEnter={e => { if (!staged) e.currentTarget.style.background = "#FAFAFA"; }}
+                          onMouseLeave={e => { if (!staged) e.currentTarget.style.background = "transparent"; }}>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 500, color: "#111827" }}>{p.name}</div>
+                            <div style={{ fontSize: 11, color: "#9CA3AF" }}>{p.sku} · คงเหลือ {p.quantity} {p.unit}</div>
+                          </div>
+                          {staged && <span style={{ background: "#C2410C", color: "#fff", borderRadius: 6, padding: "2px 8px", fontSize: 12, fontWeight: 700 }}>+{staged.quantity}</span>}
+                        </div>
+                      );
+                    })}
+                  {products.filter(p => p.name.toLowerCase().includes(returnBatchSearch.toLowerCase()) || p.sku.toLowerCase().includes(returnBatchSearch.toLowerCase())).length === 0 && (
+                    <div style={{ padding: 20, textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>ไม่พบสินค้า</div>
+                  )}
+                </div>
+              </div>
+
+              {/* ขวา: รายการที่เลือก */}
+              <div>
+                <div className="label">รับเข้าสต็อก ({returnBatchItems.length})</div>
+                <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, maxHeight: 360, overflowY: "auto", minHeight: 120 }}>
+                  {returnBatchItems.length === 0 && <div style={{ padding: 20, textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>ยังไม่มีรายการ — กดเลือกสินค้าทางซ้าย</div>}
+                  {returnBatchItems.map(it => (
+                    <div key={it.productId} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", borderBottom: "1px solid #F3F4F6", gap: 8 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500, color: "#111827", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{it.name}</div>
+                        <div style={{ fontSize: 11, color: "#9CA3AF" }}>{it.sku}</div>
+                      </div>
+                      <input type="number" min="0" className="inp" style={{ width: 64, padding: "6px 8px", textAlign: "center" }}
+                        value={it.quantity} onChange={e => updateReturnBatchQty(it.productId, e.target.value)} />
+                      <span style={{ fontSize: 12, color: "#9CA3AF" }}>{it.unit}</span>
+                      <button onClick={() => removeFromReturnBatch(it.productId)}
+                        style={{ background: "none", border: "none", color: "#D1D5DB", cursor: "pointer", fontSize: 15 }}
+                        onMouseEnter={e => e.target.style.color = "#EF4444"} onMouseLeave={e => e.target.style.color = "#D1D5DB"}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18, flexWrap: "wrap", gap: 10 }}>
+              <div style={{ fontSize: 13, color: "#6B7280" }}>
+                รวม <span style={{ fontWeight: 700, color: "#C2410C" }}>{returnBatchItems.reduce((s, it) => s + (it.quantity || 0), 0)}</span> ชิ้น จาก <span style={{ fontWeight: 700 }}>{returnBatchItems.length}</span> รายการ
+              </div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button className="btn" style={{ background: "#f0f2ff", color: "#6b7ab5", padding: "10px 20px" }} onClick={() => setShowReturnBatchModal(false)}>ยกเลิก</button>
+                <button className="btn btn-primary" style={{ background: "#C2410C" }} disabled={savingReturnBatch || returnBatchItems.length === 0} onClick={handleConfirmReturnBatch}>
+                  {savingReturnBatch ? "กำลังบันทึก..." : "✅ บันทึกรับเข้าตีกลับ"}
+                </button>
+              </div>
             </div>
           </div>
         </div>
