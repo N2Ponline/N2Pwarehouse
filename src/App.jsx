@@ -97,9 +97,10 @@ const parseFlashItemsText = (raw) => {
 };
 
 const sbReturn = async (path, opts = {}) => {
+  const { headers: extraHeaders, ...restOpts } = opts;
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
-    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=representation", ...opts.headers },
-    ...opts,
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json", Prefer: "return=representation", ...extraHeaders },
+    ...restOpts,
   });
   if (!res.ok) throw await res.json().catch(() => ({}));
   const text = await res.text();
