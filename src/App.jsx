@@ -733,6 +733,52 @@ function ReturnAdminPanel() {
     setClearing(false);
   };
 
+  // ── ลบข้อมูลเก่า (legacy): return_sessions ที่ยังใช้ tracking_list แบบ flat array ──
+  // เก็บ return_scans (ประวัติการยิงจริง) ไว้ทั้งหมด แค่ตัดการเชื่อมโยง (session_id = NULL) ก่อนลบ session ทิ้ง
+  const [legacyCount, setLegacyCount] = useState(null); // null = ยังไม่เช็ค, number = จำนวนที่เจอ
+  const [clearingLegacy, setClearingLegacy] = useState(false);
+
+  const checkLegacyCount = async () => {
+    try {
+      const all = await sbReturnAll("return_sessions", "select=id,tracking_list");
+      const legacy = all.filter(s => Array.isArray(s.tracking_list) && s.tracking_list.length > 0);
+      setLegacyCount(legacy.length);
+      return legacy;
+    } catch (e) { console.error(e); return []; }
+  };
+
+  useEffect(() => { checkLegacyCount(); }, []);
+
+  const handleClearLegacy = async () => {
+    const legacy = await checkLegacyCount();
+    if (legacy.length === 0) { alert("ไม่พบข้อมูลเก่า (legacy) ในระบบแล้ว"); return; }
+    if (!confirm(`พบ session เก่า (แบบ tracking_list) ${legacy.length} รายการ\nจะลบ session เหล่านี้ทิ้ง — ประวัติการยิงจริง (return_scans) จะยังเก็บไว้ ไม่ถูกลบ\n\nยืนยันลบ?`)) return;
+    setClearingLegacy(true);
+    try {
+      const legacyIds = legacy.map(s => s.id);
+      const chunkSize = 100;
+      // 1) ตัดการเชื่อมโยง return_scans ของ session เก่าก่อน (set session_id = NULL) เพื่อกัน FK constraint และเก็บประวัติไว้
+      for (let i = 0; i < legacyIds.length; i += chunkSize) {
+        const chunk = legacyIds.slice(i, i + chunkSize);
+        await sbReturn(`return_scans?session_id=in.(${chunk.join(",")})`, { method: "PATCH", body: JSON.stringify({ session_id: null }), headers: { Prefer: "return=minimal" } });
+      }
+      // 2) ลบ return_flash_items ที่อาจผูกกับ session เก่า (เผื่อมี) ก่อนลบ session
+      for (let i = 0; i < legacyIds.length; i += chunkSize) {
+        const chunk = legacyIds.slice(i, i + chunkSize);
+        await sbReturn(`return_flash_items?session_id=in.(${chunk.join(",")})`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      }
+      // 3) ลบ session เก่าทิ้ง
+      for (let i = 0; i < legacyIds.length; i += chunkSize) {
+        const chunk = legacyIds.slice(i, i + chunkSize);
+        await sbReturn(`return_sessions?id=in.(${chunk.join(",")})`, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+      }
+      await checkLegacyCount();
+      await loadList(dateFilter, dateFrom, dateTo);
+      alert(`ลบข้อมูลเก่าเรียบร้อย ${legacy.length} session — ประวัติการยิงยังอยู่ครบ`);
+    } catch (e) { alert("ลบไม่สำเร็จ: " + (e.message || JSON.stringify(e))); }
+    setClearingLegacy(false);
+  };
+
   return (
     <div>
       {/* Import section — วางข้อมูลจาก Extension (ขึ้นมาด้านบน) */}
@@ -794,6 +840,22 @@ function ReturnAdminPanel() {
           </div>
         </div>
       </div>
+
+      {/* แบนเนอร์ข้อมูลเก่า (legacy) — แสดงเมื่อยังมี session เก่าแบบ tracking_list หลงเหลืออยู่ */}
+      {legacyCount > 0 && (
+        <div style={{ background: "#FFFBEB", border: "1.5px solid #FDE68A", borderRadius: 14, padding: "14px 18px", marginBottom: 20, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <div style={{ fontWeight: 700, color: "#92400E", fontSize: 14 }}>⚠️ พบข้อมูลเก่า (รูปแบบก่อนใช้ Extension)</div>
+            <div style={{ fontSize: 12, color: "#92400E", marginTop: 3 }}>
+              มี session เก่า {legacyCount} รายการที่ยังเป็นเลขแบบไม่จับคู่ — ทำให้ไม่ชนกับ "ตีกลับ myorder" ได้ แนะนำให้ลบทิ้ง (ประวัติการยิงจริงจะไม่ถูกลบ)
+            </div>
+          </div>
+          <button onClick={handleClearLegacy} disabled={clearingLegacy}
+            style={{ background: "#DC2626", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+            {clearingLegacy ? "⏳ กำลังลบ..." : `🗑️ ลบข้อมูลเก่าทั้งหมด (${legacyCount})`}
+          </button>
+        </div>
+      )}
 
       {/* ลิสต์ FLASH แจ้ง — เลขขาไป + เลขขากลับ + เวลา (ขยายให้ยาวขึ้น) */}
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16 }}>
