@@ -283,7 +283,7 @@ async function loadScansFiltered(filter) {
 }
 
 function ReturnSummaryPanel({ onGoToMyorder }) {
-  const sessFilter = useDateFilterState("today");
+  const sessFilter = useDateFilterState("all");
   const scanFilter = useDateFilterState("all");
   const [showMissingOnly, setShowMissingOnly] = useState(false);
 
@@ -364,10 +364,15 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
   }, [flashItems]);
   const myorderRows = useMemo(() => {
     return myorderItems.map(it => {
+      const isWA = /^WA/i.test(it.outbound_tracking || "");
+      if (isWA) {
+        const scanned = scannedSet.has(it.outbound_tracking);
+        return { ...it, returnTracking: it.outbound_tracking, scanned, isThaiPost: true };
+      }
       const flash = flashOutboundMap[it.outbound_tracking];
       const returnTracking = flash?.return_tracking || null;
       const scanned = returnTracking ? scannedSet.has(returnTracking) : false;
-      return { ...it, returnTracking, scanned };
+      return { ...it, returnTracking, scanned, isThaiPost: false };
     });
   }, [myorderItems, flashOutboundMap, scannedSet]);
   const myorderMatched = myorderRows.filter(r => r.scanned).length;
@@ -579,7 +584,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
             <div style={{ fontSize: 12, color: "#6B7280", fontWeight: 600, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>
               Flash แจ้ง ({systemList.length})
             </div>
-            <div style={{ maxHeight: 320, overflowY: "auto" }}>
+            <div style={{ maxHeight: 640, overflowY: "auto" }}>
               {systemList.map((code, i) => {
                 const ok = scannedSet.has(code);
                 const sessDate = codeToSessionDate[code];
@@ -601,7 +606,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
             <div style={{ fontSize: 12, color: "#6B7280", fontWeight: 600, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>
               ถึงคลัง ({scans.length})
             </div>
-            <div style={{ maxHeight: 320, overflowY: "auto" }}>
+            <div style={{ maxHeight: 640, overflowY: "auto" }}>
               {scans.map((sc, i) => {
                 const inSystem = systemList.includes(sc.tracking_code);
                 return (
@@ -625,7 +630,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
               <span style={{ background: "#D1FAE5", color: "#065F46", borderRadius: 6, padding: "2px 8px", fontWeight: 600 }}>✅ {myorderMatched} เสร็จแล้ว</span>
               <span style={{ background: "#FEF3C7", color: "#92400E", borderRadius: 6, padding: "2px 8px", fontWeight: 600 }}>⏳ {myorderPending} รอดำเนินการ</span>
             </div>
-            <div style={{ maxHeight: 280, overflowY: "auto" }}>
+            <div style={{ maxHeight: 600, overflowY: "auto" }}>
               {myorderRows.map((r, i) => (
                 <div key={i} onClick={() => onGoToMyorder && onGoToMyorder(r.order_no)}
                   style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: "1px solid #F3F4F6", fontSize: 12, cursor: onGoToMyorder ? "pointer" : "default" }}
@@ -730,12 +735,41 @@ function ReturnAdminPanel() {
 
   return (
     <div>
-      {/* Date selector */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24, flexWrap: "wrap", gap: 12 }}>
-        <div>
-          <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>ตีกลับในระบบ</h2>
-          <p style={{ fontSize: 13, color: "#6B7280" }}>ดูและลงรายการพัสดุตีกลับตามวันที่ — เลขขาไป + เลขขากลับ (Flash)</p>
+      {/* Import section — วางข้อมูลจาก Extension (ขึ้นมาด้านบน) */}
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, padding: 20, marginBottom: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4, flexWrap: "wrap", gap: 10 }}>
+          <div>
+            <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 2 }}>ตีกลับในระบบ</h2>
+            <p style={{ fontSize: 13, color: "#6B7280" }}>วางข้อความที่คัดลอกจาก Extension — เลขขาไป + เลขขากลับ (Flash)</p>
+          </div>
+          {parsed.date && (
+            <span style={{ background: "#EDE9FE", color: "#7C3AED", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 600 }}>
+              📅 ตรวจพบวันที่: {new Date(parsed.date + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })}
+            </span>
+          )}
         </div>
+        <textarea value={flashText} onChange={e => setFlashText(e.target.value)}
+          placeholder={"วางข้อความที่คัดลอกจาก Extension ที่นี่...\nบรรทัดแรกควรเป็นวันที่ เช่น 28/06/2026\nตามด้วยรายการ เช่น TH01118RBNXQ5B(TH27218W3W7V0A) 11:23"}
+          style={{ width: "100%", height: 140, background: "#F9FAFB", border: "1.5px solid #E5E7EB", borderRadius: 12, padding: 14, marginTop: 14, color: "#111827", fontSize: 13, resize: "vertical", outline: "none", lineHeight: 1.8, fontFamily: "'Sarabun', sans-serif" }} />
+        {flashText.trim() && (
+          <div style={{ marginTop: 6, fontSize: 13, color: "#6B7280" }}>
+            พบ <span style={{ color: "#7C3AED", fontWeight: 700 }}>{parsed.items.length}</span> รายการ
+            {parsed.date
+              ? <> — จะบันทึกเข้า <span style={{ color: "#7C3AED", fontWeight: 700 }}>{new Date(parsed.date + "T00:00:00").toLocaleDateString("th-TH", { dateStyle: "long" })}</span></>
+              : <span style={{ color: "#DC2626" }}> — ⚠️ ไม่พบวันที่ในข้อความ จะบันทึกเข้าวันที่ปัจจุบันแทน</span>}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 10, marginTop: 12, justifyContent: "flex-end" }}>
+          <button onClick={handleCreate} disabled={!parsed.items.length || loading}
+            style={{ background: parsed.items.length && !loading ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#F3F4F6", color: parsed.items.length && !loading ? "#fff" : "#9CA3AF", border: "none", borderRadius: 10, padding: "10px 22px", fontSize: 14, fontWeight: 700, cursor: parsed.items.length ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
+            {loading ? "กำลังบันทึก..." : "✅ บันทึกเข้าระบบ"}
+          </button>
+        </div>
+      </div>
+
+      {/* Date selector */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 12 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>📜 ประวัติ Flash แจ้ง</div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <button onClick={() => { setDateFilter(""); setDateFrom(""); setDateTo(new Date().toISOString().slice(0,10)); }}
             style={{ background: !dateFilter && !dateFrom ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#fff", color: !dateFilter && !dateFrom ? "#fff" : "#6B7280", border: "1px solid #E5E7EB", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
@@ -761,8 +795,8 @@ function ReturnAdminPanel() {
         </div>
       </div>
 
-      {/* ลิสต์ FLASH แจ้ง — เลขขาไป + เลขขากลับ + เวลา */}
-      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16, marginBottom: 24 }}>
+      {/* ลิสต์ FLASH แจ้ง — เลขขาไป + เลขขากลับ + เวลา (ขยายให้ยาวขึ้น) */}
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
           <div style={{ fontSize: 12, color: "#6B7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 1 }}>
             FLASH แจ้ง ({items.length})
@@ -776,7 +810,7 @@ function ReturnAdminPanel() {
         </div>
         {loadingList && <div style={{ textAlign: "center", padding: 40, color: "#6B7280" }}>กำลังโหลดข้อมูล...</div>}
         {!loadingList && (
-          <div style={{ maxHeight: 480, overflowY: "auto" }}>
+          <div style={{ maxHeight: 900, overflowY: "auto" }}>
             {items.map((it) => {
               const dateLabel = it.sessionDate ? new Date(it.sessionDate + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" }) : "";
               return (
@@ -799,35 +833,6 @@ function ReturnAdminPanel() {
           </div>
         )}
       </div>
-
-      {/* Import section */}
-      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, padding: 20 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>📋 วางข้อมูลจาก Extension (Flash)</div>
-          {parsed.date && (
-            <span style={{ background: "#EDE9FE", color: "#7C3AED", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 600 }}>
-              📅 ตรวจพบวันที่: {new Date(parsed.date + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })}
-            </span>
-          )}
-        </div>
-        <textarea value={flashText} onChange={e => setFlashText(e.target.value)}
-          placeholder={"วางข้อความที่คัดลอกจาก Extension ที่นี่...\nบรรทัดแรกควรเป็นวันที่ เช่น 28/06/2026\nตามด้วยรายการ เช่น TH01118RBNXQ5B(TH27218W3W7V0A) 11:23"}
-          style={{ width: "100%", height: 140, background: "#F9FAFB", border: "1.5px solid #E5E7EB", borderRadius: 12, padding: 14, color: "#111827", fontSize: 13, resize: "vertical", outline: "none", lineHeight: 1.8, fontFamily: "'Sarabun', sans-serif" }} />
-        {flashText.trim() && (
-          <div style={{ marginTop: 6, fontSize: 13, color: "#6B7280" }}>
-            พบ <span style={{ color: "#7C3AED", fontWeight: 700 }}>{parsed.items.length}</span> รายการ
-            {parsed.date
-              ? <> — จะบันทึกเข้า <span style={{ color: "#7C3AED", fontWeight: 700 }}>{new Date(parsed.date + "T00:00:00").toLocaleDateString("th-TH", { dateStyle: "long" })}</span></>
-              : <span style={{ color: "#DC2626" }}> — ⚠️ ไม่พบวันที่ในข้อความ จะบันทึกเข้าวันที่ปัจจุบันแทน</span>}
-          </div>
-        )}
-        <div style={{ display: "flex", gap: 10, marginTop: 12, justifyContent: "flex-end" }}>
-          <button onClick={handleCreate} disabled={!parsed.items.length || loading}
-            style={{ background: parsed.items.length && !loading ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#F3F4F6", color: parsed.items.length && !loading ? "#fff" : "#9CA3AF", border: "none", borderRadius: 10, padding: "10px 22px", fontSize: 14, fontWeight: 700, cursor: parsed.items.length ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
-            {loading ? "กำลังบันทึก..." : "✅ บันทึกเข้าระบบ"}
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
@@ -837,7 +842,8 @@ function ReturnStaffPanel() {
   const [mode, setMode] = useState("idle");
   const [staging, setStaging] = useState([]);
   const [submitted, setSubmitted] = useState([]);
-  const [systemList, setSystemList] = useState([]);
+  const [systemList, setSystemList] = useState([]); // เลขขากลับที่ Flash แจ้ง (ทั้งหมด ไม่จำกัดวัน) — รวมของเก่า+ใหม่
+  const [myorderOutboundSet, setMyorderOutboundSet] = useState(new Set()); // outbound_tracking จาก myorder (สำหรับเทียบเลข WA)
   const [scanInput, setScanInput] = useState("");
   const [lastScan, setLastScan] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -855,6 +861,14 @@ function ReturnStaffPanel() {
   const submittedCodesRef = useRef([]);
   const today = new Date().toISOString().slice(0,10);
 
+  // เลขไปรษณีย์ไทย: เลขขึ้นต้นด้วย WA ใช้เลขเดียวกันทั้งขาไปและขากลับ
+  const isThaiPostCode = (code) => /^WA/i.test(code || "");
+  // เช็คว่าเลขนี้ "ตรงกัน" หรือยัง — WA เทียบกับ myorder ตรงๆ, อื่นๆ เทียบกับ systemList (Flash แจ้ง) ตามปกติ
+  const isCodeMatched = (code, sysList, myorderSet) => {
+    if (isThaiPostCode(code)) return myorderSet.has(code);
+    return sysList.includes(code);
+  };
+
   useEffect(() => { stagingCodesRef.current = staging.map(s => s.code); }, [staging]);
   useEffect(() => { submittedCodesRef.current = submitted.map(s => s.tracking_code); }, [submitted]);
   useEffect(() => { if (staffName) loadData(); }, [staffName]);
@@ -864,13 +878,19 @@ function ReturnStaffPanel() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const sessions = await sbReturnAll("return_sessions", `select=*&session_date=eq.${today}`);
-      setSystemList([...new Set(sessions.flatMap(s => s.tracking_list || []))]);
-      const allScans = [];
-      for (const s of sessions) {
-        const scans = await sbReturnAll("return_scans", `session_id=eq.${s.id}&select=tracking_code,scanned_by,scanned_at&order=scanned_at.desc`);
-        allScans.push(...scans);
-      }
+      // Flash แจ้ง — รวมของเก่า (tracking_list array) และของใหม่ (return_flash_items.return_tracking) ทั้งหมด ไม่จำกัดวัน
+      const [sessions, flashRows, myorderRows] = await Promise.all([
+        sbReturnAll("return_sessions", "select=id,tracking_list"),
+        sbReturnAll("return_flash_items", "select=return_tracking"),
+        sbReturnAll("return_myorder_items", "select=outbound_tracking"),
+      ]);
+      const fromLegacy = sessions.flatMap(s => s.tracking_list || []);
+      const fromNew = flashRows.map(f => f.return_tracking).filter(Boolean);
+      setSystemList([...new Set([...fromLegacy, ...fromNew])]);
+      setMyorderOutboundSet(new Set(myorderRows.map(r => r.outbound_tracking).filter(Boolean)));
+
+      // ประวัติการยิงทั้งหมด ไม่จำกัดวัน
+      const allScans = await sbReturnAll("return_scans", "select=tracking_code,scanned_by,scanned_at&order=scanned_at.desc");
       const seen = new Set();
       setSubmitted(allScans.filter(s => { if (seen.has(s.tracking_code)) return false; seen.add(s.tracking_code); return true; }));
     } catch (e) { console.error(e); }
@@ -899,8 +919,9 @@ function ReturnStaffPanel() {
     if (allCodes.includes(code)) { playBeep(false); setLastScan({ code, status: "duplicate" }); return; }
     const timeStr = new Date().toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     setStaging(prev => [{ code, time: timeStr }, ...prev]);
-    setLastScan({ code, status: systemList.includes(code) ? "match" : "extra" });
-    playBeep(systemList.includes(code));
+    const ok = isCodeMatched(code, systemList, myorderOutboundSet);
+    setLastScan({ code, status: ok ? "match" : "extra" });
+    playBeep(ok);
   };
 
   const handleScan = (e) => {
@@ -912,8 +933,9 @@ function ReturnStaffPanel() {
     if (allCodes.includes(code)) { playBeep(false); setLastScan({ code, status: "duplicate" }); return; }
     const timeStr = new Date().toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     setStaging(prev => [{ code, time: timeStr }, ...prev]);
-    setLastScan({ code, status: systemList.includes(code) ? "match" : "extra" });
-    playBeep(systemList.includes(code));
+    const ok = isCodeMatched(code, systemList, myorderOutboundSet);
+    setLastScan({ code, status: ok ? "match" : "extra" });
+    playBeep(ok);
     setTimeout(() => { if (listRef.current) listRef.current.scrollTop = 0; }, 50);
   };
 
@@ -995,7 +1017,8 @@ function ReturnStaffPanel() {
   const scannedSet = new Set(allCodes);
   const matched = systemList.filter(c => scannedSet.has(c));
   const missing = systemList.filter(c => !scannedSet.has(c));
-  const extra = allCodes.filter(c => !systemList.includes(c));
+  // ยิงเกิน: ไม่อยู่ใน Flash แจ้ง (systemList) และไม่ใช่ WA ที่ตรงกับ myorder
+  const extra = allCodes.filter(c => !systemList.includes(c) && !(isThaiPostCode(c) && myorderOutboundSet.has(c)));
   const progress = systemList.length > 0 ? Math.round(matched.length / systemList.length * 100) : 0;
 
   const handleStaffExport = async () => {
@@ -1087,9 +1110,9 @@ function ReturnStaffPanel() {
         </div>
       )}
 
-      {systemList.length === 0 && (
+      {systemList.length === 0 && myorderOutboundSet.size === 0 && (
         <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 12, padding: "12px 16px", marginBottom: 14, fontSize: 13, color: "#92400E" }}>
-          ⚠️ แอดมินยังไม่ได้ลงรายการวันนี้ — ยิงได้เลย ระบบจะแมทให้อัตโนมัติเมื่อแอดมินลงข้อมูล
+          ⚠️ ยังไม่มีข้อมูล Flash แจ้ง / myorder ในระบบ — ยิงได้เลย ระบบจะแมทให้อัตโนมัติเมื่อมีข้อมูลเข้ามา
         </div>
       )}
 
@@ -1100,22 +1123,28 @@ function ReturnStaffPanel() {
         </button>
       </div>
 
-      {submitted.length > 0 && (
-        <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, padding: 12, maxHeight: 200, overflowY: "auto" }}>
-          <div style={{ fontSize: 11, color: "#6B7280", fontWeight: 600, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>ยิงและบันทึกแล้ว ({submitted.length})</div>
+      {/* ประวัติการยิงทั้งหมด — ไม่จำกัดวัน, ขยายเต็มหน้า */}
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, padding: 16 }}>
+        <div style={{ fontSize: 12, color: "#6B7280", fontWeight: 600, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>📜 ประวัติการยิงทั้งหมด ({submitted.length})</div>
+        <div style={{ maxHeight: 900, overflowY: "auto" }}>
           {submitted.map((s, i) => {
-            const ok = systemList.includes(s.tracking_code);
+            const ok = isCodeMatched(s.tracking_code, systemList, myorderOutboundSet);
+            const isWA = isThaiPostCode(s.tracking_code);
             return (
-              <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "5px 0", borderBottom: "1px solid #F3F4F6" }}>
-                <span style={{ fontFamily: "monospace", fontSize: 11, color: ok ? "#065F46" : "#92400E" }}>{s.tracking_code}</span>
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid #F3F4F6", opacity: ok ? 0.55 : 1, textDecoration: ok ? "line-through" : "none" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontFamily: "monospace", fontSize: 12, color: ok ? "#065F46" : "#92400E" }}>{s.tracking_code}</span>
+                  {isWA && <span style={{ fontSize: 10, color: "#0EA5E9", background: "#E0F2FE", borderRadius: 4, padding: "1px 6px" }}>ไปรษณีย์ไทย</span>}
+                </div>
                 <span style={{ fontSize: 11, color: "#6B7280" }}>
                   {s.scanned_by} · {s.scanned_at ? new Date(s.scanned_at).toLocaleDateString("th-TH", { day: "numeric", month: "short" }) + " " + new Date(s.scanned_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : ""}
                 </span>
               </div>
             );
           })}
+          {submitted.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13, textAlign: "center", padding: 24 }}>ยังไม่มีประวัติการยิง</div>}
         </div>
-      )}
+      </div>
 
       {mode === "scanning" && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(8px)" }}>
@@ -1162,7 +1191,7 @@ function ReturnStaffPanel() {
             <div ref={listRef} style={{ flex: 1, overflowY: "auto", padding: "8px 20px" }}>
               {staging.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13, textAlign: "center", paddingTop: 20 }}>ยังไม่มีรายการ — เริ่มยิงได้เลย</div>}
               {staging.map((entry, i) => {
-                const ok = systemList.includes(entry.code);
+                const ok = isCodeMatched(entry.code, systemList, myorderOutboundSet);
                 return (
                   <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: "1px solid #F3F4F6" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -1254,8 +1283,24 @@ function ReturnMyorderPanel({ focusOrderNo, onFocusHandled }) {
   }, [scans]);
 
   // รวมข้อมูลแต่ละแถว + คำนวณสถานะ
+  // กรณีพิเศษ: เลขขึ้นต้นด้วย WA (ไปรษณีย์ไทย) — เลขขาไปและเลขขากลับเป็นเลขเดียวกัน
+  // จึงไม่ต้องรอ Flash แจ้งเลขขากลับ ให้เทียบ outbound_tracking กับ return_scans ตรงๆ
   const rows = useMemo(() => {
     return items.map(it => {
+      const isWA = /^WA/i.test(it.outbound_tracking || "");
+      if (isWA) {
+        const scan = scanMap[it.outbound_tracking];
+        return {
+          ...it,
+          returnTracking: it.outbound_tracking, // เลขเดียวกัน
+          flashTime: "",
+          isThaiPost: true,
+          scanned: !!scan,
+          scannedAt: scan?.scanned_at || null,
+          scannedBy: scan?.scanned_by || null,
+          isComplete: !!scan, // ไปรษณีย์ไทย: ยิงรับเข้าคลังแล้วก็ถือว่าเสร็จ ไม่ต้องรอ Flash
+        };
+      }
       const flash = flashMap[it.outbound_tracking];
       const returnTracking = flash?.return_tracking || null;
       const scan = returnTracking ? scanMap[returnTracking] : null;
@@ -1263,6 +1308,7 @@ function ReturnMyorderPanel({ focusOrderNo, onFocusHandled }) {
         ...it,
         returnTracking,
         flashTime: flash?.flash_time || "",
+        isThaiPost: false,
         scanned: !!scan,
         scannedAt: scan?.scanned_at || null,
         scannedBy: scan?.scanned_by || null,
@@ -1426,9 +1472,11 @@ function ReturnMyorderPanel({ focusOrderNo, onFocusHandled }) {
                   <td style={{ fontFamily: "monospace", fontSize: 11, color: "#374151" }}>{r.outbound_tracking}</td>
                   <td style={{ fontFamily: "monospace", fontSize: 12 }}>{Number(r.amount || 0).toLocaleString("th-TH")}</td>
                   <td style={{ fontFamily: "monospace", fontSize: 11 }}>
-                    {r.returnTracking
-                      ? <span style={{ color: "#7C3AED" }}>{r.returnTracking}{r.flashTime ? ` (${r.flashTime})` : ""}</span>
-                      : <span style={{ color: "#9CA3AF" }}>ยังไม่มีจาก Flash</span>}
+                    {r.isThaiPost
+                      ? <span style={{ color: "#0EA5E9" }}>📮 ไปรษณีย์ไทย (เลขเดียวกัน)</span>
+                      : r.returnTracking
+                        ? <span style={{ color: "#7C3AED" }}>{r.returnTracking}{r.flashTime ? ` (${r.flashTime})` : ""}</span>
+                        : <span style={{ color: "#9CA3AF" }}>ยังไม่มีจาก Flash</span>}
                   </td>
                   <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>
                     {r.scanned
