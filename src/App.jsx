@@ -726,41 +726,51 @@ function ReturnAdminPanel() {
 
   useEffect(() => { loadList(dateFilter, dateFrom, dateTo); }, [dateFilter, dateFrom, dateTo]);
 
-  // ── อัปโหลดไฟล์ Excel "ตีกลับในระบบ" (export จาก Flash Express extension) ──
+  // ── อัปโหลดไฟล์ Excel "ตีกลับในระบบ" (export จาก Flash Express extension) — รองรับเลือกหลายไฟล์พร้อมกัน ──
   // คอลัมน์ที่ต้องการ: เลขพัสดุขาไป, เลขพัสดุขาตีกลับ, เวลาเซ็นรับ — หาตำแหน่งคอลัมน์จากหัวตาราง (ไม่พึ่งตำแหน่งคงที่)
-  // กันอัปโหลดซ้ำ: เช็คเลขพัสดุขาตีกลับ (return_tracking) กับข้อมูลทั้งหมดในระบบก่อนบันทึก ข้ามรายการที่ซ้ำ
+  // กันอัปโหลดซ้ำ: เช็คเลขพัสดุขาตีกลับ (return_tracking) กับข้อมูลทั้งหมดในระบบก่อนบันทึก ข้ามรายการที่ซ้ำ (ทั้งซ้ำกับของเดิม และซ้ำข้ามไฟล์ที่เลือกมาด้วยกัน)
+  const parseFlashListSheet = (aoa) => {
+    if (aoa.length < 2) return [];
+    const headerRow = (aoa[0] || []).map(h => String(h || "").trim());
+    const findCol = (...names) => headerRow.findIndex(h => names.some(n => h.includes(n)));
+    let idxOutbound = findCol("เลขพัสดุขาไป");
+    let idxReturn = findCol("เลขพัสดุขาตีกลับ", "เลขพัสดุขากลับ");
+    let idxTime = findCol("เวลาเซ็นรับ");
+    // fallback: ถ้าหาหัวตารางไม่เจอ ใช้ตำแหน่งคงที่ตามไฟล์ export มาตรฐาน (C, D, E)
+    if (idxOutbound === -1) idxOutbound = 2;
+    if (idxReturn === -1) idxReturn = 3;
+    if (idxTime === -1) idxTime = 4;
+    return aoa.slice(1)
+      .filter(r => r && String(r[idxOutbound] || "").trim() !== "" && String(r[idxReturn] || "").trim() !== "")
+      .map(r => ({
+        outbound: String(r[idxOutbound]).trim().toUpperCase(),
+        returnCode: String(r[idxReturn]).trim().toUpperCase(),
+        time: String(r[idxTime] || "").trim(),
+      }));
+  };
+
   const handleFileChange = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
     setLoading(true);
     setImportMsg(null);
     try {
       const XLSX = await loadXLSX();
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array" });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-      if (aoa.length < 2) throw new Error("ไม่พบข้อมูลในไฟล์");
-
-      // หาตำแหน่งคอลัมน์จากหัวตาราง — รองรับกรณีลำดับคอลัมน์เปลี่ยน
-      const headerRow = (aoa[0] || []).map(h => String(h || "").trim());
-      const findCol = (...names) => headerRow.findIndex(h => names.some(n => h.includes(n)));
-      let idxOutbound = findCol("เลขพัสดุขาไป");
-      let idxReturn = findCol("เลขพัสดุขาตีกลับ", "เลขพัสดุขากลับ");
-      let idxTime = findCol("เวลาเซ็นรับ");
-      // fallback: ถ้าหาหัวตารางไม่เจอ ใช้ตำแหน่งคงที่ตามไฟล์ export มาตรฐาน (C, D, E)
-      if (idxOutbound === -1) idxOutbound = 2;
-      if (idxReturn === -1) idxReturn = 3;
-      if (idxTime === -1) idxTime = 4;
-
-      const dataRows = aoa.slice(1);
-      const parsedRows = dataRows
-        .filter(r => r && String(r[idxOutbound] || "").trim() !== "" && String(r[idxReturn] || "").trim() !== "")
-        .map(r => ({
-          outbound: String(r[idxOutbound]).trim().toUpperCase(),
-          returnCode: String(r[idxReturn]).trim().toUpperCase(),
-          time: String(r[idxTime] || "").trim(),
-        }));
+      let parsedRows = [];
+      let badFiles = [];
+      for (const file of files) {
+        try {
+          const buf = await file.arrayBuffer();
+          const wb = XLSX.read(buf, { type: "array" });
+          const sheet = wb.Sheets[wb.SheetNames[0]];
+          const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+          const rows = parseFlashListSheet(aoa);
+          if (rows.length === 0) { badFiles.push(file.name); continue; }
+          parsedRows = parsedRows.concat(rows);
+        } catch (errFile) {
+          badFiles.push(file.name);
+        }
+      }
 
       if (parsedRows.length === 0) {
         setImportMsg({ type: "error", text: "ไม่พบข้อมูลในไฟล์ที่อัปโหลด — ตรวจสอบว่าเป็นไฟล์ export ตีกลับในระบบ" });
@@ -769,7 +779,7 @@ function ReturnAdminPanel() {
         return;
       }
 
-      // กันซ้ำ: เทียบเลขพัสดุขาตีกลับ (return_tracking) กับทั้งระบบ (ไม่ใช่แค่ตามตัวกรองที่แสดงอยู่)
+      // กันซ้ำ: เทียบเลขพัสดุขาตีกลับ (return_tracking) กับทั้งระบบ (ไม่ใช่แค่ตามตัวกรองที่แสดงอยู่) + กันซ้ำข้ามไฟล์ที่เลือกมาพร้อมกัน
       const existingReturnRows = await sbReturnAll("return_flash_items", "select=return_tracking");
       const existingReturnSet = new Set(existingReturnRows.map(r => r.return_tracking));
       const seenInFile = new Set();
@@ -808,9 +818,10 @@ function ReturnAdminPanel() {
         }
       }
 
+      const fileCountLabel = files.length > 1 ? `${files.length} ไฟล์` : "1 ไฟล์";
       setImportMsg({
-        type: "success",
-        text: `นำเข้าสำเร็จ: เพิ่มใหม่ ${newRows.length} รายการ${dupCount > 0 ? `, ข้ามรายการที่ซ้ำ ${dupCount} รายการ` : ""}`,
+        type: badFiles.length > 0 ? "error" : "success",
+        text: `นำเข้าจาก ${fileCountLabel}: เพิ่มใหม่ ${newRows.length} รายการ${dupCount > 0 ? `, ข้ามรายการที่ซ้ำ ${dupCount} รายการ` : ""}${badFiles.length > 0 ? `, อ่านไม่ได้/ไม่มีข้อมูล ${badFiles.length} ไฟล์ (${badFiles.join(", ")})` : ""}`,
       });
       await loadList(dateFilter, dateFrom, dateTo);
     } catch (err) {
@@ -898,10 +909,10 @@ function ReturnAdminPanel() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4, flexWrap: "wrap", gap: 10 }}>
           <div>
             <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 2 }}>ตีกลับในระบบ</h2>
-            <p style={{ fontSize: 13, color: "#6B7280" }}>อัปโหลดไฟล์ Excel ตีกลับในระบบ — เก็บเลขขาไป / เลขขากลับ / เวลาเซ็นรับ ระบบจะกรองรายการที่ซ้ำให้อัตโนมัติ</p>
+            <p style={{ fontSize: 13, color: "#6B7280" }}>อัปโหลดไฟล์ Excel ตีกลับในระบบ (เลือกได้หลายไฟล์พร้อมกัน) — เก็บเลขขาไป / เลขขากลับ / เวลาเซ็นรับ ระบบจะกรองรายการที่ซ้ำให้อัตโนมัติ</p>
           </div>
           <div>
-            <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={handleFileChange} />
+            <input ref={fileInputRef} type="file" accept=".xlsx,.xls" multiple style={{ display: "none" }} onChange={handleFileChange} />
             <button onClick={() => fileInputRef.current?.click()} disabled={loading}
               style={{ background: loading ? "#F3F4F6" : "linear-gradient(135deg,#7C3AED,#3B82F6)", color: loading ? "#9CA3AF" : "#fff", border: "none", borderRadius: 10, padding: "10px 20px", fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer", fontFamily: "'Sarabun', sans-serif" }}>
               {loading ? "⏳ กำลังนำเข้า..." : "📤 อัปโหลดไฟล์ Excel"}
