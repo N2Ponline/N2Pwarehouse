@@ -299,7 +299,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
       const [sessRows, scanRows, myorderRows] = await Promise.all([
         loadSessionsFiltered(sessFilter),
         loadScansFiltered(scanFilter),
-        sbReturnAll("return_myorder_items", "select=order_no,outbound_tracking,customer_name"),
+        sbReturnAll("return_myorder_items", "select=*&order=imported_at.desc"),
       ]);
       setSessions(sessRows || []);
       setScans(scanRows || []);
@@ -343,9 +343,13 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
     });
     return map;
   }, [sessions, flashItems]);
+  // เรียงเลขขากลับ (Flash แจ้ง) ให้วันที่ล่าสุดขึ้นก่อน — ใช้แสดงผลในหน้าสรุปและ export
+  const sortedSystemList = useMemo(() => {
+    return [...systemList].sort((a, b) => (codeToSessionDate[b] || "").localeCompare(codeToSessionDate[a] || ""));
+  }, [systemList, codeToSessionDate]);
   const scannedSet = useMemo(() => new Set(scans.map(sc => sc.tracking_code)), [scans]);
-  const matched = useMemo(() => systemList.filter(c => scannedSet.has(c)), [systemList, scannedSet]);
-  const missing = useMemo(() => systemList.filter(c => !scannedSet.has(c)), [systemList, scannedSet]);
+  const matched = useMemo(() => sortedSystemList.filter(c => scannedSet.has(c)), [sortedSystemList, scannedSet]);
+  const missing = useMemo(() => sortedSystemList.filter(c => !scannedSet.has(c)), [sortedSystemList, scannedSet]);
   const extra = useMemo(() => {
     const seen = new Set();
     return scans.filter(sc => {
@@ -360,6 +364,17 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
   const flashOutboundMap = useMemo(() => {
     const m = {};
     flashItems.forEach(f => { if (f.outbound_tracking && !m[f.outbound_tracking]) m[f.outbound_tracking] = f; });
+    return m;
+  }, [flashItems]);
+  // map: เลขขากลับ -> เลขขาไป / เวลา (สำหรับแสดงผลและ export หน้าสรุป)
+  const retToOutbound = useMemo(() => {
+    const m = {};
+    flashItems.forEach(f => { if (f.return_tracking && !m[f.return_tracking]) m[f.return_tracking] = f.outbound_tracking; });
+    return m;
+  }, [flashItems]);
+  const retToTime = useMemo(() => {
+    const m = {};
+    flashItems.forEach(f => { if (f.return_tracking && !m[f.return_tracking]) m[f.return_tracking] = f.flash_time; });
     return m;
   }, [flashItems]);
   const myorderRows = useMemo(() => {
@@ -434,8 +449,8 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
         ["ตัวกรอง ถึงคลัง", filterLabel(scanFilter)],
         ["", ""],
         [{ v: "รายการ", s: HEADER }, { v: "จำนวน (ชิ้น)", s: HEADER }],
-        ["📋 Flash แจ้ง (ตามตัวกรอง)", systemList.length],
-        ["📦 ถึงคลัง (ตามตัวกรอง)", scans.length],
+        ["🗂 ตีกลับในระบบ (Flash แจ้ง ตามตัวกรอง)", sortedSystemList.length],
+        ["📦 ตีกลับถึงคลัง (ตามตัวกรอง)", scans.length],
         [{ v: "✅ ตรงกัน", s: GREEN }, { v: matched.length, s: GREEN }],
         [{ v: "🔴 ยังไม่ถึงคลัง", s: RED }, { v: missing.length, s: RED }],
         [{ v: "⚠️ ยิงเกิน (ไม่อยู่ในระบบ)", s: ORANGE }, { v: extra.length, s: ORANGE }],
@@ -446,32 +461,58 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
       ws1["!cols"] = [{ wch: 36 }, { wch: 22 }];
       XLSX.utils.book_append_sheet(wb, ws1, "สรุปยอด");
 
-      // Sheet 2: ตรงกัน
+      // Sheet 2: ตีกลับในระบบ — Flash แจ้ง ทั้งหมดตามตัวกรอง วันที่ล่าสุดขึ้นก่อน
       const ws2 = XLSX.utils.aoa_to_sheet([
-        [{ v: "เลข Tracking", s: HEADER }, { v: "ผู้ยิง", s: HEADER }, { v: "เวลายิง", s: HEADER }],
-        ...matched.map(code => {
-          const sc = scans.find(s => s.tracking_code === code);
-          return [{ v: code, s: GREEN }, sc?.scanned_by || "-", sc?.scanned_at ? new Date(sc.scanned_at).toLocaleString("th-TH") : "-"];
+        [{ v: "เลขขาไป", s: HEADER }, { v: "เลขขากลับ (Flash)", s: HEADER }, { v: "เวลาเซ็นรับ", s: HEADER }, { v: "วันที่แจ้ง", s: HEADER }, { v: "สถานะ", s: HEADER }],
+        ...sortedSystemList.map(code => {
+          const ok = scannedSet.has(code);
+          const dateLabel = codeToSessionDate[code] ? new Date(codeToSessionDate[code] + "T00:00:00").toLocaleDateString("th-TH") : "-";
+          return [
+            { v: retToOutbound[code] || "-", s: ok ? GREEN : RED },
+            { v: code, s: ok ? GREEN : RED },
+            { v: retToTime[code] || "-", s: ok ? GREEN : RED },
+            { v: dateLabel, s: ok ? GREEN : RED },
+            { v: ok ? "✅ ตรงกัน" : "🔴 ยังไม่ถึงคลัง", s: ok ? GREEN : RED },
+          ];
         }),
       ]);
-      ws2["!cols"] = [{ wch: 30 }, { wch: 16 }, { wch: 22 }];
-      XLSX.utils.book_append_sheet(wb, ws2, "ตรงกัน");
+      ws2["!cols"] = [{ wch: 22 }, { wch: 22 }, { wch: 20 }, { wch: 16 }, { wch: 18 }];
+      XLSX.utils.book_append_sheet(wb, ws2, "ตีกลับในระบบ");
 
-      // Sheet 3: ยังไม่ถึงคลัง
+      // Sheet 3: ตีกลับถึงคลัง — พนักงานยิงตามตัวกรอง (เรียงเวลายิงล่าสุดขึ้นก่อนอยู่แล้ว)
       const ws3 = XLSX.utils.aoa_to_sheet([
-        [{ v: "เลข Tracking (ยังไม่ถึงคลัง)", s: HEADER }, { v: "สถานะ", s: HEADER }],
-        ...missing.map(code => [{ v: code, s: RED }, { v: "🔴 ยังไม่รับ / ยังไม่ลงระบบ", s: RED }]),
+        [{ v: "เลข Tracking", s: HEADER }, { v: "ผู้ยิง", s: HEADER }, { v: "เวลายิง", s: HEADER }, { v: "สถานะ", s: HEADER }],
+        ...scans.map(sc => {
+          const inSystem = systemList.includes(sc.tracking_code);
+          return [
+            { v: sc.tracking_code, s: inSystem ? GREEN : ORANGE },
+            sc.scanned_by || "-",
+            sc.scanned_at ? new Date(sc.scanned_at).toLocaleString("th-TH") : "-",
+            { v: inSystem ? "✅ ตรงกับระบบ" : "⚠️ ไม่อยู่ในระบบ", s: inSystem ? GREEN : ORANGE },
+          ];
+        }),
       ]);
-      ws3["!cols"] = [{ wch: 30 }, { wch: 26 }];
-      XLSX.utils.book_append_sheet(wb, ws3, "ยังไม่ถึงคลัง");
+      ws3["!cols"] = [{ wch: 22 }, { wch: 16 }, { wch: 22 }, { wch: 18 }];
+      XLSX.utils.book_append_sheet(wb, ws3, "ตีกลับถึงคลัง");
 
-      // Sheet 4: ยิงเกิน
+      // Sheet 4: ตีกลับ myorder — ทั้งหมด (เรียงนำเข้าล่าสุดขึ้นก่อนอยู่แล้ว)
       const ws4 = XLSX.utils.aoa_to_sheet([
-        [{ v: "เลข Tracking (ยิงเกิน)", s: HEADER }, { v: "ผู้ยิง", s: HEADER }, { v: "เวลายิง", s: HEADER }],
-        ...extra.map(sc => [{ v: sc.tracking_code, s: ORANGE }, sc.scanned_by || "-", sc.scanned_at ? new Date(sc.scanned_at).toLocaleString("th-TH") : "-"]),
+        [{ v: "Order No.", s: HEADER }, { v: "ช่องทาง/เพจ", s: HEADER }, { v: "วันที่สั่งซื้อ", s: HEADER }, { v: "ชื่อลูกค้า", s: HEADER }, { v: "เบอร์โทร", s: HEADER }, { v: "สินค้า", s: HEADER }, { v: "เลขขาไป", s: HEADER }, { v: "ยอดเงิน (฿)", s: HEADER }, { v: "เลขขากลับ (Flash)", s: HEADER }, { v: "ยิงรับเข้าคลัง", s: HEADER }],
+        ...myorderRows.map(r => [
+          r.order_no || "-",
+          r.channel || "-",
+          r.order_date || "-",
+          r.customer_name || "-",
+          r.phone || "-",
+          r.product || "-",
+          r.outbound_tracking || "-",
+          Number(r.amount || 0),
+          r.isThaiPost ? "📮 ไปรษณีย์ไทย (เลขเดียวกัน)" : (r.returnTracking || "ยังไม่มีจาก Flash"),
+          { v: r.scanned ? "✅ ยิงแล้ว" : "❌ ยังไม่ยิง", s: r.scanned ? GREEN : RED },
+        ]),
       ]);
-      ws4["!cols"] = [{ wch: 30 }, { wch: 16 }, { wch: 22 }];
-      XLSX.utils.book_append_sheet(wb, ws4, "ยิงเกิน");
+      ws4["!cols"] = [{ wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 20 }, { wch: 18 }, { wch: 12 }, { wch: 22 }, { wch: 14 }];
+      XLSX.utils.book_append_sheet(wb, ws4, "ตีกลับ myorder");
 
       XLSX.writeFile(wb, `return_summary_${todayStr()}.xlsx`);
     } catch (e) { alert("Export ไม่สำเร็จ: " + e.message); }
@@ -585,7 +626,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
               Flash แจ้ง ({systemList.length})
             </div>
             <div style={{ maxHeight: 640, overflowY: "auto" }}>
-              {systemList.map((code, i) => {
+              {sortedSystemList.map((code, i) => {
                 const ok = scannedSet.has(code);
                 const sessDate = codeToSessionDate[code];
                 const sessDateLabel = sessDate ? new Date(sessDate + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" }) : "";
@@ -654,7 +695,6 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
 
 
 function ReturnAdminPanel() {
-  const [flashText, setFlashText] = useState("");
   const [loading, setLoading] = useState(false);
   const [dateFilter, setDateFilter] = useState(""); // "" = ทั้งหมด
   const [dateFrom, setDateFrom] = useState("");
@@ -662,6 +702,8 @@ function ReturnAdminPanel() {
   const [items, setItems] = useState([]); // จาก return_flash_items (join session_date มาด้วย)
   const [loadingList, setLoadingList] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [importMsg, setImportMsg] = useState(null);
+  const fileInputRef = useRef(null);
 
   const loadList = async (date, from = dateFrom, to = dateTo) => {
     setLoadingList(true);
@@ -684,28 +726,98 @@ function ReturnAdminPanel() {
 
   useEffect(() => { loadList(dateFilter, dateFrom, dateTo); }, [dateFilter, dateFrom, dateTo]);
 
-  const parsed = useMemo(() => parseFlashItemsText(flashText), [flashText]);
-
-  const handleCreate = async () => {
-    if (!parsed.items.length) return alert("ไม่พบรายการพัสดุ กรุณาตรวจสอบข้อความที่วาง (ต้องมีรูปแบบ เลขขาไป(เลขขากลับ) เวลา)");
+  // ── อัปโหลดไฟล์ Excel "ตีกลับในระบบ" (export จาก Flash Express extension) ──
+  // คอลัมน์ที่ต้องการ: เลขพัสดุขาไป, เลขพัสดุขาตีกลับ, เวลาเซ็นรับ — หาตำแหน่งคอลัมน์จากหัวตาราง (ไม่พึ่งตำแหน่งคงที่)
+  // กันอัปโหลดซ้ำ: เช็คเลขพัสดุขาตีกลับ (return_tracking) กับข้อมูลทั้งหมดในระบบก่อนบันทึก ข้ามรายการที่ซ้ำ
+  const handleFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
     setLoading(true);
+    setImportMsg(null);
     try {
-      const saveDate = parsed.date || dateFilter || new Date().toISOString().slice(0,10);
-      const [newSession] = await sbReturn("return_sessions", { method: "POST", body: JSON.stringify({ tracking_list: [], courier: "Flash", session_date: saveDate }) });
-      const sessionId = newSession?.id;
-      if (!sessionId) throw new Error("สร้างเซสชันไม่สำเร็จ");
-      // insert เป็นชุด (Supabase รองรับ array body สำหรับ insert หลายแถวในคำขอเดียว)
-      const rows = parsed.items.map(it => ({
-        session_id: sessionId,
-        outbound_tracking: it.outbound,
-        return_tracking: it.returnCode,
-        flash_time: it.time,
-      }));
-      await sbReturn("return_flash_items", { method: "POST", body: JSON.stringify(rows) });
-      setFlashText("");
+      const XLSX = await loadXLSX();
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+      if (aoa.length < 2) throw new Error("ไม่พบข้อมูลในไฟล์");
+
+      // หาตำแหน่งคอลัมน์จากหัวตาราง — รองรับกรณีลำดับคอลัมน์เปลี่ยน
+      const headerRow = (aoa[0] || []).map(h => String(h || "").trim());
+      const findCol = (...names) => headerRow.findIndex(h => names.some(n => h.includes(n)));
+      let idxOutbound = findCol("เลขพัสดุขาไป");
+      let idxReturn = findCol("เลขพัสดุขาตีกลับ", "เลขพัสดุขากลับ");
+      let idxTime = findCol("เวลาเซ็นรับ");
+      // fallback: ถ้าหาหัวตารางไม่เจอ ใช้ตำแหน่งคงที่ตามไฟล์ export มาตรฐาน (C, D, E)
+      if (idxOutbound === -1) idxOutbound = 2;
+      if (idxReturn === -1) idxReturn = 3;
+      if (idxTime === -1) idxTime = 4;
+
+      const dataRows = aoa.slice(1);
+      const parsedRows = dataRows
+        .filter(r => r && String(r[idxOutbound] || "").trim() !== "" && String(r[idxReturn] || "").trim() !== "")
+        .map(r => ({
+          outbound: String(r[idxOutbound]).trim().toUpperCase(),
+          returnCode: String(r[idxReturn]).trim().toUpperCase(),
+          time: String(r[idxTime] || "").trim(),
+        }));
+
+      if (parsedRows.length === 0) {
+        setImportMsg({ type: "error", text: "ไม่พบข้อมูลในไฟล์ที่อัปโหลด — ตรวจสอบว่าเป็นไฟล์ export ตีกลับในระบบ" });
+        setLoading(false);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        return;
+      }
+
+      // กันซ้ำ: เทียบเลขพัสดุขาตีกลับ (return_tracking) กับทั้งระบบ (ไม่ใช่แค่ตามตัวกรองที่แสดงอยู่)
+      const existingReturnRows = await sbReturnAll("return_flash_items", "select=return_tracking");
+      const existingReturnSet = new Set(existingReturnRows.map(r => r.return_tracking));
+      const seenInFile = new Set();
+      const newRows = [];
+      let dupCount = 0;
+      parsedRows.forEach(r => {
+        if (existingReturnSet.has(r.returnCode) || seenInFile.has(r.returnCode)) { dupCount++; return; }
+        seenInFile.add(r.returnCode);
+        newRows.push(r);
+      });
+
+      if (newRows.length > 0) {
+        // จัดกลุ่มตามวันที่ (จาก เวลาเซ็นรับ เช่น "2026-06-30 10:39") — สร้าง/ใช้ session ต่อวันที่
+        const byDate = {};
+        newRows.forEach(r => {
+          const d = r.time.slice(0, 10) || dateFilter || new Date().toISOString().slice(0,10);
+          if (!byDate[d]) byDate[d] = [];
+          byDate[d].push(r);
+        });
+
+        for (const [d, rows] of Object.entries(byDate)) {
+          const [newSession] = await sbReturn("return_sessions", { method: "POST", body: JSON.stringify({ tracking_list: [], courier: "Flash", session_date: d }) });
+          const sessionId = newSession?.id;
+          if (!sessionId) throw new Error("สร้างเซสชันไม่สำเร็จ");
+          const insertRows = rows.map(it => ({
+            session_id: sessionId,
+            outbound_tracking: it.outbound,
+            return_tracking: it.returnCode,
+            flash_time: it.time,
+          }));
+          const chunkSize = 200;
+          for (let i = 0; i < insertRows.length; i += chunkSize) {
+            const chunk = insertRows.slice(i, i + chunkSize);
+            await sbReturn("return_flash_items", { method: "POST", body: JSON.stringify(chunk) });
+          }
+        }
+      }
+
+      setImportMsg({
+        type: "success",
+        text: `นำเข้าสำเร็จ: เพิ่มใหม่ ${newRows.length} รายการ${dupCount > 0 ? `, ข้ามรายการที่ซ้ำ ${dupCount} รายการ` : ""}`,
+      });
       await loadList(dateFilter, dateFrom, dateTo);
-    } catch (e) { alert("เกิดข้อผิดพลาด: " + (e.message || JSON.stringify(e))); }
+    } catch (err) {
+      setImportMsg({ type: "error", text: "นำเข้าไม่สำเร็จ: " + (err.message || String(err)) });
+    }
     setLoading(false);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const handleDeleteItem = async (id) => {
@@ -718,7 +830,7 @@ function ReturnAdminPanel() {
 
   const handleClearAll = async () => {
     if (items.length === 0) return;
-    if (!confirm(`ลบรายการ Flash ที่แสดงอยู่ทั้งหมด ${items.length} รายการ?\n(ใช้สำหรับล้างข้อมูลก่อนคัดลอกชุดใหม่จาก Flash)`)) return;
+    if (!confirm(`ลบรายการ Flash ที่แสดงอยู่ทั้งหมด ${items.length} รายการ?\n(ใช้สำหรับล้างข้อมูลก่อนอัปโหลดไฟล์ชุดใหม่)`)) return;
     setClearing(true);
     try {
       const ids = items.map(it => it.id);
@@ -781,36 +893,27 @@ function ReturnAdminPanel() {
 
   return (
     <div>
-      {/* Import section — วางข้อมูลจาก Extension (ขึ้นมาด้านบน) */}
+      {/* Import section — อัปโหลดไฟล์ Excel ตีกลับในระบบ (ขึ้นมาด้านบน) */}
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, padding: 20, marginBottom: 24 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4, flexWrap: "wrap", gap: 10 }}>
           <div>
             <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 2 }}>ตีกลับในระบบ</h2>
-            <p style={{ fontSize: 13, color: "#6B7280" }}>วางข้อความที่คัดลอกจาก Extension — เลขขาไป + เลขขากลับ (Flash)</p>
+            <p style={{ fontSize: 13, color: "#6B7280" }}>อัปโหลดไฟล์ Excel ตีกลับในระบบ — เก็บเลขขาไป / เลขขากลับ / เวลาเซ็นรับ ระบบจะกรองรายการที่ซ้ำให้อัตโนมัติ</p>
           </div>
-          {parsed.date && (
-            <span style={{ background: "#EDE9FE", color: "#7C3AED", borderRadius: 6, padding: "4px 10px", fontSize: 12, fontWeight: 600 }}>
-              📅 ตรวจพบวันที่: {new Date(parsed.date + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })}
-            </span>
-          )}
+          <div>
+            <input ref={fileInputRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={handleFileChange} />
+            <button onClick={() => fileInputRef.current?.click()} disabled={loading}
+              style={{ background: loading ? "#F3F4F6" : "linear-gradient(135deg,#7C3AED,#3B82F6)", color: loading ? "#9CA3AF" : "#fff", border: "none", borderRadius: 10, padding: "10px 20px", fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+              {loading ? "⏳ กำลังนำเข้า..." : "📤 อัปโหลดไฟล์ Excel"}
+            </button>
+          </div>
         </div>
-        <textarea value={flashText} onChange={e => setFlashText(e.target.value)}
-          placeholder={"วางข้อความที่คัดลอกจาก Extension ที่นี่...\nบรรทัดแรกควรเป็นวันที่ เช่น 28/06/2026\nตามด้วยรายการ เช่น TH01118RBNXQ5B(TH27218W3W7V0A) 11:23"}
-          style={{ width: "100%", height: 140, background: "#F9FAFB", border: "1.5px solid #E5E7EB", borderRadius: 12, padding: 14, marginTop: 14, color: "#111827", fontSize: 13, resize: "vertical", outline: "none", lineHeight: 1.8, fontFamily: "'Sarabun', sans-serif" }} />
-        {flashText.trim() && (
-          <div style={{ marginTop: 6, fontSize: 13, color: "#6B7280" }}>
-            พบ <span style={{ color: "#7C3AED", fontWeight: 700 }}>{parsed.items.length}</span> รายการ
-            {parsed.date
-              ? <> — จะบันทึกเข้า <span style={{ color: "#7C3AED", fontWeight: 700 }}>{new Date(parsed.date + "T00:00:00").toLocaleDateString("th-TH", { dateStyle: "long" })}</span></>
-              : <span style={{ color: "#DC2626" }}> — ⚠️ ไม่พบวันที่ในข้อความ จะบันทึกเข้าวันที่ปัจจุบันแทน</span>}
+
+        {importMsg && (
+          <div style={{ background: importMsg.type === "success" ? "#F0FDF4" : "#FEF2F2", border: `1px solid ${importMsg.type === "success" ? "#BBF7D0" : "#FECACA"}`, color: importMsg.type === "success" ? "#065F46" : "#991B1B", borderRadius: 10, padding: "10px 16px", marginTop: 14, fontSize: 13 }}>
+            {importMsg.type === "success" ? "✅ " : "⚠️ "}{importMsg.text}
           </div>
         )}
-        <div style={{ display: "flex", gap: 10, marginTop: 12, justifyContent: "flex-end" }}>
-          <button onClick={handleCreate} disabled={!parsed.items.length || loading}
-            style={{ background: parsed.items.length && !loading ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#F3F4F6", color: parsed.items.length && !loading ? "#fff" : "#9CA3AF", border: "none", borderRadius: 10, padding: "10px 22px", fontSize: 14, fontWeight: 700, cursor: parsed.items.length ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
-            {loading ? "กำลังบันทึก..." : "✅ บันทึกเข้าระบบ"}
-          </button>
-        </div>
       </div>
 
       {/* Date selector */}
@@ -845,7 +948,7 @@ function ReturnAdminPanel() {
       {legacyCount > 0 && (
         <div style={{ background: "#FFFBEB", border: "1.5px solid #FDE68A", borderRadius: 14, padding: "14px 18px", marginBottom: 20, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
           <div>
-            <div style={{ fontWeight: 700, color: "#92400E", fontSize: 14 }}>⚠️ พบข้อมูลเก่า (รูปแบบก่อนใช้ Extension)</div>
+            <div style={{ fontWeight: 700, color: "#92400E", fontSize: 14 }}>⚠️ พบข้อมูลเก่า (รูปแบบก่อนใช้ไฟล์อัปโหลด)</div>
             <div style={{ fontSize: 12, color: "#92400E", marginTop: 3 }}>
               มี session เก่า {legacyCount} รายการที่ยังเป็นเลขแบบไม่จับคู่ — ทำให้ไม่ชนกับ "ตีกลับ myorder" ได้ แนะนำให้ลบทิ้ง (ประวัติการยิงจริงจะไม่ถูกลบ)
             </div>
@@ -898,6 +1001,7 @@ function ReturnAdminPanel() {
     </div>
   );
 }
+
 
 function ReturnStaffPanel() {
   const [staffName, setStaffName] = useState(localStorage.getItem("staffName") || "");
