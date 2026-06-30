@@ -209,7 +209,7 @@ async function exportReport(sessions) {
   ws3["!cols"] = [{ wch: 36 }, { wch: 18 }];
   XLSX.utils.book_append_sheet(wb, ws3, "สรุปยอด");
 
-  XLSX.writeFile(wb, `return_report_${new Date().toISOString().slice(0,10)}.xlsx`);
+  XLSX.writeFile(wb, `return_report_${todayStr()}.xlsx`);
 }
 
 
@@ -220,19 +220,28 @@ async function exportReport(sessions) {
 // + toggle "ยังไม่ถึงคลัง" (highlight สีแดงทั้งหมด)
 // ============================================================
 
-function todayStr() { return new Date().toISOString().slice(0, 10); }
-function yesterdayStr() { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); }
+// ── แปลง Date เป็น "YYYY-MM-DD" ตามเวลาท้องถิ่นของเครื่อง (ไม่ใช่ UTC) ──
+// สำคัญมาก: toISOString() แปลงเป็น UTC เสมอ ซึ่งสำหรับไทย (UTC+7) จะทำให้วันที่ถอยหลังไป 1 วัน
+// ในช่วงเที่ยงคืนถึงประมาณ 7 โมงเช้า (เช่น 1 ก.ค. 00:30 น. จะกลายเป็น "2026-06-30" แทนที่จะเป็น "2026-07-01")
+function localDateStr(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function todayStr() { return localDateStr(new Date()); }
+function yesterdayStr() { const d = new Date(); d.setDate(d.getDate() - 1); return localDateStr(d); }
 function thisMonthRange() {
   const d = new Date();
   const first = new Date(d.getFullYear(), d.getMonth(), 1);
   const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-  return { from: first.toISOString().slice(0, 10), to: last.toISOString().slice(0, 10) };
+  return { from: localDateStr(first), to: localDateStr(last) };
 }
 function lastMonthRange() {
   const d = new Date();
   const first = new Date(d.getFullYear(), d.getMonth() - 1, 1);
   const last = new Date(d.getFullYear(), d.getMonth(), 0);
-  return { from: first.toISOString().slice(0, 10), to: last.toISOString().slice(0, 10) };
+  return { from: localDateStr(first), to: localDateStr(last) };
 }
 
 function useDateFilterState(defaultMode = "all") {
@@ -675,7 +684,7 @@ function ReturnAdminPanel() {
   const [loading, setLoading] = useState(false);
   const [dateFilter, setDateFilter] = useState(""); // "" = ทั้งหมด
   const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState(new Date().toISOString().slice(0,10));
+  const [dateTo, setDateTo] = useState(todayStr());
   const [items, setItems] = useState([]); // จาก return_flash_items (join session_date มาด้วย)
   const [loadingList, setLoadingList] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -772,7 +781,7 @@ function ReturnAdminPanel() {
         // จัดกลุ่มตามวันที่ (จาก เวลาเซ็นรับ เช่น "2026-06-30 10:39") — สร้าง/ใช้ session ต่อวันที่
         const byDate = {};
         newRows.forEach(r => {
-          const d = r.time.slice(0, 10) || dateFilter || new Date().toISOString().slice(0,10);
+          const d = r.time.slice(0, 10) || dateFilter || todayStr();
           if (!byDate[d]) byDate[d] = [];
           byDate[d].push(r);
         });
@@ -908,15 +917,15 @@ function ReturnAdminPanel() {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, flexWrap: "wrap", gap: 12 }}>
         <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>📜 ประวัติ Flash แจ้ง</div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-          <button onClick={() => { setDateFilter(""); setDateFrom(""); setDateTo(new Date().toISOString().slice(0,10)); }}
+          <button onClick={() => { setDateFilter(""); setDateFrom(""); setDateTo(todayStr()); }}
             style={{ background: !dateFilter && !dateFrom ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#fff", color: !dateFilter && !dateFrom ? "#fff" : "#6B7280", border: "1px solid #E5E7EB", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
             ทั้งหมด
           </button>
-          <button onClick={() => { setDateFilter(new Date().toISOString().slice(0,10)); setDateFrom(""); setDateTo(""); }}
-            style={{ background: dateFilter === new Date().toISOString().slice(0,10) ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#fff", color: dateFilter === new Date().toISOString().slice(0,10) ? "#fff" : "#6B7280", border: "1px solid #E5E7EB", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+          <button onClick={() => { setDateFilter(todayStr()); setDateFrom(""); setDateTo(""); }}
+            style={{ background: dateFilter === todayStr() ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#fff", color: dateFilter === todayStr() ? "#fff" : "#6B7280", border: "1px solid #E5E7EB", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
             วันนี้
           </button>
-          <button onClick={() => { const d = new Date(); d.setDate(d.getDate()-1); setDateFilter(d.toISOString().slice(0,10)); setDateFrom(""); setDateTo(""); }}
+          <button onClick={() => { setDateFilter(yesterdayStr()); setDateFrom(""); setDateTo(""); }}
             style={{ background: "#fff", color: "#6B7280", border: "1px solid #E5E7EB", borderRadius: 8, padding: "7px 14px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
             เมื่อวาน
           </button>
@@ -1013,7 +1022,7 @@ function ReturnStaffPanel() {
   const lastScannedTime = useRef(0);
   const stagingCodesRef = useRef([]);
   const submittedCodesRef = useRef([]);
-  const today = new Date().toISOString().slice(0,10);
+  const today = todayStr();
 
   // เลขไปรษณีย์ไทย: เลขขึ้นต้นด้วย WA ใช้เลขเดียวกันทั้งขาไปและขากลับ
   const isThaiPostCode = (code) => /^WA/i.test(code || "");
@@ -1761,7 +1770,7 @@ export default function WarehouseApp() {
       ]);
       ws["!cols"] = [{ wch: 14 }, { wch: 32 }, { wch: 14 }, { wch: 8 }, { wch: 14 }, { wch: 18 }];
       XLSX.utils.book_append_sheet(wb, ws, "สินค้าจำหน่ายออก");
-      XLSX.writeFile(wb, `dispose_report_${new Date().toISOString().slice(0,10)}.xlsx`);
+      XLSX.writeFile(wb, `dispose_report_${todayStr()}.xlsx`);
     } catch (e) { alert("Export ไม่สำเร็จ: " + e.message); }
   };
 
@@ -1951,7 +1960,7 @@ export default function WarehouseApp() {
       ws3["!cols"] = [{wch:14},{wch:32},{wch:10},{wch:8},{wch:12},{wch:14}];
       XLSX.utils.book_append_sheet(wb, ws3, "ไม่เคลื่อนไหว 15 วัน");
 
-      XLSX.writeFile(wb, `stock_check_${new Date().toISOString().slice(0,10)}.xlsx`);
+      XLSX.writeFile(wb, `stock_check_${todayStr()}.xlsx`);
     } catch (e) { alert("Export ไม่สำเร็จ: " + e.message); }
     setExportingInventory(false);
   };
