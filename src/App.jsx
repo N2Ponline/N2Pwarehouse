@@ -222,83 +222,61 @@ async function exportReport(sessions) {
 
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 function yesterdayStr() { const d = new Date(); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10); }
+function thisMonthRange() {
+  const d = new Date();
+  const first = new Date(d.getFullYear(), d.getMonth(), 1);
+  const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  return { from: first.toISOString().slice(0, 10), to: last.toISOString().slice(0, 10) };
+}
+function lastMonthRange() {
+  const d = new Date();
+  const first = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+  const last = new Date(d.getFullYear(), d.getMonth(), 0);
+  return { from: first.toISOString().slice(0, 10), to: last.toISOString().slice(0, 10) };
+}
 
 function useDateFilterState(defaultMode = "all") {
-  const [mode, setMode] = useState(defaultMode); // all | today | yesterday | range
+  const [mode, setMode] = useState(defaultMode); // all | thisMonth | lastMonth | range
   const [from, setFrom] = useState("");
   const [to, setTo] = useState(todayStr());
-  const single = mode === "today" ? todayStr() : mode === "yesterday" ? yesterdayStr() : null;
-  return { mode, setMode, from, setFrom, to, setTo, single };
+  let rangeFrom = from, rangeTo = to;
+  if (mode === "thisMonth") { const r = thisMonthRange(); rangeFrom = r.from; rangeTo = r.to; }
+  else if (mode === "lastMonth") { const r = lastMonthRange(); rangeFrom = r.from; rangeTo = r.to; }
+  return { mode, setMode, from, setFrom, to, setTo, rangeFrom, rangeTo };
 }
 
 // ── โหลด return_sessions ตามตัวกรองวันที่ (กรองที่ server ผ่าน session_date) ──
 async function loadSessionsFiltered(filter) {
   let q = "select=*&order=session_date.desc";
-  if (filter.mode === "today" || filter.mode === "yesterday") {
-    q += `&session_date=eq.${filter.single}`;
-  } else if (filter.mode === "range") {
-    if (filter.from) q += `&session_date=gte.${filter.from}`;
-    if (filter.to) q += `&session_date=lte.${filter.to}`;
+  if (filter.mode !== "all") {
+    if (filter.rangeFrom) q += `&session_date=gte.${filter.rangeFrom}`;
+    if (filter.rangeTo) q += `&session_date=lte.${filter.rangeTo}`;
   }
   // mode === "all" → ไม่เติมเงื่อนไข
   return sbReturnAll("return_sessions", q);
 }
 
-// ── โหลด return_scans ตามตัวกรองวันที่ (กรองที่ server ผ่าน scan_date) ──
-// รองรับ record เก่าที่ scan_date เป็น null โดย fallback ไปเทียบ scanned_at เพิ่มอีกชุด
-async function loadScansFiltered(filter) {
-  if (filter.mode === "all") {
-    // ทั้งหมด: ดึงตรง ๆ ไม่ต้อง fallback (ได้ทุก record อยู่แล้ว)
-    return sbReturnAll("return_scans", "select=*&order=scanned_at.desc");
-  }
-
-  // กรณีกรองวันที่/ช่วงวันที่: query หลักด้วย scan_date ตรง ๆ
-  let mainQ = "select=*&order=scanned_at.desc";
-  let from, to;
-  if (filter.mode === "today" || filter.mode === "yesterday") {
-    from = to = filter.single;
-  } else {
-    from = filter.from || null;
-    to = filter.to || null;
-  }
-  if (from) mainQ += `&scan_date=gte.${from}`;
-  if (to) mainQ += `&scan_date=lte.${to}`;
-  const mainRows = await sbReturnAll("return_scans", mainQ);
-
-  // query เสริม: record ที่ scan_date เป็น null (ของเก่าก่อน migration) — เทียบ scanned_at เอง
-  const nullDateRows = await sbReturnAll("return_scans", "select=*&scan_date=is.null&order=scanned_at.desc");
-  const fallbackMatches = nullDateRows.filter(sc => {
-    if (!sc.scanned_at) return false;
-    const d = sc.scanned_at.slice(0, 10);
-    if (from && d < from) return false;
-    if (to && d > to) return false;
-    return true;
-  });
-
-  // รวมสองชุด กันซ้ำด้วย id
-  const seen = new Set(mainRows.map(r => r.id));
-  const merged = [...mainRows];
-  fallbackMatches.forEach(r => { if (!seen.has(r.id)) { merged.push(r); seen.add(r.id); } });
-  return merged;
+// ── โหลด return_scans ทั้งหมด (ไม่กรองวันที่ — ตีกลับถึงคลังใช้เทียบกับ Flash แจ้งที่กรองแล้วเสมอ) ──
+async function loadAllScans() {
+  return sbReturnAll("return_scans", "select=*&order=scanned_at.desc");
 }
 
 function ReturnSummaryPanel({ onGoToMyorder }) {
-  const sessFilter = useDateFilterState("all");
-  const scanFilter = useDateFilterState("all");
+  const summaryFilter = useDateFilterState("all"); // ตัวกรองหลัก — อิงวันที่ Flash แจ้ง (ตีกลับในระบบ)
   const [showMissingOnly, setShowMissingOnly] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [sessions, setSessions] = useState([]);
   const [scans, setScans] = useState([]);
-  const [flashItems, setFlashItems] = useState([]); // return_flash_items ของ sessions ที่โหลดมา (ตามตัวกรอง sessFilter)
+  const [flashItems, setFlashItems] = useState([]); // return_flash_items ของ sessions ที่โหลดมา (ตามตัวกรอง summaryFilter)
   const [myorderItems, setMyorderItems] = useState([]); // return_myorder_items ทั้งหมด (ไม่กรองวันที่ — เทียบจาก outbound_tracking)
 
   const loadData = async () => {
     setLoading(true);
     try {
       const [sessRows, scanRows, myorderRows] = await Promise.all([
-        loadSessionsFiltered(sessFilter),
-        loadScansFiltered(scanFilter),
+        loadSessionsFiltered(summaryFilter),
+        loadAllScans(),
         sbReturnAll("return_myorder_items", "select=*&order=imported_at.desc"),
       ]);
       setSessions(sessRows || []);
@@ -319,7 +297,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
     setLoading(false);
   };
 
-  useEffect(() => { loadData(); }, [sessFilter.mode, sessFilter.from, sessFilter.to, scanFilter.mode, scanFilter.from, scanFilter.to]);
+  useEffect(() => { loadData(); }, [summaryFilter.mode, summaryFilter.from, summaryFilter.to]);
 
   // ── คำนวณ matched / missing / extra จากตัวกรองทั้งสองฝั่ง ──
   // systemList: เลขขากลับที่ Flash แจ้ง — รวมทั้งของเก่า (tracking_list array) และของใหม่ (return_flash_items.return_tracking)
@@ -395,10 +373,10 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
 
   const pct = systemList.length > 0 ? Math.round((matched.length / systemList.length) * 100) : 0;
 
-  // ── UI ย่อย: ปุ่มเลือกช่วงวันที่ ใช้ซ้ำได้ทั้งสองฝั่ง ──
+  // ── UI ย่อย: ตัวเลือกช่วงเวลา (ตัวกรองหลัก อิงวันที่ Flash แจ้ง) ──
   const DateFilterRow = ({ filter, accent }) => (
     <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-      {[["all", "ทั้งหมด"], ["today", "วันนี้"], ["yesterday", "เมื่อวาน"]].map(([v, l]) => (
+      {[["all", "ทั้งหมด"], ["thisMonth", "เดือนนี้"], ["lastMonth", "เดือนที่แล้ว"]].map(([v, l]) => (
         <button key={v} onClick={() => filter.setMode(v)}
           style={{
             background: filter.mode === v ? accent : "#fff",
@@ -410,6 +388,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
         </button>
       ))}
       <div style={{ display: "flex", alignItems: "center", gap: 4, background: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 8, padding: "3px 8px" }}>
+        <span style={{ fontSize: 11, color: "#9CA3AF" }}>กำหนดเอง:</span>
         <input type="date" value={filter.from}
           onChange={e => { filter.setFrom(e.target.value); filter.setMode("range"); }}
           style={{ background: "transparent", border: "none", color: "#374151", fontSize: 11, outline: "none", fontFamily: "'Sarabun', sans-serif", width: 100 }} />
@@ -426,9 +405,9 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
   const [exporting, setExporting] = useState(false);
   const filterLabel = (f) => {
     if (f.mode === "all") return "ทั้งหมด";
-    if (f.mode === "today") return "วันนี้ (" + todayStr() + ")";
-    if (f.mode === "yesterday") return "เมื่อวาน (" + yesterdayStr() + ")";
-    return `${f.from || "?"} — ${f.to || "?"}`;
+    if (f.mode === "thisMonth") return "เดือนนี้ (" + f.rangeFrom + " — " + f.rangeTo + ")";
+    if (f.mode === "lastMonth") return "เดือนที่แล้ว (" + f.rangeFrom + " — " + f.rangeTo + ")";
+    return `กำหนดเอง: ${f.from || "?"} — ${f.to || "?"}`;
   };
 
   const handleSummaryExport = async () => {
@@ -445,8 +424,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
       const ws1 = XLSX.utils.aoa_to_sheet([
         [{ v: "รายงานสรุปรวมพัสดุตีกลับ", s: { font: { bold: true, sz: 14 } } }, ""],
         ["วันที่ออกรายงาน", new Date().toLocaleDateString("th-TH", { dateStyle: "long" })],
-        ["ตัวกรอง Flash แจ้ง", filterLabel(sessFilter)],
-        ["ตัวกรอง ถึงคลัง", filterLabel(scanFilter)],
+        ["ตัวกรอง (อิงวันที่ Flash แจ้ง)", filterLabel(summaryFilter)],
         ["", ""],
         [{ v: "รายการ", s: HEADER }, { v: "จำนวน (ชิ้น)", s: HEADER }],
         ["🗂 ตีกลับในระบบ (Flash แจ้ง ตามตัวกรอง)", sortedSystemList.length],
@@ -525,43 +503,12 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
         <div>
           <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📊 สรุปรวม</h2>
-          <p style={{ fontSize: 13, color: "#6B7280" }}>เทียบ Flash แจ้ง / พนักงานยิงถึงคลัง / ตีกลับ myorder — กรองวันที่อิสระกันได้</p>
+          <p style={{ fontSize: 13, color: "#6B7280" }}>เทียบ Flash แจ้ง / พนักงานยิงถึงคลัง / ตีกลับ myorder — กรองตามวันที่ Flash แจ้งเป็นหลัก</p>
         </div>
         <button onClick={handleSummaryExport} disabled={exporting}
           style={{ background: "#EDE9FE", color: "#7C3AED", border: "1px solid #DDD6FE", borderRadius: 10, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
           {exporting ? "⏳..." : "📥 Export Excel"}
         </button>
-      </div>
-
-      {/* ตัวกรองอิสระ 2 ชุด */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
-        <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, padding: 14 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "#7C3AED", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>🗂 ตีกลับในระบบ (Flash แจ้ง)</div>
-          <DateFilterRow filter={sessFilter} accent="linear-gradient(135deg,#7C3AED,#3B82F6)" />
-        </div>
-        <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, padding: 14 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "#0EA5E9", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>📦 ตีกลับถึงคลัง (พนักงานยิง)</div>
-          <DateFilterRow filter={scanFilter} accent="#0EA5E9" />
-        </div>
-      </div>
-
-      {/* ตัวกรองที่ 3: ยังไม่ถึงคลัง */}
-      <div style={{ marginBottom: 20 }}>
-        <button onClick={() => setShowMissingOnly(v => !v)}
-          style={{
-            background: showMissingOnly ? "#DC2626" : "#fff",
-            color: showMissingOnly ? "#fff" : "#991B1B",
-            border: "1.5px solid " + (showMissingOnly ? "#DC2626" : "#FECACA"),
-            borderRadius: 10, padding: "9px 18px", fontSize: 13, fontWeight: 700,
-            cursor: "pointer", fontFamily: "'Sarabun', sans-serif",
-          }}>
-          {showMissingOnly ? "✕ ปิดมุมมอง" : "🔴 แสดงเฉพาะของยังไม่ถึงคลัง"}
-        </button>
-        {showMissingOnly && (
-          <span style={{ marginLeft: 10, fontSize: 12, color: "#991B1B" }}>
-            แสดง {missing.length} รายการที่ Flash แจ้งไว้ (ตามตัวกรองซ้าย) แต่ยังไม่เจอใน scans (ตามตัวกรองขวา)
-          </span>
-        )}
       </div>
 
       {/* KPI Cards */}
@@ -583,7 +530,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
 
       {/* Progress bar */}
       {systemList.length > 0 && (
-        <div style={{ marginBottom: 24 }}>
+        <div style={{ marginBottom: 20 }}>
           <div style={{ height: 8, background: "#F3F4F6", borderRadius: 4, overflow: "hidden" }}>
             <div style={{ height: "100%", width: `${pct}%`, background: pct === 100 ? "#10B981" : "linear-gradient(90deg,#7C3AED,#3B82F6)", borderRadius: 4, transition: "width 0.4s" }} />
           </div>
@@ -593,6 +540,31 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
           </div>
         </div>
       )}
+
+      {/* ตัวกรองวันที่หลัก — อิงวันที่ Flash แจ้ง (ตีกลับในระบบ) */}
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, padding: 14, marginBottom: 20 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#7C3AED", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>📅 ช่วงเวลา (อิงวันที่ Flash แจ้ง — ตีกลับในระบบ)</div>
+        <DateFilterRow filter={summaryFilter} accent="linear-gradient(135deg,#7C3AED,#3B82F6)" />
+      </div>
+
+      {/* ตัวกรองที่ 2: ยังไม่ถึงคลัง */}
+      <div style={{ marginBottom: 20 }}>
+        <button onClick={() => setShowMissingOnly(v => !v)}
+          style={{
+            background: showMissingOnly ? "#DC2626" : "#fff",
+            color: showMissingOnly ? "#fff" : "#991B1B",
+            border: "1.5px solid " + (showMissingOnly ? "#DC2626" : "#FECACA"),
+            borderRadius: 10, padding: "9px 18px", fontSize: 13, fontWeight: 700,
+            cursor: "pointer", fontFamily: "'Sarabun', sans-serif",
+          }}>
+          {showMissingOnly ? "✕ ปิดมุมมอง" : "🔴 แสดงเฉพาะของยังไม่ถึงคลัง"}
+        </button>
+        {showMissingOnly && (
+          <span style={{ marginLeft: 10, fontSize: 12, color: "#991B1B" }}>
+            แสดง {missing.length} รายการที่ Flash แจ้งไว้ (ตามช่วงเวลาที่เลือก) แต่ยังไม่เจอในถึงคลัง
+          </span>
+        )}
+      </div>
 
       {loading && <div style={{ textAlign: "center", padding: 40, color: "#6B7280" }}>กำลังโหลดข้อมูล...</div>}
 
@@ -645,7 +617,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
           </div>
           <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16 }}>
             <div style={{ fontSize: 12, color: "#6B7280", fontWeight: 600, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>
-              ถึงคลัง ({scans.length})
+              ถึงคลัง ({scans.length}) <span style={{ fontWeight: 400, fontSize: 10, color: "#9CA3AF", textTransform: "none" }}>(ทั้งหมด ไม่จำกัดช่วงเวลา)</span>
             </div>
             <div style={{ maxHeight: 640, overflowY: "auto" }}>
               {scans.map((sc, i) => {
@@ -660,7 +632,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
                   </div>
                 );
               })}
-              {scans.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13 }}>ไม่มีข้อมูลถึงคลังตามตัวกรองนี้</div>}
+              {scans.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13 }}>ไม่มีข้อมูลถึงคลัง</div>}
             </div>
           </div>
           <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16 }}>
@@ -672,18 +644,23 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
               <span style={{ background: "#FEF3C7", color: "#92400E", borderRadius: 6, padding: "2px 8px", fontWeight: 600 }}>⏳ {myorderPending} รอดำเนินการ</span>
             </div>
             <div style={{ maxHeight: 600, overflowY: "auto" }}>
-              {myorderRows.map((r, i) => (
-                <div key={i} onClick={() => onGoToMyorder && onGoToMyorder(r.order_no)}
-                  style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: "1px solid #F3F4F6", fontSize: 12, cursor: onGoToMyorder ? "pointer" : "default" }}
-                  onMouseEnter={e => e.currentTarget.style.background = "#FAFAFE"}
-                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                  <div style={{ display: "flex", flexDirection: "column" }}>
-                    <span style={{ fontFamily: "monospace", color: "#7C3AED", textDecoration: "underline", textDecorationStyle: "dotted" }}>{r.order_no}</span>
-                    <span style={{ fontSize: 10, color: "#9CA3AF" }}>{r.customer_name}</span>
+              {myorderRows.map((r, i) => {
+                const trackingDisplay = r.isThaiPost ? r.outbound_tracking : (r.returnTracking || r.outbound_tracking);
+                return (
+                  <div key={i} onClick={() => onGoToMyorder && onGoToMyorder(r.order_no)}
+                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: "1px solid #F3F4F6", fontSize: 12, cursor: onGoToMyorder ? "pointer" : "default" }}
+                    onMouseEnter={e => e.currentTarget.style.background = "#FAFAFE"}
+                    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                    <div style={{ display: "flex", flexDirection: "column" }}>
+                      <span style={{ fontFamily: "monospace", color: "#7C3AED", textDecoration: "underline", textDecorationStyle: "dotted" }}>{r.order_no}</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 10, color: r.isThaiPost ? "#0EA5E9" : "#9CA3AF" }}>
+                        {r.isThaiPost ? "📮 " : ""}{trackingDisplay}
+                      </span>
+                    </div>
+                    <span style={{ color: r.scanned ? "#10B981" : "#92400E", fontWeight: 600, fontSize: 11 }}>{r.scanned ? "✓ เสร็จแล้ว" : "⏳ รอดำเนินการ"}</span>
                   </div>
-                  <span style={{ color: r.scanned ? "#10B981" : "#92400E", fontWeight: 600, fontSize: 11 }}>{r.scanned ? "✓ เสร็จแล้ว" : "⏳ รอดำเนินการ"}</span>
-                </div>
-              ))}
+                );
+              })}
               {myorderRows.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13 }}>ยังไม่มีข้อมูล myorder — ไปอัปโหลดไฟล์ที่แท็บ "ตีกลับ myorder"</div>}
             </div>
           </div>
