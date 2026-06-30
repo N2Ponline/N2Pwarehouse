@@ -270,6 +270,35 @@ async function loadAllScans() {
   return sbReturnAll("return_scans", "select=*&order=scanned_at.desc");
 }
 
+// ── UI ที่ใช้ร่วมกัน: ตัวเลือกช่วงเวลา ทั้งหมด / เดือนนี้ / เดือนที่แล้ว / กำหนดเอง ──
+function DateFilterRow({ filter, accent }) {
+  return (
+    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+      {[["all", "ทั้งหมด"], ["thisMonth", "เดือนนี้"], ["lastMonth", "เดือนที่แล้ว"]].map(([v, l]) => (
+        <button key={v} onClick={() => filter.setMode(v)}
+          style={{
+            background: filter.mode === v ? accent : "#fff",
+            color: filter.mode === v ? "#fff" : "#6B7280",
+            border: "1px solid #E5E7EB", borderRadius: 8, padding: "6px 12px",
+            fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif",
+          }}>
+          {l}
+        </button>
+      ))}
+      <div style={{ display: "flex", alignItems: "center", gap: 4, background: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 8, padding: "3px 8px" }}>
+        <span style={{ fontSize: 11, color: "#9CA3AF" }}>กำหนดเอง:</span>
+        <input type="date" value={filter.from}
+          onChange={e => { filter.setFrom(e.target.value); filter.setMode("range"); }}
+          style={{ background: "transparent", border: "none", color: "#374151", fontSize: 11, outline: "none", fontFamily: "'Sarabun', sans-serif", width: 100 }} />
+        <span style={{ color: "#9CA3AF", fontSize: 11 }}>—</span>
+        <input type="date" value={filter.to}
+          onChange={e => { filter.setTo(e.target.value); filter.setMode("range"); }}
+          style={{ background: "transparent", border: "none", color: "#374151", fontSize: 11, outline: "none", fontFamily: "'Sarabun', sans-serif", width: 100 }} />
+      </div>
+    </div>
+  );
+}
+
 function ReturnSummaryPanel({ onGoToMyorder }) {
   const summaryFilter = useDateFilterState("all"); // ตัวกรองหลัก — อิงวันที่ Flash แจ้ง (ตีกลับในระบบ)
   const [showMissingOnly, setShowMissingOnly] = useState(false);
@@ -382,32 +411,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
 
   const pct = systemList.length > 0 ? Math.round((matched.length / systemList.length) * 100) : 0;
 
-  // ── UI ย่อย: ตัวเลือกช่วงเวลา (ตัวกรองหลัก อิงวันที่ Flash แจ้ง) ──
-  const DateFilterRow = ({ filter, accent }) => (
-    <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-      {[["all", "ทั้งหมด"], ["thisMonth", "เดือนนี้"], ["lastMonth", "เดือนที่แล้ว"]].map(([v, l]) => (
-        <button key={v} onClick={() => filter.setMode(v)}
-          style={{
-            background: filter.mode === v ? accent : "#fff",
-            color: filter.mode === v ? "#fff" : "#6B7280",
-            border: "1px solid #E5E7EB", borderRadius: 8, padding: "6px 12px",
-            fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif",
-          }}>
-          {l}
-        </button>
-      ))}
-      <div style={{ display: "flex", alignItems: "center", gap: 4, background: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 8, padding: "3px 8px" }}>
-        <span style={{ fontSize: 11, color: "#9CA3AF" }}>กำหนดเอง:</span>
-        <input type="date" value={filter.from}
-          onChange={e => { filter.setFrom(e.target.value); filter.setMode("range"); }}
-          style={{ background: "transparent", border: "none", color: "#374151", fontSize: 11, outline: "none", fontFamily: "'Sarabun', sans-serif", width: 100 }} />
-        <span style={{ color: "#9CA3AF", fontSize: 11 }}>—</span>
-        <input type="date" value={filter.to}
-          onChange={e => { filter.setTo(e.target.value); filter.setMode("range"); }}
-          style={{ background: "transparent", border: "none", color: "#374151", fontSize: 11, outline: "none", fontFamily: "'Sarabun', sans-serif", width: 100 }} />
-      </div>
-    </div>
-  );
+  // ── ตัวเลือกช่วงเวลา (ตัวกรองหลัก อิงวันที่ Flash แจ้ง) — ใช้ DateFilterRow ที่ใช้ร่วมกันทั้งระบบ ──
 
   const fmtTime = (iso) => iso ? new Date(iso).toLocaleString("th-TH", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "-";
 
@@ -1401,9 +1405,30 @@ const parseMyorderTrackingCell = (raw) => {
   return { tracking: s, courier: "" };
 };
 
+// แปลงค่า "วันที่สั่งซื้อ" (ข้อความอิสระจากไฟล์ myorder) ให้เป็น "YYYY-MM-DD" สำหรับใช้กรองช่วงเวลา
+// รองรับ yyyy-mm-dd, dd/mm/yyyy (รวม พ.ศ.) — ถ้าแปลงไม่ได้คืนค่า null
+const parseThaiOrderDate = (raw) => {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  let m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (m) {
+    let [, y, mo, d] = m;
+    y = Number(y); if (y > 2400) y -= 543;
+    return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  }
+  m = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+  if (m) {
+    let [, d, mo, y] = m;
+    y = Number(y); if (y > 2400) y -= 543;
+    return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  }
+  return null;
+};
+
 async function loadXLSXForMyorder() { return loadXLSX(); }
 
 function ReturnMyorderPanel({ focusOrderNo, onFocusHandled }) {
+  const dateFilter = useDateFilterState("all"); // ตัวกรองวันที่ — อิงวันที่สั่งซื้อ (order_date), fallback เป็นวันที่นำเข้าถ้าแปลงวันที่สั่งซื้อไม่ได้
   const [items, setItems] = useState([]); // จาก return_myorder_items
   const [flashItems, setFlashItems] = useState([]); // จาก return_flash_items (ทั้งหมด — ใช้ join)
   const [scans, setScans] = useState([]); // จาก return_scans (ทั้งหมด — ใช้ join)
@@ -1450,11 +1475,13 @@ function ReturnMyorderPanel({ focusOrderNo, onFocusHandled }) {
   // จึงไม่ต้องรอ Flash แจ้งเลขขากลับ ให้เทียบ outbound_tracking กับ return_scans ตรงๆ
   const rows = useMemo(() => {
     return items.map(it => {
+      const normDate = parseThaiOrderDate(it.order_date) || (it.imported_at ? it.imported_at.slice(0, 10) : null);
       const isWA = /^WA/i.test(it.outbound_tracking || "");
       if (isWA) {
         const scan = scanMap[it.outbound_tracking];
         return {
           ...it,
+          normDate,
           returnTracking: it.outbound_tracking, // เลขเดียวกัน
           flashTime: "",
           isThaiPost: true,
@@ -1469,6 +1496,7 @@ function ReturnMyorderPanel({ focusOrderNo, onFocusHandled }) {
       const scan = returnTracking ? scanMap[returnTracking] : null;
       return {
         ...it,
+        normDate,
         returnTracking,
         flashTime: flash?.flash_time || "",
         isThaiPost: false,
@@ -1480,17 +1508,29 @@ function ReturnMyorderPanel({ focusOrderNo, onFocusHandled }) {
     });
   }, [items, flashMap, scanMap]);
 
+  // กรองตามช่วงเวลาที่เลือก (อิงวันที่สั่งซื้อ) — "ทั้งหมด" ไม่กรอง
+  const dateFilteredRows = useMemo(() => {
+    if (dateFilter.mode === "all") return rows;
+    const from = dateFilter.rangeFrom, to = dateFilter.rangeTo;
+    return rows.filter(r => {
+      if (!r.normDate) return false;
+      if (from && r.normDate < from) return false;
+      if (to && r.normDate > to) return false;
+      return true;
+    });
+  }, [rows, dateFilter.mode, dateFilter.rangeFrom, dateFilter.rangeTo]);
+
   const filteredRows = useMemo(() => {
-    if (!search.trim()) return rows;
+    if (!search.trim()) return dateFilteredRows;
     const q = search.trim().toLowerCase();
-    return rows.filter(r =>
+    return dateFilteredRows.filter(r =>
       (r.order_no || "").toLowerCase().includes(q) ||
       (r.customer_name || "").toLowerCase().includes(q) ||
       (r.outbound_tracking || "").toLowerCase().includes(q) ||
       (r.returnTracking || "").toLowerCase().includes(q) ||
       (r.product || "").toLowerCase().includes(q)
     );
-  }, [rows, search]);
+  }, [dateFilteredRows, search]);
 
   // เลื่อนไปยังแถวที่ระบุ เมื่อมีการคลิกลิงก์มาจากหน้าสรุป
   useEffect(() => {
@@ -1590,6 +1630,12 @@ function ReturnMyorderPanel({ focusOrderNo, onFocusHandled }) {
         </div>
       </div>
 
+      {/* ตัวกรองวันที่ — อิงวันที่สั่งซื้อ */}
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, padding: 14, marginBottom: 16 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#7C3AED", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>📅 ช่วงเวลา (อิงวันที่สั่งซื้อ)</div>
+        <DateFilterRow filter={dateFilter} accent="linear-gradient(135deg,#7C3AED,#3B82F6)" />
+      </div>
+
       {importMsg && (
         <div style={{ background: importMsg.type === "success" ? "#F0FDF4" : "#FEF2F2", border: `1px solid ${importMsg.type === "success" ? "#BBF7D0" : "#FECACA"}`, color: importMsg.type === "success" ? "#065F46" : "#991B1B", borderRadius: 10, padding: "10px 16px", marginBottom: 16, fontSize: 13 }}>
           {importMsg.type === "success" ? "✅ " : "⚠️ "}{importMsg.text}
@@ -1652,7 +1698,11 @@ function ReturnMyorderPanel({ focusOrderNo, onFocusHandled }) {
           </table>
           {filteredRows.length === 0 && (
             <div style={{ textAlign: "center", padding: 48, color: "#9CA3AF" }}>
-              {items.length === 0 ? "ยังไม่มีข้อมูล — กดอัปโหลดไฟล์ Excel จาก myorder ด้านบน" : "ไม่พบรายการที่ค้นหา"}
+              {items.length === 0
+                ? "ยังไม่มีข้อมูล — กดอัปโหลดไฟล์ Excel จาก myorder ด้านบน"
+                : dateFilteredRows.length === 0
+                  ? "ไม่มีรายการในช่วงเวลาที่เลือก"
+                  : "ไม่พบรายการที่ค้นหา"}
             </div>
           )}
         </div>
