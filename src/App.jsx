@@ -254,18 +254,7 @@ function useDateFilterState(defaultMode = "all") {
   return { mode, setMode, from, setFrom, to, setTo, rangeFrom, rangeTo };
 }
 
-// ── โหลด return_sessions ตามตัวกรองวันที่ (กรองที่ server ผ่าน session_date) ──
-async function loadSessionsFiltered(filter) {
-  let q = "select=*&order=session_date.desc";
-  if (filter.mode !== "all") {
-    if (filter.rangeFrom) q += `&session_date=gte.${filter.rangeFrom}`;
-    if (filter.rangeTo) q += `&session_date=lte.${filter.rangeTo}`;
-  }
-  // mode === "all" → ไม่เติมเงื่อนไข
-  return sbReturnAll("return_sessions", q);
-}
-
-// ── โหลด return_scans ทั้งหมด (ไม่กรองวันที่ — ตีกลับถึงคลังใช้เทียบกับ Flash แจ้งที่กรองแล้วเสมอ) ──
+// ── โหลด return_scans ทั้งหมด (ไม่กรองวันที่ — ใช้แสดงผลและเทียบกับประวัติ Flash แจ้งทั้งหมดเสมอ) ──
 async function loadAllScans() {
   return sbReturnAll("return_scans", "select=*&order=scanned_at.desc");
 }
@@ -313,7 +302,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
     setLoading(true);
     try {
       const [sessRows, scanRows, myorderRows] = await Promise.all([
-        loadSessionsFiltered(summaryFilter),
+        sbReturnAll("return_sessions", "select=*&order=session_date.desc"),
         loadAllScans(),
         sbReturnAll("return_myorder_items", "select=*&order=imported_at.desc"),
       ]);
@@ -321,7 +310,8 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
       setScans(scanRows || []);
       setMyorderItems(myorderRows || []);
 
-      // โหลด return_flash_items ของ sessions ที่ตรงตัวกรอง (เพื่อรองรับ schema ใหม่)
+      // โหลด return_flash_items ของ session ทั้งหมด (ไม่จำกัดช่วงเวลา) — ตัวกรองช่วงเวลาทำที่ฝั่ง client แทน
+      // เพื่อให้ "ยิงเกิน" และการแมทช์ ตีกลับ myorder อ้างอิงจากประวัติ Flash ทั้งหมดเสมอ ไม่ผูกกับช่วงเวลาที่เลือกดู
       const sessionIds = (sessRows || []).map(s => s.id);
       if (sessionIds.length > 0) {
         const flashRows = await sbReturnAll("return_flash_items", `session_id=in.(${sessionIds.join(",")})&select=outbound_tracking,return_tracking,flash_time,session_id`);
@@ -335,11 +325,12 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
     setLoading(false);
   };
 
-  useEffect(() => { loadData(); }, [summaryFilter.mode, summaryFilter.from, summaryFilter.to]);
+  useEffect(() => { loadData(); }, []); // โหลดครั้งเดียว — เปลี่ยนช่วงเวลาแล้วกรองที่ฝั่ง client ไม่ต้องโหลดใหม่
 
-  // ── คำนวณ matched / missing / extra จากตัวกรองทั้งสองฝั่ง ──
-  // systemList: เลขขากลับที่ Flash แจ้ง — รวมทั้งของเก่า (tracking_list array) และของใหม่ (return_flash_items.return_tracking)
-  const systemList = useMemo(() => {
+  // ── คำนวณ matched / missing / extra ──
+  // systemListAll: เลขขากลับที่ Flash แจ้งทั้งหมดตลอดประวัติ (ไม่จำกัดช่วงเวลา) — ใช้เช็ค "ยิงเกิน" และสถานะของ ถึงคลัง
+  // เพื่อไม่ให้ตัวเลข "ยิงเกิน" พองโตเกินจริงเวลาแคบช่วงเวลาลง (เพราะ ถึงคลัง ไม่ได้ถูกจำกัดช่วงเวลาเหมือนกัน)
+  const systemListAll = useMemo(() => {
     const fromLegacy = sessions.flatMap(s => s.tracking_list || []);
     const fromNew = flashItems.map(f => f.return_tracking).filter(Boolean);
     return [...new Set([...fromLegacy, ...fromNew])];
@@ -359,6 +350,18 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
     });
     return map;
   }, [sessions, flashItems]);
+  // systemList: ขอบเขตตามช่วงเวลาที่เลือก (ทั้งหมด/เดือนนี้/เดือนที่แล้ว/กำหนดเอง) — ใช้แสดงคอลัมน์ Flash แจ้ง / matched / missing / progress
+  const systemList = useMemo(() => {
+    if (summaryFilter.mode === "all") return systemListAll;
+    const from = summaryFilter.rangeFrom, to = summaryFilter.rangeTo;
+    return systemListAll.filter(code => {
+      const d = codeToSessionDate[code];
+      if (!d) return false;
+      if (from && d < from) return false;
+      if (to && d > to) return false;
+      return true;
+    });
+  }, [systemListAll, codeToSessionDate, summaryFilter.mode, summaryFilter.rangeFrom, summaryFilter.rangeTo]);
   // เรียงเลขขากลับ (Flash แจ้ง) ให้วันที่ล่าสุดขึ้นก่อน — ใช้แสดงผลในหน้าสรุปและ export
   const sortedSystemList = useMemo(() => {
     return [...systemList].sort((a, b) => (codeToSessionDate[b] || "").localeCompare(codeToSessionDate[a] || ""));
@@ -366,15 +369,16 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
   const scannedSet = useMemo(() => new Set(scans.map(sc => sc.tracking_code)), [scans]);
   const matched = useMemo(() => sortedSystemList.filter(c => scannedSet.has(c)), [sortedSystemList, scannedSet]);
   const missing = useMemo(() => sortedSystemList.filter(c => !scannedSet.has(c)), [sortedSystemList, scannedSet]);
+  // ยิงเกิน: เทียบกับประวัติ Flash แจ้งทั้งหมด (ไม่ใช่แค่ช่วงเวลาที่เลือก) — เพื่อไม่ให้ตัวเลขพองเกินจริงเวลาแคบช่วงเวลาลง
   const extra = useMemo(() => {
     const seen = new Set();
     return scans.filter(sc => {
-      if (systemList.includes(sc.tracking_code)) return false;
+      if (systemListAll.includes(sc.tracking_code)) return false;
       if (seen.has(sc.tracking_code)) return false;
       seen.add(sc.tracking_code);
       return true;
     });
-  }, [scans, systemList]);
+  }, [scans, systemListAll]);
 
   // ── panel ที่ 3: ตีกลับ myorder — เทียบ outbound_tracking ของ myorder กับ return_flash_items (เลขขาไปตรงกัน) ──
   const flashOutboundMap = useMemo(() => {
@@ -470,11 +474,11 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
       ws2["!cols"] = [{ wch: 22 }, { wch: 22 }, { wch: 20 }, { wch: 16 }, { wch: 18 }];
       XLSX.utils.book_append_sheet(wb, ws2, "ตีกลับในระบบ");
 
-      // Sheet 3: ตีกลับถึงคลัง — พนักงานยิงตามตัวกรอง (เรียงเวลายิงล่าสุดขึ้นก่อนอยู่แล้ว)
+      // Sheet 3: ตีกลับถึงคลัง — พนักงานยิงทั้งหมด (เทียบกับประวัติ Flash แจ้งทั้งหมด ไม่จำกัดช่วงเวลา)
       const ws3 = XLSX.utils.aoa_to_sheet([
         [{ v: "เลข Tracking", s: HEADER }, { v: "ผู้ยิง", s: HEADER }, { v: "เวลายิง", s: HEADER }, { v: "สถานะ", s: HEADER }],
         ...scans.map(sc => {
-          const inSystem = systemList.includes(sc.tracking_code);
+          const inSystem = systemListAll.includes(sc.tracking_code);
           return [
             { v: sc.tracking_code, s: inSystem ? GREEN : ORANGE },
             sc.scanned_by || "-",
@@ -531,7 +535,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
           { label: "ถึงคลัง", value: scans.length, color: "#111827", bg: "#F9FAFB" },
           { label: "✅ ตรงกัน", value: matched.length, color: "#065F46", bg: "#D1FAE5" },
           { label: "🔴 ยังไม่ถึงคลัง", value: missing.length, color: missing.length > 0 ? "#991B1B" : "#065F46", bg: missing.length > 0 ? "#FEE2E2" : "#D1FAE5" },
-          { label: "⚠️ ยิงเกิน", value: extra.length, color: "#92400E", bg: "#FEF3C7" },
+          { label: "⚠️ ยิงเกิน (ทั้งหมด)", value: extra.length, color: "#92400E", bg: "#FEF3C7" },
           { label: "📋 ตีกลับ myorder", value: myorderRows.length, color: "#7C3AED", bg: "#F5F3FF" },
         ].map((s, i) => (
           <div key={i} style={{ background: s.bg, borderRadius: 14, padding: "16px 14px", textAlign: "center", border: "1px solid #E5E7EB" }}>
@@ -634,7 +638,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
             </div>
             <div style={{ maxHeight: 640, overflowY: "auto" }}>
               {scans.map((sc, i) => {
-                const inSystem = systemList.includes(sc.tracking_code);
+                const inSystem = systemListAll.includes(sc.tracking_code);
                 return (
                   <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: "1px solid #F3F4F6", fontSize: 12 }}>
                     <span style={{ fontFamily: "monospace", color: inSystem ? "#065F46" : "#92400E" }}>{sc.tracking_code}</span>
