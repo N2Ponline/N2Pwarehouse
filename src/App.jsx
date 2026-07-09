@@ -66,21 +66,27 @@ const parseFlashText = (raw) => {
   return [...new Set(matches.filter(m => m.length >= 10))];
 };
 
-// ── Parser ใหม่: รับข้อความจาก "N2P Flash ตีกลับ Copy" extension ──
-// รูปแบบ: บรรทัดแรก = วันที่ DD/MM/YYYY, บรรทัดถัดไป = เลขขาไป(เลขขากลับ) เวลา
-// คืนค่า { date: "YYYY-MM-DD" | null, items: [{ outbound, returnCode, time }] }
+// ── Parser: รับข้อความจาก "N2P Flash ตีกลับ Copy" extension ──
+// รูปแบบ: บรรทัดวันที่ DD/MM/YYYY (มีได้หลายบล็อกในข้อความเดียว) ตามด้วยบรรทัด เลขขาไป(เลขขากลับ) เวลา
+// รองรับปี พ.ศ. (แปลงเป็น ค.ศ. อัตโนมัติ) และข้ามบรรทัดว่างคั่นกลางได้
+// คืนค่า { date, items: [{ outbound, returnCode, time, date }] }
+// — date ของแต่ละ item อิงจากบรรทัดวันที่ล่าสุดที่อยู่ก่อนหน้า (ถ้าไม่มีเลยจะเป็น null ให้ผู้เรียกใช้ fallback เอง)
 const parseFlashItemsText = (raw) => {
   const lines = raw.split("\n").map(l => l.trim()).filter(Boolean);
-  let date = null;
+  let firstDate = null;
+  let currentDate = null;
   const items = [];
-  const dateRe = /^(\d{2})\/(\d{2})\/(\d{4})$/;
+  const dateRe = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/;
   const itemRe = /^([A-Z0-9]+)\(([A-Z0-9]+)\)\s*(\d{1,2}:\d{2})?$/i;
 
   lines.forEach(line => {
     const dm = line.match(dateRe);
-    if (dm && !date) {
-      // DD/MM/YYYY -> YYYY-MM-DD (เก็บแบบเดียวกับ session_date เดิม)
-      date = `${dm[3]}-${dm[2]}-${dm[1]}`;
+    if (dm) {
+      let y = Number(dm[3]);
+      if (y > 2400) y -= 543; // ปี พ.ศ. -> ค.ศ.
+      // DD/MM/YYYY -> YYYY-MM-DD (เก็บแบบเดียวกับ session_date)
+      currentDate = `${y}-${String(dm[2]).padStart(2, "0")}-${String(dm[1]).padStart(2, "0")}`;
+      if (!firstDate) firstDate = currentDate;
       return;
     }
     const im = line.match(itemRe);
@@ -89,11 +95,12 @@ const parseFlashItemsText = (raw) => {
         outbound: im[1].toUpperCase(),
         returnCode: im[2].toUpperCase(),
         time: im[3] || "",
+        date: currentDate,
       });
     }
   });
 
-  return { date, items };
+  return { date: firstDate, items };
 };
 
 const sbReturn = async (path, opts = {}) => {
@@ -722,6 +729,12 @@ function ReturnAdminPanel() {
   const [importMsg, setImportMsg] = useState(null);
   const fileInputRef = useRef(null);
 
+  // ── วางข้อความจาก extension "N2P Flash ตีกลับ Copy" ──
+  const [showPasteModal, setShowPasteModal] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pasting, setPasting] = useState(false);
+  const pastePreview = useMemo(() => parseFlashItemsText(pasteText), [pasteText]);
+
   const loadAll = async () => {
     setLoadingList(true);
     try {
@@ -882,6 +895,71 @@ function ReturnAdminPanel() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
+  // ── นำเข้าจากข้อความที่วาง (จาก extension "N2P Flash ตีกลับ Copy") ──
+  // รูปแบบ: บรรทัดวันที่ DD/MM/YYYY (มีได้หลายบล็อก) ตามด้วย เลขขาไป(เลขขากลับ) เวลา
+  // กันซ้ำแบบเดียวกับการอัปโหลดไฟล์ Excel: เทียบเลขขากลับกับทั้งระบบ + กันซ้ำภายในข้อความเดียวกัน
+  // flash_time บันทึกเป็น "YYYY-MM-DD HH:MM" ให้รูปแบบเดียวกับที่มาจากไฟล์ Excel
+  const handlePasteImport = async () => {
+    const parsed = pastePreview.items;
+    if (parsed.length === 0) {
+      setImportMsg({ type: "error", text: "ไม่พบรายการในข้อความที่วาง — รูปแบบที่รองรับ เช่น TH12018TXP1D6B(TH27218XG6XE0A) 10:48" });
+      setShowPasteModal(false);
+      return;
+    }
+    setPasting(true);
+    setImportMsg(null);
+    try {
+      const existingReturnRows = await sbReturnAll("return_flash_items", "select=return_tracking");
+      const existingReturnSet = new Set(existingReturnRows.map(r => r.return_tracking));
+      const seenInText = new Set();
+      const newRows = [];
+      let dupCount = 0;
+      parsed.forEach(r => {
+        if (existingReturnSet.has(r.returnCode) || seenInText.has(r.returnCode)) { dupCount++; return; }
+        seenInText.add(r.returnCode);
+        newRows.push(r);
+      });
+
+      if (newRows.length > 0) {
+        // จัดกลุ่มตามวันที่ในข้อความ (ถ้าไม่มีบรรทัดวันที่เลย fallback เป็นวันนี้) — สร้าง session ต่อวันที่
+        const byDate = {};
+        newRows.forEach(r => {
+          const d = r.date || todayStr();
+          if (!byDate[d]) byDate[d] = [];
+          byDate[d].push(r);
+        });
+
+        for (const [d, rows] of Object.entries(byDate)) {
+          const [newSession] = await sbReturn("return_sessions", { method: "POST", body: JSON.stringify({ tracking_list: [], courier: "Flash", session_date: d }) });
+          const sessionId = newSession?.id;
+          if (!sessionId) throw new Error("สร้างเซสชันไม่สำเร็จ");
+          const insertRows = rows.map(it => ({
+            session_id: sessionId,
+            outbound_tracking: it.outbound,
+            return_tracking: it.returnCode,
+            flash_time: it.time ? `${d} ${it.time}` : d,
+          }));
+          const chunkSize = 200;
+          for (let i = 0; i < insertRows.length; i += chunkSize) {
+            const chunk = insertRows.slice(i, i + chunkSize);
+            await sbReturn("return_flash_items", { method: "POST", body: JSON.stringify(chunk) });
+          }
+        }
+      }
+
+      setImportMsg({
+        type: "success",
+        text: `นำเข้าจากข้อความ: เพิ่มใหม่ ${newRows.length} รายการ${dupCount > 0 ? `, ข้ามรายการที่ซ้ำ ${dupCount} รายการ` : ""}`,
+      });
+      setShowPasteModal(false);
+      setPasteText("");
+      await loadAll();
+    } catch (err) {
+      setImportMsg({ type: "error", text: "นำเข้าไม่สำเร็จ: " + (err.message || String(err)) });
+    }
+    setPasting(false);
+  };
+
   const handleDeleteItem = async (id) => {
     if (!confirm("ลบรายการนี้ออกจากระบบ?")) return;
     try {
@@ -955,17 +1033,21 @@ function ReturnAdminPanel() {
 
   return (
     <div>
-      {/* Import section — อัปโหลดไฟล์ Excel ตีกลับในระบบ (ขึ้นมาด้านบน) */}
+      {/* Import section — อัปโหลดไฟล์ Excel / วางข้อความ ตีกลับในระบบ (ขึ้นมาด้านบน) */}
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, padding: 20, marginBottom: 24 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4, flexWrap: "wrap", gap: 10 }}>
           <div>
             <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 2 }}>ตีกลับในระบบ</h2>
-            <p style={{ fontSize: 13, color: "#6B7280" }}>อัปโหลดไฟล์ Excel ตีกลับในระบบ (เลือกได้หลายไฟล์พร้อมกัน) — เก็บเลขขาไป / เลขขากลับ / เวลาเซ็นรับ ระบบจะกรองรายการที่ซ้ำให้อัตโนมัติ</p>
+            <p style={{ fontSize: 13, color: "#6B7280" }}>อัปโหลดไฟล์ Excel (เลือกได้หลายไฟล์) หรือวางข้อความจากปุ่ม Copy ของ extension — เก็บเลขขาไป / เลขขากลับ / เวลาเซ็นรับ ระบบจะกรองรายการที่ซ้ำให้อัตโนมัติ</p>
           </div>
-          <div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <input ref={fileInputRef} type="file" accept=".xlsx,.xls" multiple style={{ display: "none" }} onChange={handleFileChange} />
-            <button onClick={() => fileInputRef.current?.click()} disabled={loading}
-              style={{ background: loading ? "#F3F4F6" : "linear-gradient(135deg,#7C3AED,#3B82F6)", color: loading ? "#9CA3AF" : "#fff", border: "none", borderRadius: 10, padding: "10px 20px", fontSize: 14, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+            <button onClick={() => setShowPasteModal(true)} disabled={loading || pasting}
+              style={{ background: "#EDE9FE", color: "#7C3AED", border: "1px solid #DDD6FE", borderRadius: 10, padding: "10px 20px", fontSize: 14, fontWeight: 700, cursor: loading || pasting ? "not-allowed" : "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+              📋 วางข้อความ
+            </button>
+            <button onClick={() => fileInputRef.current?.click()} disabled={loading || pasting}
+              style={{ background: loading ? "#F3F4F6" : "linear-gradient(135deg,#7C3AED,#3B82F6)", color: loading ? "#9CA3AF" : "#fff", border: "none", borderRadius: 10, padding: "10px 20px", fontSize: 14, fontWeight: 700, cursor: loading || pasting ? "not-allowed" : "pointer", fontFamily: "'Sarabun', sans-serif" }}>
               {loading ? "⏳ กำลังนำเข้า..." : "📤 อัปโหลดไฟล์ Excel"}
             </button>
           </div>
@@ -1055,6 +1137,44 @@ function ReturnAdminPanel() {
           </div>
         )}
       </div>
+
+      {/* MODAL: วางข้อความจาก extension "N2P Flash ตีกลับ Copy" */}
+      {showPasteModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(8px)" }}
+          onClick={() => { if (!pasting) setShowPasteModal(false); }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, width: "100%", maxWidth: 560, maxHeight: "90vh", overflowY: "auto", padding: 24, boxShadow: "0 24px 60px rgba(0,0,0,0.15)" }}>
+            <h3 style={{ fontSize: 18, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📋 วางข้อความตีกลับในระบบ</h3>
+            <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 14 }}>
+              วางข้อความจากปุ่ม Copy ของ extension — บรรทัดวันที่ (DD/MM/YYYY) ตามด้วย เลขขาไป(เลขขากลับ) เวลา
+            </p>
+            <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} autoFocus
+              placeholder={"08/07/2026\nTH12018TXP1D6B(TH27218XG6XE0A) 10:48\nTH45018T18B30L(TH27218XGENY0A) 10:49"}
+              style={{ width: "100%", height: 260, background: "#F9FAFB", border: "1.5px solid #E5E7EB", borderRadius: 10, padding: "12px 14px", color: "#111827", fontSize: 12, outline: "none", fontFamily: "monospace", resize: "vertical", boxSizing: "border-box" }} />
+            {/* พรีวิวผลการอ่านข้อความ — อัปเดตสดขณะวาง */}
+            <div style={{ marginTop: 10, fontSize: 13 }}>
+              {pasteText.trim() === "" ? (
+                <span style={{ color: "#9CA3AF" }}>ยังไม่มีข้อความ — วางข้อความจาก extension ได้เลย</span>
+              ) : pastePreview.items.length === 0 ? (
+                <span style={{ color: "#DC2626" }}>⚠️ อ่านไม่พบรายการ — ตรวจสอบรูปแบบข้อความ</span>
+              ) : (
+                <span style={{ color: "#065F46" }}>
+                  ✅ อ่านได้ {pastePreview.items.length} รายการ
+                  {" · "}วันที่: {[...new Set(pastePreview.items.map(it => it.date || todayStr()))].map(d => new Date(d + "T00:00:00").toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "2-digit" })).join(", ")}
+                </span>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 16, justifyContent: "flex-end" }}>
+              <button onClick={() => setShowPasteModal(false)} disabled={pasting}
+                style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "11px 18px", fontSize: 14, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>ยกเลิก</button>
+              <button onClick={handlePasteImport} disabled={pasting || pastePreview.items.length === 0}
+                style={{ background: pasting || pastePreview.items.length === 0 ? "#F3F4F6" : "linear-gradient(135deg,#7C3AED,#3B82F6)", color: pasting || pastePreview.items.length === 0 ? "#9CA3AF" : "#fff", border: "none", borderRadius: 10, padding: "11px 22px", fontSize: 14, fontWeight: 700, cursor: pasting || pastePreview.items.length === 0 ? "not-allowed" : "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+                {pasting ? "⏳ กำลังนำเข้า..." : `✅ นำเข้า ${pastePreview.items.length} รายการ`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2293,712 +2413,638 @@ export default function WarehouseApp() {
     reader.readAsDataURL(file);
   };
 
+  const statusOf = (p) => p.quantity <= 0 ? "หมด" : (p.minStock > 0 && p.quantity <= p.minStock) ? "ใกล้หมด" : "ปกติ";
+  const statusColor = (p) => p.quantity <= 0 ? { bg: "#FEE2E2", fg: "#991B1B" } : (p.minStock > 0 && p.quantity <= p.minStock) ? { bg: "#FEF3C7", fg: "#92400E" } : { bg: "#D1FAE5", fg: "#065F46" };
+  const productName = (id) => products.find(p => p.id === id)?.name || `#${id}`;
+  const productUnit = (id) => products.find(p => p.id === id)?.unit || "";
+
+  const filteredTx = filterProductId ? transactions.filter(tx => tx.productId === filterProductId) : transactions;
+
+  const filteredDisposeRecords = disposeRecords.filter(r =>
+    !disposeSearch.trim() ||
+    (r.name || "").toLowerCase().includes(disposeSearch.trim().toLowerCase()) ||
+    (r.sku || "").toLowerCase().includes(disposeSearch.trim().toLowerCase()) ||
+    (r.disposed_by || "").toLowerCase().includes(disposeSearch.trim().toLowerCase())
+  );
+
+  const appStyles = `
+    @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Sarabun', sans-serif; }
+    .inp { width: 100%; background: #F9FAFB; border: 1.5px solid #E5E7EB; border-radius: 10px; padding: 10px 14px; color: #111827; font-size: 14px; outline: none; font-family: 'Sarabun', sans-serif; }
+    .inp:focus { border-color: #7C3AED; }
+    table { width: 100%; border-collapse: collapse; font-family: 'Sarabun', sans-serif; }
+    thead th { background: linear-gradient(135deg,#7C3AED,#3B82F6); color: rgba(255,255,255,0.88); font-size: 12px; font-weight: 600; text-align: left; padding: 10px 12px; white-space: nowrap; }
+    tbody td { padding: 9px 12px; border-bottom: 1px solid #F3F4F6; font-size: 13px; color: #374151; vertical-align: middle; }
+    tbody tr:hover { background: #FAFAFE; }
+    button { font-family: 'Sarabun', sans-serif; }
+  `;
+
   if (loading) return (
-    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "#f0f2ff", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16 }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');`}</style>
-      <div style={{ width: 48, height: 48, border: "3px solid #e0e0f0", borderTop: "3px solid #7c3aed", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-      <div style={{ color: "#6b7ab5", fontSize: 15 }}>กำลังโหลดข้อมูลจาก Supabase...</div>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    <div style={{ minHeight: "100vh", background: "#F3F4F6", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Sarabun', sans-serif", color: "#6B7280" }}>
+      <style>{appStyles}</style>
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontSize: 40, marginBottom: 12 }}>📦</div>
+        กำลังโหลดข้อมูลคลังสินค้า...
+      </div>
     </div>
   );
 
   if (dbError) return (
-    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "#f0f2ff", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 16, padding: 32 }}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');`}</style>
-      <div style={{ fontSize: 40 }}>⚠️</div>
-      <div style={{ color: "#ff5555", fontWeight: 700, fontSize: 18 }}>เชื่อมต่อฐานข้อมูลไม่สำเร็จ</div>
-      <div style={{ color: "#6b7ab5", fontSize: 13, background: "#ffffff", padding: "12px 20px", borderRadius: 8, fontFamily: "monospace", maxWidth: 500, wordBreak: "break-all" }}>{dbError}</div>
-      <button onClick={loadAll} style={{ background: "#7c3aed", color: "#f0f2ff", border: "none", borderRadius: 8, padding: "10px 24px", fontWeight: 700, cursor: "pointer", fontSize: 15, fontFamily: "'Sarabun', sans-serif" }}>ลองใหม่</button>
+    <div style={{ minHeight: "100vh", background: "#F3F4F6", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Sarabun', sans-serif", padding: 20 }}>
+      <style>{appStyles}</style>
+      <div style={{ background: "#fff", border: "1.5px solid #FECACA", borderRadius: 16, padding: 28, maxWidth: 480, textAlign: "center" }}>
+        <div style={{ fontSize: 36, marginBottom: 10 }}>⚠️</div>
+        <div style={{ fontWeight: 700, color: "#991B1B", marginBottom: 6 }}>เชื่อมต่อฐานข้อมูลไม่สำเร็จ</div>
+        <div style={{ fontSize: 13, color: "#6B7280", marginBottom: 18 }}>{dbError}</div>
+        <button onClick={loadAll} style={{ background: "linear-gradient(135deg,#7C3AED,#3B82F6)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 24px", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>ลองใหม่</button>
+      </div>
     </div>
   );
 
   return (
-    <div style={{ fontFamily: "'Sarabun', sans-serif", minHeight: "100vh", background: "#F8FAFC", color: "#111827" }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #F1F5F9; } ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
-        input, select, textarea { font-family: 'Sarabun', sans-serif; }
+    <div style={{ minHeight: "100vh", background: "#F3F4F6", fontFamily: "'Sarabun', sans-serif", paddingBottom: 60 }}>
+      <style>{appStyles}</style>
 
-        .tab-btn { background: none; border: none; cursor: pointer; padding: 8px 16px; border-radius: 8px; font-family: 'Sarabun', sans-serif; font-size: 14px; transition: all 0.2s; color: rgba(255,255,255,0.7); }
-        .tab-btn.active { background: rgba(255,255,255,0.2); color: #fff; font-weight: 600; }
-        .tab-btn:hover:not(.active) { background: rgba(255,255,255,0.12); color: #fff; }
-
-        .card { background: #ffffff; border: 1px solid #E5E7EB; border-radius: 20px; padding: 24px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
-        .btn { border: none; cursor: pointer; border-radius: 10px; font-family: 'Sarabun', sans-serif; font-weight: 600; transition: all 0.2s; font-size: 14px; }
-        .btn-primary { background: linear-gradient(135deg,#7C3AED,#3B82F6); color: #fff; padding: 10px 22px; }
-        .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 4px 14px rgba(124,58,237,0.35); }
-        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
-        .btn-danger { background: #FEF2F2; color: #DC2626; padding: 6px 12px; border: 1px solid #FECACA; border-radius: 8px; }
-        .btn-danger:hover { background: #FEE2E2; }
-        .btn-secondary { background: #fff; color: #7C3AED; padding: 7px 14px; border: 1.5px solid #DDD6FE; border-radius: 8px; }
-        .btn-secondary:hover { background: #F5F3FF; }
-
-        .inp { background: #F9FAFB; border: 1.5px solid #E5E7EB; border-radius: 10px; padding: 10px 14px; color: #111827; width: 100%; font-size: 14px; outline: none; transition: border 0.2s; }
-        .inp:focus { border-color: #7C3AED; background: #fff; box-shadow: 0 0 0 3px rgba(124,58,237,0.08); }
-
-        .badge { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
-        .badge-ok { background: #D1FAE5; color: #065F46; }
-        .badge-low { background: #FEF3C7; color: #92400E; }
-        .badge-out { background: #FEE2E2; color: #991B1B; }
-
-        .overlay { position: fixed; inset: 0; background: rgba(17,24,39,0.45); z-index: 100; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(6px); }
-        .modal { background: #fff; border: 1px solid #E5E7EB; border-radius: 24px; padding: 32px; width: 500px; max-width: 95vw; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.12); }
-
-        .toast { position: fixed; bottom: 28px; right: 28px; z-index: 999; background: #fff; border: 1px solid #E5E7EB; border-radius: 14px; padding: 14px 22px; font-weight: 600; display: flex; align-items: center; gap: 10px; animation: slideIn 0.3s ease; box-shadow: 0 8px 24px rgba(0,0,0,0.1); color: #111827; }
-        @keyframes slideIn { from { transform: translateX(60px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
-
-        .stat-card { background: #fff; border: 1px solid #E5E7EB; border-radius: 16px; padding: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
-        .stat-card::before { display: none; }
-        .mono { font-family: 'Space Mono', monospace; }
-        .tx-row { border-left: 3px solid; padding: 12px 16px; border-radius: 0 10px 10px 0; background: #FAFAFA; margin-bottom: 8px; }
-
-        table { width: 100%; border-collapse: collapse; }
-        th { text-align: left; padding: 12px 16px; font-size: 11px; font-weight: 700; color: #7C3AED; text-transform: uppercase; letter-spacing: 1px; border-bottom: 1.5px solid #EDE9FE; background: #FAFAFA; }
-        td { padding: 13px 16px; border-bottom: 1px solid #F3F4F6; font-size: 14px; vertical-align: middle; color: #111827; }
-        tr:hover td { background: #FAFAFE; }
-
-        .label { font-size: 12px; color: #6B7280; margin-bottom: 6px; font-weight: 500; }
-        .db-dot { width: 7px; height: 7px; background: #10B981; border-radius: 50%; display: inline-block; margin-right: 5px; animation: pulse 2s infinite; }
-        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
-        @keyframes scanLine { from { transform: translateY(-40px); opacity: 0.6; } to { transform: translateY(40px); opacity: 1; } }
-
-        .section-title { font-size: 22px; font-weight: 700; color: #111827; }
-        .section-sub { font-size: 14px; color: #6B7280; margin-top: 4px; }
-      `}</style>
-
-      {/* HEADER — Gradient Nav */}
-      <div style={{ background: "linear-gradient(135deg,#7C3AED 0%,#4F46E5 50%,#3B82F6 100%)", padding: "0 32px", boxShadow: "0 2px 12px rgba(124,58,237,0.25)" }}>
-        <div style={{ maxWidth: 1200, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", height: 64 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 38, height: 38, background: "rgba(255,255,255,0.2)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, backdropFilter: "blur(4px)" }}>📦</div>
+      {/* Header */}
+      <div style={{ background: "#fff", borderBottom: "1px solid #E5E7EB", position: "sticky", top: 0, zIndex: 100 }}>
+        <div style={{ maxWidth: 1200, margin: "0 auto", padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 38, height: 38, borderRadius: 10, background: "linear-gradient(135deg,#7C3AED,#3B82F6)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 19 }}>📦</div>
             <div>
-              <div style={{ fontWeight: 700, fontSize: 17, color: "#fff", letterSpacing: "-0.3px" }}>StockMaster</div>
-              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)", display: "flex", alignItems: "center", gap: 4 }}>
-                <span className="db-dot" style={{ background: "#10B981" }} />เชื่อมต่อ Supabase แล้ว
-              </div>
+              <div style={{ fontWeight: 700, fontSize: 17, color: "#111827" }}>StockMaster</div>
+              <div style={{ fontSize: 11, color: "#9CA3AF" }}>ระบบจัดการคลังสินค้า N2P</div>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 2 }}>
-            {[["dashboard","ภาพรวม"],["inventory","สินค้าคงคลัง"],["transactions","รายการเคลื่อนไหว"],["returns","พัสดุตีกลับ"],["dispose","🗑️ จำหน่ายออก"]].map(([t,label]) => (
-              <button key={t} className={`tab-btn ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>{label}</button>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {[["dashboard","🏠 แดชบอร์ด"],["inventory","📦 คลังสินค้า"],["transactions","🔄 เคลื่อนไหว"],["returns","📮 พัสดุตีกลับ"],["dispose","🗑️ จำหน่ายออก"]].map(([v,l]) => (
+              <button key={v} onClick={() => setTab(v)}
+                style={{ background: tab === v ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "transparent", color: tab === v ? "#fff" : "#6B7280", border: "none", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: tab === v ? 700 : 400, cursor: "pointer", transition: "all 0.2s" }}>
+                {l}
+              </button>
             ))}
           </div>
-          <button onClick={loadAll} style={{ background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", padding: "8px 18px", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", backdropFilter: "blur(4px)" }}>
-            🔄 รีเฟรช
-          </button>
         </div>
       </div>
 
-      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "32px 28px" }}>
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "24px 20px" }}>
 
-        {/* DASHBOARD */}
+        {/* ─── DASHBOARD ─── */}
         {tab === "dashboard" && (
           <div>
-            <div style={{ marginBottom: 28 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-                <div>
-                  <h1 className="section-title">ภาพรวมคลังสินค้า</h1>
-                  <p className="section-sub">อัปเดตล่าสุด: {new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}</p>
-                </div>
-              </div>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 16, marginBottom: 28 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 14, marginBottom: 24 }}>
               {[
-                { label: "มูลค่าสินค้าทั้งหมด", value: `฿${totalValue.toLocaleString("th-TH")}`, icon: "💰", color: "#7c3aed" },
-                { label: "รายการสินค้า", value: `${products.length} รายการ`, icon: "🗂️", color: "#82aaff" },
-                { label: "จำนวนชิ้นทั้งหมด", value: totalItems.toLocaleString("th-TH"), icon: "📦", color: "#c3e88d" },
-                { label: "สินค้าใกล้หมด", value: `${lowStock.length} รายการ`, icon: "⚠️", color: "#ffa500" },
-                { label: "ไม่เคลื่อนไหว 15 วัน", value: `${dormantProducts.length} รายการ`, icon: "😴", color: "#82aaff" },
+                { label: "จำนวนสินค้า (SKU)", value: products.length, icon: "📦", bg: "#F5F3FF", color: "#7C3AED" },
+                { label: "ชิ้นรวมทั้งคลัง", value: totalItems.toLocaleString("th-TH"), icon: "🧮", bg: "#EFF6FF", color: "#2563EB" },
+                { label: "มูลค่ารวม (฿)", value: totalValue.toLocaleString("th-TH"), icon: "💰", bg: "#F0FDF4", color: "#059669" },
+                { label: "ใกล้หมด/หมด", value: lowStock.length, icon: "⚠️", bg: lowStock.length > 0 ? "#FEF2F2" : "#F0FDF4", color: lowStock.length > 0 ? "#DC2626" : "#059669" },
+                { label: "ไม่เคลื่อนไหว 15 วัน", value: dormantProducts.length, icon: "😴", bg: "#F9FAFB", color: "#6B7280" },
               ].map((s, i) => (
-                <div key={i} className="stat-card">
-                  <div style={{ fontSize: 28, marginBottom: 12 }}>{s.icon}</div>
-                  <div className="mono" style={{ fontSize: 24, fontWeight: 700, color: s.color }}>{s.value}</div>
-                  <div style={{ color: "#6b7ab5", marginTop: 4, fontSize: 14 }}>{s.label}</div>
+                <div key={i} style={{ background: "#fff", borderRadius: 16, padding: 18, border: "1px solid #E5E7EB" }}>
+                  <div style={{ width: 36, height: 36, borderRadius: 10, background: s.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17, marginBottom: 10 }}>{s.icon}</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: s.color }}>{s.value}</div>
+                  <div style={{ fontSize: 12, color: "#6B7280", marginTop: 3 }}>{s.label}</div>
                 </div>
               ))}
             </div>
-            {lowStock.length > 0 && (
-              <div style={{ background: "#fff", border: "1.5px solid #FDE68A", borderRadius: 20, padding: 20, marginBottom: 24, boxShadow: "0 1px 4px rgba(0,0,0,0.05)" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
-                  <span style={{ fontSize: 20 }}>⚠️</span>
-                  <h2 style={{ fontSize: 17, fontWeight: 700, color: "#ffa500" }}>สินค้าที่ต้องเติม ({lowStock.length} รายการ)</h2>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              {/* สินค้าใกล้หมด */}
+              <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 18 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, color: "#111827", marginBottom: 12 }}>⚠️ สินค้าใกล้หมด / หมดสต็อก ({lowStock.length})</div>
+                <div style={{ maxHeight: 340, overflowY: "auto" }}>
+                  {lowStock.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13, textAlign: "center", padding: 20 }}>ไม่มีสินค้าใกล้หมด 🎉</div>}
                   {lowStock.map(p => (
-                    <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(255,165,0,0.05)", borderRadius: 10, padding: "12px 16px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                        {p.imageUrl && <img src={p.imageUrl} style={{ width: 36, height: 36, borderRadius: 6, objectFit: "cover" }} />}
-                        <div>
-                          <div style={{ fontWeight: 600, color: "#1a1040" }}>{p.name}</div>
-                          <div style={{ fontSize: 12, color: "#6b7ab5" }}>{p.sku}</div>
-                        </div>
+                    <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #F3F4F6" }}>
+                      <div>
+                        <div style={{ fontSize: 13, color: "#111827" }}>{p.name}</div>
+                        <div style={{ fontSize: 11, color: "#9CA3AF", fontFamily: "monospace" }}>{p.sku}</div>
                       </div>
                       <div style={{ textAlign: "right" }}>
-                        <div className={`badge ${p.quantity <= 0 ? "badge-out" : "badge-low"}`}>{p.quantity <= 0 ? "หมดสต็อก" : `เหลือ ${p.quantity} ${p.unit}`}</div>
-                        <div style={{ fontSize: 12, color: "#6b7ab5", marginTop: 4 }}>ขั้นต่ำ: {p.minStock} {p.unit}</div>
+                        <span style={{ background: statusColor(p).bg, color: statusColor(p).fg, borderRadius: 6, padding: "2px 10px", fontSize: 12, fontWeight: 700 }}>{p.quantity} {p.unit}</span>
+                        <div style={{ fontSize: 10, color: "#9CA3AF", marginTop: 2 }}>ขั้นต่ำ {p.minStock}</div>
                       </div>
                     </div>
                   ))}
                 </div>
               </div>
-            )}
-            {dormantProducts.length > 0 && (
-              <div style={{ background: "#fff", border: "1.5px solid #DDD6FE", borderRadius: 20, padding: 20, marginBottom: 24, boxShadow: "0 1px 4px rgba(0,0,0,0.05)" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontSize: 20 }}>😴</span>
-                    <h2 style={{ fontSize: 17, fontWeight: 700, color: "#82aaff" }}>สินค้าไม่เคลื่อนไหว 15 วัน ({dormantProducts.length} รายการ)</h2>
-                  </div>
-                  <div style={{ fontSize: 12, color: "#6b7ab5" }}>มูลค่ารวม ฿{dormantProducts.reduce((s,p)=>s+p.quantity*p.price,0).toLocaleString("th-TH")}</div>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {(showAllDormant ? dormantProducts : dormantProducts.slice(0, 5)).map(p => (
-                    <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(130,130,180,0.05)", borderRadius: 10, padding: "10px 14px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        {p.imageUrl && <img src={p.imageUrl} style={{ width: 32, height: 32, borderRadius: 6, objectFit: "cover" }} />}
-                        <div>
-                          <div style={{ fontWeight: 600, color: "#1a1040", fontSize: 14 }}>{p.name}</div>
-                          <div style={{ fontSize: 12, color: "#6b7ab5" }}>{p.sku}</div>
-                        </div>
-                      </div>
-                      <div style={{ textAlign: "right" }}>
-                        <div style={{ fontFamily: "monospace", fontWeight: 700, color: "#82aaff" }}>{p.quantity} {p.unit}</div>
-                        <div style={{ fontSize: 12, color: "#6b7ab5" }}>฿{(p.quantity*p.price).toLocaleString()}</div>
-                      </div>
-                    </div>
-                  ))}
-                  {dormantProducts.length > 5 && (
-                    <button onClick={() => setShowAllDormant(!showAllDormant)}
-                      style={{ width: "100%", marginTop: 8, background: "transparent", border: "1px solid #DDD6FE", color: "#7C3AED", borderRadius: 8, padding: "8px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
-                      {showAllDormant ? "▲ ย่อรายการ" : `▼ ดูทั้งหมด ${dormantProducts.length} รายการ`}
+
+              {/* ไม่เคลื่อนไหว 15 วัน */}
+              <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 18 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                  <div style={{ fontWeight: 700, fontSize: 14, color: "#111827" }}>😴 ไม่เคลื่อนไหว 15 วัน ({dormantProducts.length})</div>
+                  {dormantProducts.length > 6 && (
+                    <button onClick={() => setShowAllDormant(v => !v)}
+                      style={{ background: "none", border: "none", color: "#7C3AED", fontSize: 12, cursor: "pointer", fontWeight: 600 }}>
+                      {showAllDormant ? "ย่อ" : "ดูทั้งหมด"}
                     </button>
                   )}
                 </div>
-              </div>
-            )}
-
-            <div className="card">
-              <h2 style={{ fontSize: 17, fontWeight: 700, color: "#1a1040", marginBottom: 16 }}>รายการล่าสุด</h2>
-              {transactions.length === 0 && <div style={{ color: "#6b7ab5", textAlign: "center", padding: 24 }}>ยังไม่มีรายการเคลื่อนไหว</div>}
-              {transactions.slice(0, 5).map(tx => {
-                const p = products.find(x => x.id === tx.productId);
-                return (
-                  <div key={tx.id} className="tx-row" style={{ borderColor: tx.type === "in" ? "#7c3aed" : "#ff5555" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ maxHeight: 340, overflowY: "auto" }}>
+                  {dormantProducts.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13, textAlign: "center", padding: 20 }}>สินค้าทุกตัวมีการเคลื่อนไหว 👍</div>}
+                  {(showAllDormant ? dormantProducts : dormantProducts.slice(0, 6)).map(p => (
+                    <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #F3F4F6" }}>
                       <div>
-                        <span style={{ fontWeight: 600, color: tx.type === "in" ? "#7c3aed" : "#ff5555", marginRight: 8 }}>{tx.type === "in" ? "▲ รับเข้า" : "▼ เบิกออก"}</span>
-                        <span style={{ color: "#1a1040" }}>{p?.name}</span>
+                        <div style={{ fontSize: 13, color: "#111827" }}>{p.name}</div>
+                        <div style={{ fontSize: 11, color: "#9CA3AF", fontFamily: "monospace" }}>{p.sku}</div>
                       </div>
-                      <div style={{ textAlign: "right" }}>
-                        <div className="mono" style={{ color: tx.type === "in" ? "#7c3aed" : "#ff5555", fontWeight: 700 }}>{tx.type === "in" ? "+" : "-"}{tx.quantity} {p?.unit}</div>
-                        <div style={{ fontSize: 12, color: "#6b7ab5" }}>{tx.date} · {tx.by}</div>
-                      </div>
+                      <span style={{ fontSize: 12, color: "#6B7280" }}>{p.quantity} {p.unit}</span>
                     </div>
-                    {tx.note && <div style={{ fontSize: 13, color: "#6b7ab5", marginTop: 4 }}>📝 {tx.note}</div>}
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* การเคลื่อนไหวล่าสุด */}
+            <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 18, marginTop: 16 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, color: "#111827", marginBottom: 12 }}>🕘 การเคลื่อนไหวล่าสุด</div>
+              {transactions.slice(0, 8).map(tx => (
+                <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #F3F4F6", fontSize: 13 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 15 }}>{tx.type === "in" ? "📥" : "📤"}</span>
+                    <div>
+                      <div style={{ color: "#111827" }}>{productName(tx.productId)}</div>
+                      <div style={{ fontSize: 11, color: "#9CA3AF" }}>{tx.date} · โดย {tx.by || "-"}{tx.note ? ` · ${tx.note}` : ""}</div>
+                    </div>
                   </div>
-                );
-              })}
+                  <span style={{ fontWeight: 700, color: tx.type === "in" ? "#059669" : "#DC2626" }}>{tx.type === "in" ? "+" : "-"}{tx.quantity} {productUnit(tx.productId)}</span>
+                </div>
+              ))}
+              {transactions.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13, textAlign: "center", padding: 20 }}>ยังไม่มีรายการเคลื่อนไหว</div>}
             </div>
           </div>
         )}
 
-        {/* INVENTORY */}
+        {/* ─── INVENTORY ─── */}
         {tab === "inventory" && (
           <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
-              <h1 style={{ fontSize: 24, fontWeight: 700, color: "#1a1040" }}>สินค้าคงคลัง <span style={{ fontSize: 14, color: "#6b7ab5", fontWeight: 400 }}>({filteredProducts.length} รายการ)</span></h1>
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <button className="btn btn-secondary" onClick={() => { setTxType("in"); setShowModal("transaction"); }}>▲ รับสินค้า</button>
-                <button className="btn" style={{ color: "#C2410C", border: "1.5px solid #FED7AA", background: "#FFF7ED" }} onClick={openReturnBatchModal}>↩️ รับสินค้า (ตีกลับ)</button>
-                <button className="btn btn-secondary" style={{ color: "#ff5555", borderColor: "rgba(255,85,85,0.3)", background: "rgba(255,85,85,0.05)" }} onClick={() => { setTxType("out"); setShowModal("transaction"); }}>▼ เบิกสินค้า</button>
-                <button className="btn btn-secondary" onClick={handleExportInventory} disabled={exportingInventory}
-                  style={{ color: "#7c3aed", borderColor: "rgba(124,58,237,0.3)", background: "rgba(100,255,218,0.05)" }}>
-                  {exportingInventory ? "⏳..." : "📥 Export Excel"}
-                </button>
-                <button className="btn btn-primary" onClick={() => { setForm({}); setShowModal("add-product"); }}>+ เพิ่มสินค้า</button>
-                <button onClick={() => { setDisposeMode(!disposeMode); setSelectedForDispose(new Set()); }}
-                  style={{ background: disposeMode ? "#DC2626" : "#FEF2F2", color: disposeMode ? "#fff" : "#DC2626", border: "1.5px solid #FECACA", borderRadius: 10, padding: "9px 16px", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", transition: "all 0.2s" }}>
-                  {disposeMode ? "✕ ยกเลิก" : "🗑️ จำหน่ายออก"}
-                </button>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+              <div>
+                <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📦 คลังสินค้า</h2>
+                <p style={{ fontSize: 13, color: "#6B7280" }}>{filteredProducts.length} รายการ · มูลค่ารวม ฿{totalValue.toLocaleString("th-TH")}</p>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {!disposeMode && (
+                  <>
+                    <button onClick={handleExportInventory} disabled={exportingInventory}
+                      style={{ background: "#EDE9FE", color: "#7C3AED", border: "1px solid #DDD6FE", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                      {exportingInventory ? "⏳..." : "📥 Export Excel"}
+                    </button>
+                    <button onClick={() => { setDisposeMode(true); setSelectedForDispose(new Set()); }}
+                      style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                      🗑️ โหมดจำหน่ายออก
+                    </button>
+                    <button onClick={() => { setForm({}); setShowModal("add"); }}
+                      style={{ background: "linear-gradient(135deg,#7C3AED,#3B82F6)", color: "#fff", border: "none", borderRadius: 10, padding: "9px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                      ＋ เพิ่มสินค้า
+                    </button>
+                  </>
+                )}
+                {disposeMode && (
+                  <>
+                    <span style={{ alignSelf: "center", fontSize: 13, color: "#DC2626", fontWeight: 700 }}>เลือกแล้ว {selectedForDispose.size} รายการ</span>
+                    <button onClick={handleExportDispose} disabled={selectedForDispose.size === 0}
+                      style={{ background: "#FFF7ED", color: "#C2410C", border: "1px solid #FED7AA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: selectedForDispose.size === 0 ? "not-allowed" : "pointer", opacity: selectedForDispose.size === 0 ? 0.5 : 1 }}>
+                      📥 Export รายการที่เลือก
+                    </button>
+                    <button onClick={handleConfirmDispose} disabled={selectedForDispose.size === 0}
+                      style={{ background: "#DC2626", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: selectedForDispose.size === 0 ? "not-allowed" : "pointer", opacity: selectedForDispose.size === 0 ? 0.5 : 1 }}>
+                      ✅ ยืนยันจำหน่ายออก
+                    </button>
+                    <button onClick={() => { setDisposeMode(false); setSelectedForDispose(new Set()); }}
+                      style={{ background: "#F9FAFB", color: "#6B7280", border: "1px solid #E5E7EB", borderRadius: 10, padding: "9px 16px", fontSize: 13, cursor: "pointer" }}>
+                      ยกเลิก
+                    </button>
+                  </>
+                )}
               </div>
             </div>
-            {disposeMode && (
-              <div style={{ background: "#FEF2F2", border: "1.5px solid #FECACA", borderRadius: 14, padding: "14px 18px", marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-                <div>
-                  <div style={{ fontWeight: 700, color: "#DC2626", fontSize: 15 }}>🗑️ โหมดจำหน่ายออก</div>
-                  <div style={{ fontSize: 13, color: "#9B1C1C", marginTop: 3 }}>
-                    ติ๊กเลือกสินค้าที่ต้องการตัดออก — เลือกแล้ว <span style={{ fontWeight: 700 }}>{selectedForDispose.size}</span> รายการ
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 10 }}>
-                  <button onClick={() => {
-                    if (selectedForDispose.size === filteredProducts.length) setSelectedForDispose(new Set());
-                    else setSelectedForDispose(new Set(filteredProducts.map(p => p.id)));
-                  }}
-                    style={{ background: "#fff", border: "1px solid #FECACA", color: "#DC2626", borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", fontWeight: 600 }}>
-                    {selectedForDispose.size === filteredProducts.length ? "ยกเลิกทั้งหมด" : "เลือกทั้งหมด"}
+
+            <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+              <input className="inp" style={{ flex: 1, minWidth: 220 }} placeholder="🔍 ค้นหาชื่อสินค้า / SKU..."
+                value={search} onChange={e => setSearch(e.target.value)} />
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {["ทั้งหมด","ปกติ","ใกล้หมด","หมด","ไม่เคลื่อนไหว"].map(s => (
+                  <button key={s} onClick={() => setStatusFilter(s)}
+                    style={{ background: statusFilter === s ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#fff", color: statusFilter === s ? "#fff" : "#6B7280", border: statusFilter === s ? "none" : "1px solid #E5E7EB", borderRadius: 10, padding: "8px 14px", fontSize: 12, fontWeight: statusFilter === s ? 700 : 400, cursor: "pointer" }}>
+                    {s}
                   </button>
-                  <button onClick={handleExportDispose} disabled={selectedForDispose.size === 0}
-                    style={{ background: selectedForDispose.size > 0 ? "#FEF3C7" : "#F9FAFB", color: selectedForDispose.size > 0 ? "#92400E" : "#9CA3AF", border: "1px solid " + (selectedForDispose.size > 0 ? "#FDE68A" : "#E5E7EB"), borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: selectedForDispose.size > 0 ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
-                    📥 Export รายงาน ({selectedForDispose.size})
-                  </button>
-                  <button onClick={handleConfirmDispose} disabled={selectedForDispose.size === 0}
-                    style={{ background: selectedForDispose.size > 0 ? "#DC2626" : "#F9FAFB", color: selectedForDispose.size > 0 ? "#fff" : "#9CA3AF", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: selectedForDispose.size > 0 ? "pointer" : "not-allowed", fontFamily: "'Sarabun', sans-serif" }}>
-                    🗑️ ลบออกจากระบบ ({selectedForDispose.size})
-                  </button>
-                </div>
+                ))}
               </div>
-            )}
-
-            <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-              <input className="inp" style={{ flex: 1, minWidth: 200 }} placeholder="🔍 ค้นหาชื่อหรือ SKU..." value={search} onChange={e => setSearch(e.target.value)} />
-
-              <select className="inp" style={{ width: "auto" }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-                <option>ทั้งหมด</option>
-                <option>ปกติ</option>
-                <option>ใกล้หมด</option>
-                <option>หมด</option>
-                <option>ไม่เคลื่อนไหว</option>
-              </select>
-              {(statusFilter !== "ทั้งหมด" || categoryFilter !== "ทั้งหมด") && (
-                <button className="btn" style={{ background: "rgba(255,85,85,0.08)", color: "#ff5555", border: "1px solid rgba(255,85,85,0.2)", padding: "8px 14px", fontSize: 13 }}
-                  onClick={() => { setStatusFilter("ทั้งหมด"); setCategoryFilter("ทั้งหมด"); }}>
-                  ✕ ล้างตัวกรอง
-                </button>
-              )}
             </div>
-            <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, overflow: "hidden", boxShadow: "0 1px 4px rgba(0,0,0,0.05)" }}>
+
+            <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden", overflowX: "auto" }}>
               <table>
                 <thead>
                   <tr>
-                    <th style={{ width: 36 }}>{disposeMode && <input type="checkbox" checked={selectedForDispose.size === filteredProducts.length && filteredProducts.length > 0} onChange={() => { if (selectedForDispose.size === filteredProducts.length) setSelectedForDispose(new Set()); else setSelectedForDispose(new Set(filteredProducts.map(p => p.id))); }} style={{ cursor: "pointer", width: 16, height: 16, accentColor: "#DC2626" }} />}</th>
-                    <th style={{ width: 36 }}></th>
-                    <th style={{ width: 60 }}>รูป</th>
+                    {disposeMode && <th style={{ width: 40 }}>เลือก</th>}
+                    <th style={{ width: 46 }}>รูป</th>
                     <SortTh col="sku" label="SKU" />
                     <SortTh col="name" label="ชื่อสินค้า" />
-
                     <SortTh col="quantity" label="คงเหลือ" />
+                    <th>หน่วย</th>
+                    <SortTh col="minStock" label="ขั้นต่ำ" />
+                    <SortTh col="price" label="ราคาทุน (฿)" />
+                    <th>มูลค่า (฿)</th>
                     <th>สถานะ</th>
-                    <SortTh col="price" label="ราคาทุน" />
-                    <th></th>
+                    <th style={{ textAlign: "right" }}>จัดการ</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filteredProducts.map(p => {
-                    const status = p.quantity <= 0 ? "out" : (p.minStock > 0 && p.quantity <= p.minStock) ? "low" : "ok";
+                    const pinned = pinnedIds.includes(String(p.id));
+                    const sel = selectedForDispose.has(p.id);
                     return (
-                      <tr key={p.id} style={{ background: disposeMode && selectedForDispose.has(p.id) ? "#FEF2F2" : pinnedIds.includes(String(p.id)) ? "rgba(124,58,237,0.04)" : undefined }}>
-                        <td style={{ textAlign: "center" }}>
-                          {disposeMode ? (
-                            <input type="checkbox" checked={selectedForDispose.has(p.id)} onChange={() => toggleDispose(p.id)}
-                              style={{ cursor: "pointer", width: 16, height: 16, accentColor: "#DC2626" }} />
-                          ) : null}
-                        </td>
-                        <td style={{ textAlign: "center" }}>
-                          <button onClick={() => togglePin(p.id)} title={pinnedIds.includes(p.id) ? "ถอนหมุด" : "ปักหมุด"}
-                            style={{ background: "none", border: "none", cursor: "pointer", fontSize: 15, padding: "2px", opacity: pinnedIds.includes(String(p.id)) ? 1 : 0.2, transition: "opacity 0.15s", lineHeight: 1 }}
-                            onMouseEnter={e => e.currentTarget.style.opacity = "1"}
-                            onMouseLeave={e => e.currentTarget.style.opacity = pinnedIds.includes(String(p.id)) ? "1" : "0.2"}>
-                            📌
-                          </button>
-                        </td>
+                      <tr key={p.id} style={{ background: sel ? "#FEF2F2" : pinned ? "#FFFBEB" : "transparent" }}>
+                        {disposeMode && (
+                          <td>
+                            <input type="checkbox" checked={sel} onChange={() => toggleDispose(p.id)} style={{ width: 16, height: 16, cursor: "pointer" }} />
+                          </td>
+                        )}
                         <td>
-                          <label style={{ cursor: "pointer", display: "block" }}>
-                            <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => e.target.files[0] && handleImageUpload(p, e.target.files[0])} />
+                          <label style={{ cursor: "pointer" }} title="คลิกเพื่ออัปโหลดรูป">
                             {p.imageUrl
-                              ? <img src={p.imageUrl} alt={p.name} style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 8, border: "1px solid #2a2f45" }} />
-                              : <div style={{ width: 44, height: 44, borderRadius: 8, border: "2px dashed #2a2f45", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "#c0c4da", background: "#ffffff" }}>📷</div>
-                            }
+                              ? <img src={p.imageUrl} alt="" style={{ width: 34, height: 34, borderRadius: 8, objectFit: "cover", border: "1px solid #E5E7EB" }} />
+                              : <div style={{ width: 34, height: 34, borderRadius: 8, background: "#F3F4F6", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>🖼️</div>}
+                            <input type="file" accept="image/*" style={{ display: "none" }}
+                              onChange={e => { const f = e.target.files?.[0]; if (f) handleImageUpload(p, f); e.target.value = ""; }} />
                           </label>
                         </td>
-                        <td><span className="mono" style={{ color: "#6b7ab5", fontSize: 12 }}>{p.sku}</span></td>
+                        <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>{p.sku}</td>
                         <td>
-                          <span onClick={() => { setFilterProductId(p.id); setTab("transactions"); }}
-                            style={{ fontWeight: 600, color: "#7C3AED", cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 3 }}
-                            title="กดเพื่อดูประวัติการเคลื่อนไหว">
-                            {p.name}
-                          </span>
+                          <span onClick={() => togglePin(p.id)} title={pinned ? "เลิกปักหมุด" : "ปักหมุด"}
+                            style={{ cursor: "pointer", marginRight: 6, opacity: pinned ? 1 : 0.3 }}>📌</span>
+                          {p.name}
                         </td>
-
-                        <td className="mono" style={{ fontWeight: 700, color: p.quantity < 0 ? "#ff5555" : undefined }}>{p.quantity} <span style={{ color: "#6b7ab5", fontSize: 12, fontWeight: 400 }}>{p.unit}</span></td>
-                        <td><span className={`badge badge-${status}`}>{status === "ok" ? "✓ ปกติ" : status === "low" ? "⚠ ใกล้หมด" : "✗ หมด"}</span></td>
-                        <td className="mono" style={{ color: "#c3e88d" }}>฿{p.price.toLocaleString()}</td>
+                        <td style={{ fontWeight: 700, color: statusColor(p).fg }}>{p.quantity}</td>
+                        <td>{p.unit}</td>
+                        <td style={{ color: "#9CA3AF" }}>{p.minStock || "-"}</td>
+                        <td style={{ fontFamily: "monospace", fontSize: 12 }}>{p.price.toLocaleString("th-TH")}</td>
+                        <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(Math.max(0, p.quantity) * p.price).toLocaleString("th-TH")}</td>
                         <td>
-                          <div style={{ display: "flex", gap: 6 }}>
-                            <button className="btn btn-secondary" style={{ fontSize: 12, padding: "5px 10px" }} onClick={() => openEdit(p)}>แก้ไข</button>
-                            <button className="btn btn-danger" style={{ fontSize: 12 }} onClick={() => handleDeleteProduct(p.id)}>ลบ</button>
-                          </div>
+                          <span style={{ background: statusColor(p).bg, color: statusColor(p).fg, borderRadius: 6, padding: "2px 10px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{statusOf(p)}</span>
+                        </td>
+                        <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                          <button onClick={() => { setTxType("in"); setTxForm({ productId: String(p.id), quantity: "", note: "", by: "" }); setShowModal("tx"); }}
+                            title="รับเข้า" style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", color: "#059669", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer", marginRight: 4, fontWeight: 700 }}>📥</button>
+                          <button onClick={() => { setTxType("out"); setTxForm({ productId: String(p.id), quantity: "", note: "", by: "" }); setShowModal("tx"); }}
+                            title="เบิกออก" style={{ background: "#FEF2F2", border: "1px solid #FECACA", color: "#DC2626", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer", marginRight: 4, fontWeight: 700 }}>📤</button>
+                          <button onClick={() => setHistoryProduct(p)}
+                            title="ดูประวัติ" style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer", marginRight: 4 }}>🕘</button>
+                          <button onClick={() => openEdit(p)}
+                            title="แก้ไข" style={{ background: "#F5F3FF", border: "1px solid #DDD6FE", color: "#7C3AED", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer", marginRight: 4 }}>✏️</button>
+                          <button onClick={() => handleDeleteProduct(p.id)}
+                            title="ลบ" style={{ background: "none", border: "none", color: "#D1D5DB", fontSize: 13, cursor: "pointer" }}
+                            onMouseEnter={e => e.target.style.color = "#EF4444"} onMouseLeave={e => e.target.style.color = "#D1D5DB"}>✕</button>
                         </td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
-              {filteredProducts.length === 0 && <div style={{ textAlign: "center", padding: 48, color: "#6b7ab5" }}>ไม่พบสินค้าที่ค้นหา</div>}
+              {filteredProducts.length === 0 && (
+                <div style={{ textAlign: "center", padding: 48, color: "#9CA3AF" }}>ไม่พบสินค้า — ลองเปลี่ยนคำค้นหรือตัวกรอง</div>
+              )}
             </div>
           </div>
         )}
 
-        {/* RETURNS */}
-        {tab === "returns" && (
+        {/* ─── TRANSACTIONS ─── */}
+        {tab === "transactions" && (
           <div>
-            <ReturnCheckerTab />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+              <div>
+                <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🔄 รับเข้า - เบิกออก</h2>
+                <p style={{ fontSize: 13, color: "#6B7280" }}>{filteredTx.length} รายการ{filterProductId ? ` · กรอง: ${productName(filterProductId)}` : ""}</p>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {filterProductId && (
+                  <button onClick={() => setFilterProductId(null)}
+                    style={{ background: "#F9FAFB", color: "#6B7280", border: "1px solid #E5E7EB", borderRadius: 10, padding: "9px 14px", fontSize: 13, cursor: "pointer" }}>
+                    ✕ ล้างตัวกรอง
+                  </button>
+                )}
+                <button onClick={openReturnBatchModal}
+                  style={{ background: "#FFF7ED", color: "#C2410C", border: "1px solid #FED7AA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                  📮 รับเข้าตีกลับ (หลายรายการ)
+                </button>
+                <button onClick={() => { setTxType("in"); setTxForm({ productId: "", quantity: "", note: "", by: "" }); setShowModal("tx"); }}
+                  style={{ background: "#059669", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                  📥 รับเข้า
+                </button>
+                <button onClick={() => { setTxType("out"); setTxForm({ productId: "", quantity: "", note: "", by: "" }); setShowModal("tx"); }}
+                  style={{ background: "#DC2626", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                  📤 เบิกออก
+                </button>
+              </div>
+            </div>
+
+            <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden", overflowX: "auto" }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>ประเภท</th>
+                    <th>สินค้า</th>
+                    <th>จำนวน</th>
+                    <th>วันที่</th>
+                    <th>ผู้ทำรายการ</th>
+                    <th>หมายเหตุ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredTx.map(tx => (
+                    <tr key={tx.id}>
+                      <td>
+                        <span style={{ background: tx.type === "in" ? "#D1FAE5" : "#FEE2E2", color: tx.type === "in" ? "#065F46" : "#991B1B", borderRadius: 6, padding: "2px 10px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>
+                          {tx.type === "in" ? "📥 รับเข้า" : "📤 เบิกออก"}
+                        </span>
+                      </td>
+                      <td>
+                        <span onClick={() => setFilterProductId(tx.productId)} style={{ cursor: "pointer", textDecoration: "underline", textDecorationStyle: "dotted", textDecorationColor: "#C4B5FD" }}>
+                          {productName(tx.productId)}
+                        </span>
+                      </td>
+                      <td style={{ fontWeight: 700, color: tx.type === "in" ? "#059669" : "#DC2626" }}>{tx.type === "in" ? "+" : "-"}{tx.quantity} {productUnit(tx.productId)}</td>
+                      <td style={{ whiteSpace: "nowrap", color: "#6B7280", fontSize: 12 }}>{tx.date}</td>
+                      <td>{tx.by || "-"}</td>
+                      <td style={{ color: "#6B7280", fontSize: 12 }}>{tx.note || "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {filteredTx.length === 0 && (
+                <div style={{ textAlign: "center", padding: 48, color: "#9CA3AF" }}>ยังไม่มีรายการเคลื่อนไหว</div>
+              )}
+            </div>
           </div>
         )}
 
-        {/* TRANSACTIONS */}
+        {/* ─── RETURNS ─── */}
+        {tab === "returns" && <ReturnCheckerTab />}
+
+        {/* ─── DISPOSE ─── */}
         {tab === "dispose" && (
           <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
               <div>
-                <h1 className="section-title">ประวัติการจำหน่ายออก</h1>
-                <p className="section-sub">รายการสินค้าที่ถูกตัดออกจากระบบ</p>
+                <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🗑️ ประวัติจำหน่ายออก</h2>
+                <p style={{ fontSize: 13, color: "#6B7280" }}>รายการสินค้าที่ตัดออกจากระบบ · มูลค่ารวม ฿{disposeRecords.reduce((s, r) => s + Number(r.total_value || 0), 0).toLocaleString("th-TH")}</p>
               </div>
-              <button onClick={loadDisposeRecords}
-                style={{ background: "#fff", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "8px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
-                🔄 โหลดข้อมูล
+              <button onClick={() => { setTab("inventory"); setDisposeMode(true); setSelectedForDispose(new Set()); }}
+                style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                ＋ จำหน่ายออกเพิ่ม
               </button>
             </div>
 
-            {disposeRecords.length === 0 && !loadingDispose && (
-              <div style={{ textAlign: "center", padding: "60px 20px", color: "#9CA3AF" }}>
-                <div style={{ fontSize: 48, marginBottom: 16 }}>🗑️</div>
-                <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>ยังไม่มีประวัติการจำหน่ายออก</div>
-                <div style={{ fontSize: 14 }}>กด "โหลดข้อมูล" เพื่อดึงข้อมูลจากระบบ</div>
-              </div>
-            )}
+            <input className="inp" style={{ marginBottom: 14 }} placeholder="🔍 ค้นหาชื่อสินค้า / SKU / ผู้ทำรายการ..."
+              value={disposeSearch} onChange={e => setDisposeSearch(e.target.value)} />
 
-            {loadingDispose && <div style={{ textAlign: "center", padding: 40, color: "#6B7280" }}>กำลังโหลด...</div>}
+            {loadingDispose && <div style={{ textAlign: "center", padding: 40, color: "#6B7280" }}>กำลังโหลดข้อมูล...</div>}
 
-            {disposeRecords.length > 0 && (
-              <div>
-                {/* Summary */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 14, marginBottom: 24 }}>
-                  {[
-                    { label: "รายการทั้งหมด", value: `${disposeRecords.length} รายการ`, color: "#6B7280", bg: "#F9FAFB" },
-                    { label: "มูลค่ารวมที่ตัดออก", value: `฿${disposeRecords.reduce((s,r)=>s+(r.total_value||0),0).toLocaleString("th-TH")}`, color: "#DC2626", bg: "#FEF2F2" },
-                  ].map((s,i) => (
-                    <div key={i} style={{ background: s.bg, border: "1px solid #E5E7EB", borderRadius: 14, padding: "16px 20px" }}>
-                      <div style={{ fontSize: 20, fontWeight: 700, color: s.color }}>{s.value}</div>
-                      <div style={{ fontSize: 13, color: "#6B7280", marginTop: 4 }}>{s.label}</div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Search */}
-                <input className="inp" style={{ marginBottom: 16 }} placeholder="🔍 ค้นหาชื่อสินค้าหรือ SKU..."
-                  value={disposeSearch} onChange={e => setDisposeSearch(e.target.value)} />
-
-                {/* Table */}
-                <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden" }}>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>วันที่จำหน่ายออก</th>
-                        <th>SKU</th>
-                        <th>ชื่อสินค้า</th>
-                        <th>คงเหลือสุดท้าย</th>
-                        <th>มูลค่า (฿)</th>
-                        <th>ผู้ทำรายการ</th>
-                        <th>หมายเหตุ</th>
+            {!loadingDispose && (
+              <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden", overflowX: "auto" }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>วันที่จำหน่ายออก</th>
+                      <th>SKU</th>
+                      <th>ชื่อสินค้า</th>
+                      <th>คงเหลือสุดท้าย</th>
+                      <th>ราคาทุน (฿)</th>
+                      <th>มูลค่าที่ตัดออก (฿)</th>
+                      <th>ผู้ทำรายการ</th>
+                      <th>หมายเหตุ</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredDisposeRecords.map(r => (
+                      <tr key={r.id}>
+                        <td style={{ whiteSpace: "nowrap", fontSize: 12, color: "#6B7280" }}>{r.disposed_at ? new Date(r.disposed_at).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" }) : "-"}</td>
+                        <td style={{ fontFamily: "monospace", fontSize: 12 }}>{r.sku}</td>
+                        <td>{r.name}</td>
+                        <td>{r.final_quantity} {r.unit}</td>
+                        <td style={{ fontFamily: "monospace", fontSize: 12 }}>{Number(r.price || 0).toLocaleString("th-TH")}</td>
+                        <td style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 700, color: "#DC2626" }}>{Number(r.total_value || 0).toLocaleString("th-TH")}</td>
+                        <td>{r.disposed_by || "-"}</td>
+                        <td style={{ color: "#6B7280", fontSize: 12 }}>{r.note || "-"}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {disposeRecords
-                        .filter(r => !disposeSearch || r.name?.toLowerCase().includes(disposeSearch.toLowerCase()) || r.sku?.toLowerCase().includes(disposeSearch.toLowerCase()))
-                        .map((r, i) => (
-                        <tr key={i}>
-                          <td style={{ fontSize: 13, color: "#6B7280", whiteSpace: "nowrap" }}>
-                            {r.disposed_at ? new Date(r.disposed_at).toLocaleDateString("th-TH", { dateStyle: "medium" }) : "-"}
-                            <div style={{ fontSize: 11, color: "#9CA3AF" }}>
-                              {r.disposed_at ? new Date(r.disposed_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) : ""}
-                            </div>
-                          </td>
-                          <td style={{ fontFamily: "monospace", fontSize: 12, color: "#6B7280" }}>{r.sku}</td>
-                          <td style={{ fontWeight: 600, color: "#111827" }}>{r.name}</td>
-                          <td style={{ fontFamily: "monospace", color: r.final_quantity < 0 ? "#DC2626" : "#111827", fontWeight: 700 }}>
-                            {r.final_quantity} {r.unit}
-                          </td>
-                          <td style={{ fontFamily: "monospace", color: "#DC2626", fontWeight: 600 }}>
-                            ฿{(r.total_value || 0).toLocaleString("th-TH")}
-                          </td>
-                          <td style={{ color: "#374151" }}>{r.disposed_by || "-"}</td>
-                          <td style={{ fontSize: 13, color: "#6B7280" }}>{r.note || "-"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {tab === "transactions" && (
-          <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
-              <div>
-                <h1 className="section-title">รายการเคลื่อนไหวสินค้า</h1>
-                {filterProductId && (() => {
-                  const fp = products.find(p => p.id === filterProductId);
-                  return fp ? <div style={{ fontSize: 13, color: "#7C3AED", marginTop: 4, fontWeight: 600 }}>กรอง: {fp.name}</div> : null;
-                })()}
-              </div>
-              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                {filterProductId && (
-                  <button onClick={() => setFilterProductId(null)}
-                    style={{ background: "#EDE9FE", color: "#7C3AED", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
-                    ✕ ล้างตัวกรอง (ดูทั้งหมด)
-                  </button>
+                    ))}
+                  </tbody>
+                </table>
+                {filteredDisposeRecords.length === 0 && (
+                  <div style={{ textAlign: "center", padding: 48, color: "#9CA3AF" }}>
+                    {disposeRecords.length === 0 ? "ยังไม่มีประวัติจำหน่ายออก" : "ไม่พบรายการที่ค้นหา"}
+                  </div>
                 )}
-                <button className="btn btn-secondary" onClick={() => { setTxType("in"); setShowModal("transaction"); }}>▲ รับสินค้า</button>
-                <button className="btn btn-secondary" style={{ color: "#ff5555", borderColor: "rgba(255,85,85,0.3)", background: "rgba(255,85,85,0.05)" }} onClick={() => { setTxType("out"); setShowModal("transaction"); }}>▼ เบิกสินค้า</button>
               </div>
-            </div>
-            <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-              <table>
-                <thead><tr><th>วันที่</th><th>ประเภท</th><th>สินค้า</th><th>จำนวน</th><th>หมายเหตุ</th><th>ผู้ดำเนินการ</th></tr></thead>
-                <tbody>
-                  {(filterProductId ? transactions.filter(tx => tx.productId === filterProductId) : transactions).map(tx => {
-                    const p = products.find(x => x.id === tx.productId);
-                    return (
-                      <tr key={tx.id}>
-                        <td className="mono" style={{ color: "#6b7ab5", fontSize: 13 }}>{tx.date}</td>
-                        <td><span className={`badge ${tx.type === "in" ? "badge-ok" : "badge-out"}`}>{tx.type === "in" ? "▲ รับเข้า" : "▼ เบิกออก"}</span></td>
-                        <td>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            {p?.imageUrl && <img src={p.imageUrl} style={{ width: 28, height: 28, borderRadius: 4, objectFit: "cover" }} />}
-                            <div>
-                              <div style={{ fontWeight: 500, color: "#1a1040" }}>{p?.name || "ไม่ทราบ"}</div>
-                              <div style={{ fontSize: 12, color: "#6b7ab5" }}>{p?.sku}</div>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="mono" style={{ fontWeight: 700, color: tx.type === "in" ? "#7c3aed" : "#ff5555" }}>{tx.type === "in" ? "+" : "-"}{tx.quantity} {p?.unit}</td>
-                        <td style={{ color: "#6b7ab5", fontSize: 14 }}>{tx.note || "-"}</td>
-                        <td style={{ color: "#1a1040" }}>{tx.by}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              {transactions.length === 0 && <div style={{ textAlign: "center", padding: 48, color: "#6b7ab5" }}>ยังไม่มีรายการเคลื่อนไหว</div>}
-            </div>
+            )}
           </div>
         )}
       </div>
 
-      {/* MODALS */}
-      {(showModal === "add-product" || showModal === "edit") && (
-        <div className="overlay" onClick={() => setShowModal(null)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <h2 style={{ fontSize: 20, fontWeight: 700, color: "#1a1040", marginBottom: 20 }}>
-              {showModal === "edit" ? "✏️ แก้ไขสินค้า" : "📦 เพิ่มสินค้าใหม่"}
-            </h2>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+      {/* ─── MODAL: เพิ่ม/แก้ไขสินค้า ─── */}
+      {(showModal === "add" || showModal === "edit") && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(8px)" }}
+          onClick={() => { if (!saving) { setShowModal(null); setForm({}); setSelectedProduct(null); } }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, width: "100%", maxWidth: 480, maxHeight: "90vh", overflowY: "auto", padding: 24, boxShadow: "0 24px 60px rgba(0,0,0,0.15)" }}>
+            <h3 style={{ fontSize: 18, fontWeight: 700, color: "#111827", marginBottom: 16 }}>
+              {showModal === "add" ? "＋ เพิ่มสินค้าใหม่" : "✏️ แก้ไขสินค้า"}
+            </h3>
+            <div style={{ display: "grid", gap: 12 }}>
               <div>
-                <div className="label">SKU / รหัสสินค้า</div>
-                <input className="inp" value={form.sku || ""} onChange={e => setForm({ ...form, sku: e.target.value })} />
+                <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>ชื่อสินค้า *</label>
+                <input className="inp" style={{ marginTop: 4 }} value={form.name || ""} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="เช่น กล่องพัสดุเบอร์ 0" />
               </div>
-
-              <div style={{ gridColumn: "1/-1" }}>
-                <div className="label">ชื่อสินค้า</div>
-                <input className="inp" value={form.name || ""} onChange={e => setForm({ ...form, name: e.target.value })} />
-              </div>
-              <div>
-                <div className="label">จำนวนคงเหลือ</div>
-                <input className="inp" type="number" value={form.quantity || ""} onChange={e => setForm({ ...form, quantity: e.target.value })} />
-              </div>
-              <div>
-                <div className="label">สต็อกขั้นต่ำ</div>
-                <input className="inp" type="number" value={form.minStock || ""} onChange={e => setForm({ ...form, minStock: e.target.value })} />
-              </div>
-              <div>
-                <div className="label">ราคาทุน/หน่วย (฿)</div>
-                <input className="inp" type="number" value={form.price || ""} onChange={e => setForm({ ...form, price: e.target.value })} />
-              </div>
-              <div>
-                <div className="label">หน่วยนับ</div>
-                <input className="inp" value={form.unit || ""} onChange={e => setForm({ ...form, unit: e.target.value })} placeholder="ชิ้น, กล่อง, อัน" />
-              </div>
-              <div>
-                <div className="label">ที่เก็บ</div>
-                <input className="inp" value={form.location || ""} onChange={e => setForm({ ...form, location: e.target.value })} placeholder="เช่น A-01" />
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 10, marginTop: 22, justifyContent: "flex-end" }}>
-              <button className="btn" style={{ background: "#f0f2ff", color: "#6b7ab5", padding: "10px 20px" }} onClick={() => setShowModal(null)}>ยกเลิก</button>
-              <button className="btn btn-primary" disabled={saving} onClick={showModal === "edit" ? handleEditProduct : handleAddProduct}>
-                {saving ? "กำลังบันทึก..." : showModal === "edit" ? "บันทึก" : "เพิ่มสินค้า"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showModal === "transaction" && (
-        <div className="overlay" onClick={() => setShowModal(null)}>
-          <div className="modal" onClick={e => e.stopPropagation()}>
-            <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
-              {[["in","▲ รับสินค้าเข้า"],["out","▼ เบิกสินค้าออก"]].map(([t, l]) => (
-                <button key={t} className="btn" style={{ flex: 1, padding: "10px", background: txType === t ? (t === "in" ? "rgba(124,58,237,0.15)" : "rgba(255,85,85,0.15)") : "#f0f2ff", color: t === "in" ? "#7c3aed" : "#ff5555", border: `1px solid ${txType === t ? (t === "in" ? "#7c3aed" : "#ff5555") : "#d4d8f0"}`, fontWeight: 700 }} onClick={() => setTxType(t)}>{l}</button>
-              ))}
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              <div style={{ position: "relative" }}>
-                <div className="label">สินค้า</div>
-                {(() => {
-                  const selected = products.find(p => String(p.id) === String(txForm.productId));
-                  return (
-                    <div>
-                      <input className="inp" placeholder="พิมพ์ชื่อสินค้าเพื่อค้นหา..."
-                        value={txForm._productSearch !== undefined ? txForm._productSearch : (selected ? selected.name : "")}
-                        onChange={e => setTxForm({ ...txForm, _productSearch: e.target.value, productId: "" })}
-                        onFocus={e => setTxForm(f => ({ ...f, _productSearch: f._productSearch !== undefined ? f._productSearch : (selected ? selected.name : ""), _showDrop: true }))}
-                        onBlur={() => setTimeout(() => setTxForm(f => ({ ...f, _showDrop: false })), 150)}
-                        autoComplete="off"
-                      />
-                      {txForm._showDrop && (() => {
-                        const q = (txForm._productSearch || "").toLowerCase();
-                        const filtered = products.filter(p =>
-                          p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q)
-                        ).slice(0, 30);
-                        return filtered.length > 0 ? (
-                          <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "#ffffff", border: "1px solid #2a2f45", borderRadius: 8, maxHeight: 240, overflowY: "auto", boxShadow: "0 8px 24px rgba(0,0,0,0.5)" }}>
-                            {filtered.map(p => (
-                              <div key={p.id}
-                                onMouseDown={() => setTxForm(f => ({ ...f, productId: String(p.id), _productSearch: p.name, _showDrop: false }))}
-                                style={{ padding: "10px 14px", cursor: "pointer", borderBottom: "1px solid #1e2235", fontSize: 14 }}
-                                onMouseEnter={e => e.currentTarget.style.background = "rgba(124,58,237,0.08)"}
-                                onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-                              >
-                                <span style={{ color: "#1a1040", fontWeight: 500 }}>{p.name}</span>
-                                <span style={{ color: "#9ba3c7", fontSize: 12, marginLeft: 8 }}>{p.sku}</span>
-                                <span style={{ float: "right", color: p.quantity <= 0 ? "#ff5555" : "#7c3aed", fontSize: 12, fontFamily: "monospace" }}>
-                                  {p.quantity} {p.unit}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        ) : q ? (
-                          <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 50, background: "#ffffff", border: "1px solid #2a2f45", borderRadius: 8, padding: "12px 14px", color: "#9ba3c7", fontSize: 13 }}>
-                            ไม่พบสินค้า "{txForm._productSearch}"
-                          </div>
-                        ) : null;
-                      })()}
-                    </div>
-                  );
-                })()}
-              </div>
-              <div>
-                <div className="label">จำนวน</div>
-                <input className="inp" type="number" min="1" value={txForm.quantity} onChange={e => setTxForm({ ...txForm, quantity: e.target.value })} />
-              </div>
-              <div>
-                <div className="label">ผู้ดำเนินการ</div>
-                <input className="inp" value={txForm.by} onChange={e => setTxForm({ ...txForm, by: e.target.value })} placeholder="ชื่อ-นามสกุล" />
-              </div>
-              <div>
-                <div className="label">หมายเหตุ (ถ้ามี)</div>
-                <input className="inp" value={txForm.note} onChange={e => setTxForm({ ...txForm, note: e.target.value })} />
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 10, marginTop: 22, justifyContent: "flex-end" }}>
-              <button className="btn" style={{ background: "#f0f2ff", color: "#6b7ab5", padding: "10px 20px" }} onClick={() => setShowModal(null)}>ยกเลิก</button>
-              <button className="btn btn-primary" disabled={saving} style={{ background: txType === "out" ? "#ff5555" : "#7c3aed", color: "#f0f2ff" }} onClick={handleTransaction}>
-                {saving ? "กำลังบันทึก..." : txType === "in" ? "รับสินค้าเข้า" : "เบิกสินค้าออก"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL: รับเข้าตีกลับ (หลายรายการ ครั้งเดียว) */}
-      {showReturnBatchModal && (
-        <div className="overlay" onClick={() => setShowReturnBatchModal(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()} style={{ width: 760, maxWidth: "95vw" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexWrap: "wrap", gap: 8 }}>
-              <h2 style={{ fontSize: 19, fontWeight: 700, color: "#111827" }}>↩️ รับเข้าตีกลับ (หลายรายการ)</h2>
-              <span style={{ background: "#FFF7ED", color: "#C2410C", borderRadius: 6, padding: "3px 10px", fontSize: 12, fontWeight: 600 }}>หมายเหตุ: ตีกลับ (อัตโนมัติ)</span>
-            </div>
-
-            <div style={{ marginBottom: 14 }}>
-              <div className="label">ผู้ดำเนินการ (ใช้กับทุกรายการในรอบนี้)</div>
-              <input className="inp" value={returnBatchBy} onChange={e => setReturnBatchBy(e.target.value)} placeholder="ชื่อ-นามสกุล" />
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-              {/* ซ้าย: เลือกสินค้า */}
-              <div>
-                <div className="label">เลือกสินค้า (คลิกเพื่อเพิ่ม)</div>
-                <input className="inp" style={{ marginBottom: 8 }} placeholder="🔍 ค้นหาชื่อหรือ SKU..." value={returnBatchSearch} onChange={e => setReturnBatchSearch(e.target.value)} />
-                <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, maxHeight: 360, overflowY: "auto" }}>
-                  {products
-                    .filter(p => p.name.toLowerCase().includes(returnBatchSearch.toLowerCase()) || p.sku.toLowerCase().includes(returnBatchSearch.toLowerCase()))
-                    .map(p => {
-                      const staged = returnBatchItems.find(it => it.productId === p.id);
-                      return (
-                        <div key={p.id} onClick={() => addToReturnBatch(p)}
-                          style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", borderBottom: "1px solid #F3F4F6", cursor: "pointer", background: staged ? "#FFF7ED" : "transparent" }}
-                          onMouseEnter={e => { if (!staged) e.currentTarget.style.background = "#FAFAFA"; }}
-                          onMouseLeave={e => { if (!staged) e.currentTarget.style.background = "transparent"; }}>
-                          <div>
-                            <div style={{ fontSize: 13, fontWeight: 500, color: "#111827" }}>{p.name}</div>
-                            <div style={{ fontSize: 11, color: "#9CA3AF" }}>{p.sku} · คงเหลือ {p.quantity} {p.unit}</div>
-                          </div>
-                          {staged && <span style={{ background: "#C2410C", color: "#fff", borderRadius: 6, padding: "2px 8px", fontSize: 12, fontWeight: 700 }}>+{staged.quantity}</span>}
-                        </div>
-                      );
-                    })}
-                  {products.filter(p => p.name.toLowerCase().includes(returnBatchSearch.toLowerCase()) || p.sku.toLowerCase().includes(returnBatchSearch.toLowerCase())).length === 0 && (
-                    <div style={{ padding: 20, textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>ไม่พบสินค้า</div>
-                  )}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>SKU *</label>
+                  <input className="inp" style={{ marginTop: 4 }} value={form.sku || ""} onChange={e => setForm(f => ({ ...f, sku: e.target.value }))} placeholder="เช่น BOX-000" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>หมวดหมู่</label>
+                  <select className="inp" style={{ marginTop: 4 }} value={form.category || CATEGORIES[0]} onChange={e => setForm(f => ({ ...f, category: e.target.value }))}>
+                    {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
                 </div>
               </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>คงเหลือ</label>
+                  <input className="inp" style={{ marginTop: 4 }} type="number" value={form.quantity ?? ""} onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} placeholder="0" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>สต็อกขั้นต่ำ</label>
+                  <input className="inp" style={{ marginTop: 4 }} type="number" value={form.minStock ?? ""} onChange={e => setForm(f => ({ ...f, minStock: e.target.value }))} placeholder="0" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>ราคาทุน (฿)</label>
+                  <input className="inp" style={{ marginTop: 4 }} type="number" value={form.price ?? ""} onChange={e => setForm(f => ({ ...f, price: e.target.value }))} placeholder="0.00" />
+                </div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>หน่วย</label>
+                  <input className="inp" style={{ marginTop: 4 }} value={form.unit || ""} onChange={e => setForm(f => ({ ...f, unit: e.target.value }))} placeholder="ชิ้น" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>ตำแหน่งจัดเก็บ</label>
+                  <input className="inp" style={{ marginTop: 4 }} value={form.location || ""} onChange={e => setForm(f => ({ ...f, location: e.target.value }))} placeholder="เช่น ชั้น A-1" />
+                </div>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 20, justifyContent: "flex-end" }}>
+              <button onClick={() => { setShowModal(null); setForm({}); setSelectedProduct(null); }} disabled={saving}
+                style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "11px 18px", fontSize: 14, cursor: "pointer" }}>ยกเลิก</button>
+              <button onClick={showModal === "add" ? handleAddProduct : handleEditProduct} disabled={saving}
+                style={{ background: saving ? "#F3F4F6" : "linear-gradient(135deg,#7C3AED,#3B82F6)", color: saving ? "#9CA3AF" : "#fff", border: "none", borderRadius: 10, padding: "11px 22px", fontSize: 14, fontWeight: 700, cursor: saving ? "not-allowed" : "pointer" }}>
+                {saving ? "⏳ กำลังบันทึก..." : showModal === "add" ? "✅ เพิ่มสินค้า" : "✅ บันทึกการแก้ไข"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
-              {/* ขวา: รายการที่เลือก */}
+      {/* ─── MODAL: รับเข้า/เบิกออก ─── */}
+      {showModal === "tx" && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(8px)" }}
+          onClick={() => { if (!saving) setShowModal(null); }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, width: "100%", maxWidth: 440, maxHeight: "90vh", overflowY: "auto", padding: 24, boxShadow: "0 24px 60px rgba(0,0,0,0.15)" }}>
+            <h3 style={{ fontSize: 18, fontWeight: 700, color: txType === "in" ? "#059669" : "#DC2626", marginBottom: 16 }}>
+              {txType === "in" ? "📥 รับสินค้าเข้าคลัง" : "📤 เบิกสินค้าออก"}
+            </h3>
+            <div style={{ display: "grid", gap: 12 }}>
               <div>
-                <div className="label">รับเข้าสต็อก ({returnBatchItems.length})</div>
-                <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, maxHeight: 360, overflowY: "auto", minHeight: 120 }}>
-                  {returnBatchItems.length === 0 && <div style={{ padding: 20, textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>ยังไม่มีรายการ — กดเลือกสินค้าทางซ้าย</div>}
-                  {returnBatchItems.map(it => (
-                    <div key={it.productId} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", borderBottom: "1px solid #F3F4F6", gap: 8 }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 500, color: "#111827", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{it.name}</div>
-                        <div style={{ fontSize: 11, color: "#9CA3AF" }}>{it.sku}</div>
-                      </div>
-                      <input type="number" min="0" className="inp" style={{ width: 64, padding: "6px 8px", textAlign: "center" }}
-                        value={it.quantity} onChange={e => updateReturnBatchQty(it.productId, e.target.value)} />
-                      <span style={{ fontSize: 12, color: "#9CA3AF" }}>{it.unit}</span>
-                      <button onClick={() => removeFromReturnBatch(it.productId)}
-                        style={{ background: "none", border: "none", color: "#D1D5DB", cursor: "pointer", fontSize: 15 }}
-                        onMouseEnter={e => e.target.style.color = "#EF4444"} onMouseLeave={e => e.target.style.color = "#D1D5DB"}>✕</button>
+                <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>สินค้า *</label>
+                <select className="inp" style={{ marginTop: 4 }} value={txForm.productId} onChange={e => setTxForm(f => ({ ...f, productId: e.target.value }))}>
+                  <option value="">— เลือกสินค้า —</option>
+                  {products.map(p => <option key={p.id} value={p.id}>{p.name} (คงเหลือ {p.quantity} {p.unit})</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>จำนวน *</label>
+                <input className="inp" style={{ marginTop: 4 }} type="number" min="1" value={txForm.quantity} onChange={e => setTxForm(f => ({ ...f, quantity: e.target.value }))} placeholder="0" />
+              </div>
+              <div>
+                <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>ผู้ทำรายการ *</label>
+                <input className="inp" style={{ marginTop: 4 }} value={txForm.by} onChange={e => setTxForm(f => ({ ...f, by: e.target.value }))} placeholder="ชื่อผู้ทำรายการ" />
+              </div>
+              <div>
+                <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>หมายเหตุ</label>
+                <input className="inp" style={{ marginTop: 4 }} value={txForm.note} onChange={e => setTxForm(f => ({ ...f, note: e.target.value }))} placeholder="(ถ้ามี)" />
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 20, justifyContent: "flex-end" }}>
+              <button onClick={() => setShowModal(null)} disabled={saving}
+                style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "11px 18px", fontSize: 14, cursor: "pointer" }}>ยกเลิก</button>
+              <button onClick={handleTransaction} disabled={saving}
+                style={{ background: saving ? "#F3F4F6" : txType === "in" ? "#059669" : "#DC2626", color: saving ? "#9CA3AF" : "#fff", border: "none", borderRadius: 10, padding: "11px 22px", fontSize: 14, fontWeight: 700, cursor: saving ? "not-allowed" : "pointer" }}>
+                {saving ? "⏳ กำลังบันทึก..." : txType === "in" ? "✅ รับเข้า" : "✅ เบิกออก"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── MODAL: รับเข้าตีกลับ (หลายรายการ) ─── */}
+      {showReturnBatchModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(8px)" }}
+          onClick={() => { if (!savingReturnBatch) setShowReturnBatchModal(false); }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, width: "100%", maxWidth: 620, maxHeight: "90vh", overflowY: "auto", padding: 24, boxShadow: "0 24px 60px rgba(0,0,0,0.15)" }}>
+            <h3 style={{ fontSize: 18, fontWeight: 700, color: "#C2410C", marginBottom: 4 }}>📮 รับเข้าตีกลับ (หลายรายการ)</h3>
+            <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 14 }}>เลือกสินค้าที่ตีกลับเข้าคลัง — ระบบจะเพิ่มสต็อกและบันทึกหมายเหตุ "ตีกลับ" ให้อัตโนมัติ</p>
+
+            <input className="inp" style={{ marginBottom: 10 }} placeholder="🔍 ค้นหาสินค้าเพื่อเพิ่มลงรายการ..."
+              value={returnBatchSearch} onChange={e => setReturnBatchSearch(e.target.value)} />
+
+            {returnBatchSearch.trim() !== "" && (
+              <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, maxHeight: 180, overflowY: "auto", marginBottom: 14 }}>
+                {products
+                  .filter(p => p.name.toLowerCase().includes(returnBatchSearch.trim().toLowerCase()) || p.sku.toLowerCase().includes(returnBatchSearch.trim().toLowerCase()))
+                  .slice(0, 20)
+                  .map(p => (
+                    <div key={p.id} onClick={() => addToReturnBatch(p)}
+                      style={{ padding: "8px 12px", borderBottom: "1px solid #F3F4F6", cursor: "pointer", fontSize: 13, display: "flex", justifyContent: "space-between" }}
+                      onMouseEnter={e => e.currentTarget.style.background = "#FFF7ED"}
+                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                      <span>{p.name} <span style={{ color: "#9CA3AF", fontFamily: "monospace", fontSize: 11 }}>({p.sku})</span></span>
+                      <span style={{ color: "#C2410C", fontWeight: 700 }}>＋ เพิ่ม</span>
                     </div>
                   ))}
-                </div>
               </div>
+            )}
+
+            <div style={{ border: "1.5px solid #FED7AA", borderRadius: 12, padding: 12, marginBottom: 14, background: "#FFFBF5" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#C2410C", marginBottom: 8 }}>รายการที่จะรับเข้า ({returnBatchItems.length})</div>
+              {returnBatchItems.length === 0 && <div style={{ fontSize: 13, color: "#9CA3AF", textAlign: "center", padding: 12 }}>ยังไม่มีรายการ — ค้นหาแล้วกดเพิ่มด้านบน</div>}
+              {returnBatchItems.map(it => (
+                <div key={it.productId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid #FDEBD8" }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, color: "#111827" }}>{it.name}</div>
+                    <div style={{ fontSize: 11, color: "#9CA3AF", fontFamily: "monospace" }}>{it.sku}</div>
+                  </div>
+                  <input type="number" min="0" value={it.quantity}
+                    onChange={e => updateReturnBatchQty(it.productId, e.target.value)}
+                    style={{ width: 74, background: "#fff", border: "1.5px solid #FED7AA", borderRadius: 8, padding: "6px 8px", fontSize: 13, textAlign: "center", outline: "none", fontFamily: "'Sarabun', sans-serif" }} />
+                  <span style={{ fontSize: 12, color: "#6B7280", width: 36 }}>{it.unit}</span>
+                  <button onClick={() => removeFromReturnBatch(it.productId)}
+                    style={{ background: "none", border: "none", color: "#D1D5DB", fontSize: 14, cursor: "pointer" }}
+                    onMouseEnter={e => e.target.style.color = "#EF4444"} onMouseLeave={e => e.target.style.color = "#D1D5DB"}>✕</button>
+                </div>
+              ))}
             </div>
 
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 18, flexWrap: "wrap", gap: 10 }}>
-              <div style={{ fontSize: 13, color: "#6B7280" }}>
-                รวม <span style={{ fontWeight: 700, color: "#C2410C" }}>{returnBatchItems.reduce((s, it) => s + (it.quantity || 0), 0)}</span> ชิ้น จาก <span style={{ fontWeight: 700 }}>{returnBatchItems.length}</span> รายการ
-              </div>
-              <div style={{ display: "flex", gap: 10 }}>
-                <button className="btn" style={{ background: "#f0f2ff", color: "#6b7ab5", padding: "10px 20px" }} onClick={() => setShowReturnBatchModal(false)}>ยกเลิก</button>
-                <button className="btn btn-primary" style={{ background: "#C2410C" }} disabled={savingReturnBatch || returnBatchItems.length === 0} onClick={handleConfirmReturnBatch}>
-                  {savingReturnBatch ? "กำลังบันทึก..." : "✅ บันทึกรับเข้าตีกลับ"}
-                </button>
-              </div>
+            <div>
+              <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>ผู้ดำเนินการ *</label>
+              <input className="inp" style={{ marginTop: 4 }} value={returnBatchBy} onChange={e => setReturnBatchBy(e.target.value)} placeholder="ชื่อผู้ดำเนินการ" />
+            </div>
+
+            <div style={{ display: "flex", gap: 10, marginTop: 18, justifyContent: "flex-end" }}>
+              <button onClick={() => setShowReturnBatchModal(false)} disabled={savingReturnBatch}
+                style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "11px 18px", fontSize: 14, cursor: "pointer" }}>ยกเลิก</button>
+              <button onClick={handleConfirmReturnBatch} disabled={savingReturnBatch || returnBatchItems.filter(it => it.quantity > 0).length === 0}
+                style={{ background: savingReturnBatch ? "#F3F4F6" : "#C2410C", color: savingReturnBatch ? "#9CA3AF" : "#fff", border: "none", borderRadius: 10, padding: "11px 22px", fontSize: 14, fontWeight: 700, cursor: savingReturnBatch ? "not-allowed" : "pointer" }}>
+                {savingReturnBatch ? "⏳ กำลังบันทึก..." : `✅ รับเข้า ${returnBatchItems.filter(it => it.quantity > 0).length} รายการ`}
+              </button>
             </div>
           </div>
         </div>
       )}
 
+      {/* ─── MODAL: ประวัติสินค้า ─── */}
+      {historyProduct && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(8px)" }}
+          onClick={() => setHistoryProduct(null)}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, width: "100%", maxWidth: 520, maxHeight: "85vh", overflowY: "auto", padding: 24, boxShadow: "0 24px 60px rgba(0,0,0,0.15)" }}>
+            <h3 style={{ fontSize: 17, fontWeight: 700, color: "#111827", marginBottom: 2 }}>🕘 ประวัติ: {historyProduct.name}</h3>
+            <p style={{ fontSize: 12, color: "#9CA3AF", fontFamily: "monospace", marginBottom: 14 }}>{historyProduct.sku} · คงเหลือ {historyProduct.quantity} {historyProduct.unit}</p>
+            {transactions.filter(tx => tx.productId === historyProduct.id).length === 0 && (
+              <div style={{ color: "#9CA3AF", fontSize: 13, textAlign: "center", padding: 24 }}>ยังไม่มีประวัติการเคลื่อนไหว</div>
+            )}
+            {transactions.filter(tx => tx.productId === historyProduct.id).map(tx => (
+              <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #F3F4F6", fontSize: 13 }}>
+                <div>
+                  <div style={{ color: "#111827" }}>{tx.type === "in" ? "📥 รับเข้า" : "📤 เบิกออก"}{tx.note ? ` · ${tx.note}` : ""}</div>
+                  <div style={{ fontSize: 11, color: "#9CA3AF" }}>{tx.date} · โดย {tx.by || "-"}</div>
+                </div>
+                <span style={{ fontWeight: 700, color: tx.type === "in" ? "#059669" : "#DC2626" }}>{tx.type === "in" ? "+" : "-"}{tx.quantity}</span>
+              </div>
+            ))}
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+              <button onClick={() => setHistoryProduct(null)}
+                style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "10px 18px", fontSize: 14, cursor: "pointer" }}>ปิด</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── TOAST ─── */}
       {toast && (
-        <div className="toast" style={{ borderColor: toast.type === "error" ? "rgba(255,85,85,0.4)" : "rgba(124,58,237,0.3)", color: toast.type === "error" ? "#ff5555" : "#7c3aed" }}>
-          <span>{toast.type === "error" ? "❌" : "✅"}</span>
-          <span>{toast.msg}</span>
+        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 400, background: toast.type === "success" ? "#065F46" : "#991B1B", color: "#fff", borderRadius: 12, padding: "12px 24px", fontSize: 14, fontWeight: 600, boxShadow: "0 12px 32px rgba(0,0,0,0.25)", maxWidth: "90vw" }}>
+          {toast.type === "success" ? "✅ " : "⚠️ "}{toast.msg}
         </div>
       )}
     </div>
