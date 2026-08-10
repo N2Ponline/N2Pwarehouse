@@ -2039,13 +2039,6 @@ export default function WarehouseApp() {
   const [returnBatchItems, setReturnBatchItems] = useState([]); // [{productId, name, sku, unit, quantity}]
   const [savingReturnBatch, setSavingReturnBatch] = useState(false);
 
-  // ── เบิกออก (หลายรายการ ครั้งเดียว) ──
-  const [showOutBatchModal, setShowOutBatchModal] = useState(false);
-  const [outBatchSearch, setOutBatchSearch] = useState("");
-  const [outBatchBy, setOutBatchBy] = useState("");
-  const [outBatchItems, setOutBatchItems] = useState([]); // [{productId, name, sku, unit, quantity, maxQty}]
-  const [savingOutBatch, setSavingOutBatch] = useState(false);
-
   const loadDisposeRecords = async () => {
     setLoadingDispose(true);
     try {
@@ -2454,74 +2447,6 @@ export default function WarehouseApp() {
       showToast(`รับเข้าตีกลับสำเร็จ ${validItems.length} รายการ — เพิ่มสต็อกเรียบร้อย`);
     } catch (e) { showToast(e.message, "error"); }
     setSavingReturnBatch(false);
-  };
-
-  // ── เบิกออก: เลือกหลายสินค้า ใส่จำนวน แล้วบันทึกครั้งเดียว ──
-  const openOutBatchModal = () => {
-    setOutBatchItems([]);
-    setOutBatchSearch("");
-    setOutBatchBy("");
-    setShowOutBatchModal(true);
-  };
-
-  const addToOutBatch = (product) => {
-    if (product.quantity <= 0) return showToast(`${product.name} ไม่มีสต็อกคงเหลือ`, "error");
-    setOutBatchItems(prev => {
-      const existing = prev.find(it => it.productId === product.id);
-      if (existing) {
-        const next = Math.min(existing.quantity + 1, product.quantity);
-        return prev.map(it => it.productId === product.id ? { ...it, quantity: next } : it);
-      }
-      return [...prev, { productId: product.id, name: product.name, sku: product.sku, unit: product.unit, quantity: 1, maxQty: product.quantity }];
-    });
-  };
-
-  const updateOutBatchQty = (productId, qty) => {
-    setOutBatchItems(prev => prev.map(it => {
-      if (it.productId !== productId) return it;
-      const n = Math.max(0, Math.min(parseInt(qty) || 0, it.maxQty));
-      return { ...it, quantity: n };
-    }));
-  };
-
-  const removeFromOutBatch = (productId) => {
-    setOutBatchItems(prev => prev.filter(it => it.productId !== productId));
-  };
-
-  const handleConfirmOutBatch = async () => {
-    const validItems = outBatchItems.filter(it => it.quantity > 0);
-    if (validItems.length === 0) return showToast("กรุณาเลือกสินค้าและระบุจำนวนอย่างน้อย 1 รายการ", "error");
-    if (!outBatchBy.trim()) return showToast("กรุณากรอกชื่อผู้ดำเนินการ", "error");
-    setSavingOutBatch(true);
-    try {
-      const today = new Date().toISOString().split("T")[0];
-      const updatedProducts = [...products];
-      const newTxList = [];
-      for (const item of validItems) {
-        const idx = updatedProducts.findIndex(p => p.id === item.productId);
-        if (idx === -1) continue;
-        const newQty = updatedProducts[idx].quantity - item.quantity;
-        if (newQty < 0) continue; // กันสต็อกติดลบ
-        await api.updateProduct(item.productId, { quantity: newQty });
-        updatedProducts[idx] = { ...updatedProducts[idx], quantity: newQty };
-        const [newTx] = await api.addTransaction({
-          type: "out",
-          product_id: item.productId,
-          quantity: item.quantity,
-          date: today,
-          note: null,
-          by: outBatchBy.trim(),
-        });
-        newTxList.push(dbToTx(newTx));
-      }
-      setProducts(updatedProducts);
-      setTransactions(prev => [...newTxList, ...prev]);
-      setShowOutBatchModal(false);
-      setOutBatchItems([]);
-      setOutBatchBy("");
-      showToast(`เบิกออกสำเร็จ ${validItems.length} รายการ — ตัดสต็อกเรียบร้อย`);
-    } catch (e) { showToast(e.message, "error"); }
-    setSavingOutBatch(false);
   };
 
   const openEdit = (product) => {
@@ -2948,10 +2873,6 @@ export default function WarehouseApp() {
                   style={{ background: "#DC2626", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
                   📤 เบิกออก
                 </button>
-                <button onClick={openOutBatchModal}
-                  style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
-                  📤 เบิกออก (หลายรายการ)
-                </button>
               </div>
             </div>
 
@@ -3121,72 +3042,6 @@ export default function WarehouseApp() {
               <button onClick={showModal === "add" ? handleAddProduct : handleEditProduct} disabled={saving}
                 style={{ background: saving ? "#F3F4F6" : "linear-gradient(135deg,#7C3AED,#3B82F6)", color: saving ? "#9CA3AF" : "#fff", border: "none", borderRadius: 10, padding: "11px 22px", fontSize: 14, fontWeight: 700, cursor: saving ? "not-allowed" : "pointer" }}>
                 {saving ? "⏳ กำลังบันทึก..." : showModal === "add" ? "✅ เพิ่มสินค้า" : "✅ บันทึกการแก้ไข"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ─── MODAL: เบิกออก (หลายรายการ) ─── */}
-      {showOutBatchModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(8px)" }}
-          onClick={() => { if (!savingOutBatch) setShowOutBatchModal(false); }}>
-          <div onClick={e => e.stopPropagation()}
-            style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, width: "100%", maxWidth: 620, maxHeight: "90vh", overflowY: "auto", padding: 24, boxShadow: "0 24px 60px rgba(0,0,0,0.15)" }}>
-            <h3 style={{ fontSize: 18, fontWeight: 700, color: "#DC2626", marginBottom: 4 }}>📤 เบิกออก (หลายรายการ)</h3>
-            <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 14 }}>เลือกสินค้าที่จะเบิกออก — ระบบจะตัดสต็อกและบันทึกรายการให้ครั้งเดียว</p>
-
-            <input className="inp" style={{ marginBottom: 10 }} placeholder="🔍 ค้นหาสินค้าเพื่อเพิ่มลงรายการ..."
-              value={outBatchSearch} onChange={e => setOutBatchSearch(e.target.value)} />
-
-            {outBatchSearch.trim() !== "" && (
-              <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, maxHeight: 180, overflowY: "auto", marginBottom: 14 }}>
-                {products
-                  .filter(p => p.name.toLowerCase().includes(outBatchSearch.trim().toLowerCase()) || p.sku.toLowerCase().includes(outBatchSearch.trim().toLowerCase()))
-                  .slice(0, 20)
-                  .map(p => (
-                    <div key={p.id} onClick={() => addToOutBatch(p)}
-                      style={{ padding: "8px 12px", borderBottom: "1px solid #F3F4F6", cursor: "pointer", fontSize: 13, display: "flex", justifyContent: "space-between" }}
-                      onMouseEnter={e => e.currentTarget.style.background = "#FEF2F2"}
-                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                      <span>{p.name} <span style={{ color: "#9CA3AF", fontFamily: "monospace", fontSize: 11 }}>({p.sku})</span></span>
-                      <span style={{ color: p.quantity > 0 ? "#DC2626" : "#D1D5DB", fontWeight: 700 }}>{p.quantity > 0 ? `＋ เพิ่ม (คงเหลือ ${p.quantity})` : "หมดสต็อก"}</span>
-                    </div>
-                  ))}
-              </div>
-            )}
-
-            <div style={{ border: "1.5px solid #FECACA", borderRadius: 12, padding: 12, marginBottom: 14, background: "#FFFBFB" }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#DC2626", marginBottom: 8 }}>รายการที่จะเบิกออก ({outBatchItems.length})</div>
-              {outBatchItems.length === 0 && <div style={{ fontSize: 13, color: "#9CA3AF", textAlign: "center", padding: 12 }}>ยังไม่มีรายการ — ค้นหาแล้วกดเพิ่มด้านบน</div>}
-              {outBatchItems.map(it => (
-                <div key={it.productId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid #FDE8E8" }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, color: "#111827" }}>{it.name}</div>
-                    <div style={{ fontSize: 11, color: "#9CA3AF", fontFamily: "monospace" }}>{it.sku} · คงเหลือ {it.maxQty} {it.unit}</div>
-                  </div>
-                  <input type="number" min="0" max={it.maxQty} value={it.quantity}
-                    onChange={e => updateOutBatchQty(it.productId, e.target.value)}
-                    style={{ width: 74, background: "#fff", border: "1.5px solid #FECACA", borderRadius: 8, padding: "6px 8px", fontSize: 13, textAlign: "center", outline: "none", fontFamily: "'Sarabun', sans-serif" }} />
-                  <span style={{ fontSize: 12, color: "#6B7280", width: 36 }}>{it.unit}</span>
-                  <button onClick={() => removeFromOutBatch(it.productId)}
-                    style={{ background: "none", border: "none", color: "#D1D5DB", fontSize: 14, cursor: "pointer" }}
-                    onMouseEnter={e => e.target.style.color = "#EF4444"} onMouseLeave={e => e.target.style.color = "#D1D5DB"}>✕</button>
-                </div>
-              ))}
-            </div>
-
-            <div>
-              <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>ผู้ดำเนินการ *</label>
-              <input className="inp" style={{ marginTop: 4 }} value={outBatchBy} onChange={e => setOutBatchBy(e.target.value)} placeholder="ชื่อผู้ดำเนินการ" />
-            </div>
-
-            <div style={{ display: "flex", gap: 10, marginTop: 18, justifyContent: "flex-end" }}>
-              <button onClick={() => setShowOutBatchModal(false)} disabled={savingOutBatch}
-                style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "11px 18px", fontSize: 14, cursor: "pointer" }}>ยกเลิก</button>
-              <button onClick={handleConfirmOutBatch} disabled={savingOutBatch || outBatchItems.filter(it => it.quantity > 0).length === 0}
-                style={{ background: savingOutBatch ? "#F3F4F6" : "#DC2626", color: savingOutBatch ? "#9CA3AF" : "#fff", border: "none", borderRadius: 10, padding: "11px 22px", fontSize: 14, fontWeight: 700, cursor: savingOutBatch ? "not-allowed" : "pointer" }}>
-                {savingOutBatch ? "⏳ กำลังบันทึก..." : `✅ เบิกออก ${outBatchItems.filter(it => it.quantity > 0).length} รายการ`}
               </button>
             </div>
           </div>
