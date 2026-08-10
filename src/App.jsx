@@ -2940,14 +2940,6 @@ export default function WarehouseApp() {
                   style={{ background: "#FFF7ED", color: "#C2410C", border: "1px solid #FED7AA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
                   📮 รับเข้าตีกลับ (หลายรายการ)
                 </button>
-                <button onClick={() => { setTxType("in"); setTxForm({ productId: "", quantity: "", note: "", by: "" }); setShowModal("tx"); }}
-                  style={{ background: "#059669", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
-                  📥 รับเข้า
-                </button>
-                <button onClick={() => { setTxType("out"); setTxForm({ productId: "", quantity: "", note: "", by: "" }); setShowModal("tx"); }}
-                  style={{ background: "#DC2626", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
-                  📤 เบิกออก
-                </button>
                 <button onClick={openOutBatchModal}
                   style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
                   📤 เบิกออก (หลายรายการ)
