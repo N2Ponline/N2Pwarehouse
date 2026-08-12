@@ -279,11 +279,13 @@ function lastMonthRange() {
 }
 
 function useDateFilterState(defaultMode = "all") {
-  const [mode, setMode] = useState(defaultMode); // all | thisMonth | lastMonth | range
+  const [mode, setMode] = useState(defaultMode); // all | today | yesterday | thisMonth | lastMonth | range
   const [from, setFrom] = useState("");
   const [to, setTo] = useState(todayStr());
   let rangeFrom = from, rangeTo = to;
-  if (mode === "thisMonth") { const r = thisMonthRange(); rangeFrom = r.from; rangeTo = r.to; }
+  if (mode === "today") { rangeFrom = todayStr(); rangeTo = todayStr(); }
+  else if (mode === "yesterday") { rangeFrom = yesterdayStr(); rangeTo = yesterdayStr(); }
+  else if (mode === "thisMonth") { const r = thisMonthRange(); rangeFrom = r.from; rangeTo = r.to; }
   else if (mode === "lastMonth") { const r = lastMonthRange(); rangeFrom = r.from; rangeTo = r.to; }
   return { mode, setMode, from, setFrom, to, setTo, rangeFrom, rangeTo };
 }
@@ -297,7 +299,7 @@ async function loadAllScans() {
 function DateFilterRow({ filter, accent }) {
   return (
     <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-      {[["all", "ทั้งหมด"], ["thisMonth", "เดือนนี้"], ["lastMonth", "เดือนที่แล้ว"]].map(([v, l]) => (
+      {[["all", "ทั้งหมด"], ["today", "วันนี้"], ["yesterday", "เมื่อวาน"], ["thisMonth", "เดือนนี้"], ["lastMonth", "เดือนที่แล้ว"]].map(([v, l]) => (
         <button key={v} onClick={() => filter.setMode(v)}
           style={{
             background: filter.mode === v ? accent : "#fff",
@@ -2055,6 +2057,8 @@ export default function WarehouseApp() {
   const [returnBatchSearch, setReturnBatchSearch] = useState("");
   const [returnBatchBy, setReturnBatchBy] = useState("");
   const [returnBatchItems, setReturnBatchItems] = useState([]); // [{productId, name, sku, unit, quantity}]
+  const [returnBatchIsReturn, setReturnBatchIsReturn] = useState(false); // ติ๊ก = รับเข้าแบบ "ตีกลับ" (บันทึกหมายเหตุอัตโนมัติ), ไม่ติ๊ก = รับเข้าปกติ
+  const [returnBatchSelectedIds, setReturnBatchSelectedIds] = useState(new Set()); // เลือกจากผลค้นหาไว้เพิ่มพร้อมกันหลายตัว
   const [savingReturnBatch, setSavingReturnBatch] = useState(false);
 
   // ── เบิกออก (หลายรายการ ครั้งเดียว) ──
@@ -2459,6 +2463,8 @@ export default function WarehouseApp() {
     setReturnBatchItems([]);
     setReturnBatchSearch("");
     setReturnBatchBy("");
+    setReturnBatchIsReturn(false);
+    setReturnBatchSelectedIds(new Set());
     setShowReturnBatchModal(true);
   };
 
@@ -2470,6 +2476,23 @@ export default function WarehouseApp() {
       }
       return [...prev, { productId: product.id, name: product.name, sku: product.sku, unit: product.unit, quantity: 1 }];
     });
+  };
+
+  const toggleReturnBatchSelect = (productId) => {
+    setReturnBatchSelectedIds(prev => {
+      const next = new Set(prev);
+      next.has(productId) ? next.delete(productId) : next.add(productId);
+      return next;
+    });
+  };
+
+  const addSelectedToReturnBatch = () => {
+    returnBatchSelectedIds.forEach(id => {
+      const p = products.find(x => x.id === id);
+      if (p) addToReturnBatch(p);
+    });
+    setReturnBatchSelectedIds(new Set());
+    setReturnBatchSearch("");
   };
 
   const updateReturnBatchQty = (productId, qty) => {
@@ -2497,13 +2520,13 @@ export default function WarehouseApp() {
         // 1. เพิ่มยอดสต็อกเข้าคลังอัตโนมัติ
         await api.updateProduct(item.productId, { quantity: newQty });
         updatedProducts[idx] = { ...updatedProducts[idx], quantity: newQty };
-        // 2. บันทึกรายการเคลื่อนไหว พร้อมหมายเหตุ "ตีกลับ" อัตโนมัติ
+        // 2. บันทึกรายการเคลื่อนไหว — ใส่หมายเหตุ "ตีกลับ" อัตโนมัติเฉพาะตอนติ๊กตัวเลือกไว้
         const [newTx] = await api.addTransaction({
           type: "in",
           product_id: item.productId,
           quantity: item.quantity,
           date: today,
-          note: "ตีกลับ",
+          note: returnBatchIsReturn ? "ตีกลับ" : null,
           by: returnBatchBy.trim(),
         });
         newTxList.push(dbToTx(newTx));
@@ -2513,7 +2536,7 @@ export default function WarehouseApp() {
       setShowReturnBatchModal(false);
       setReturnBatchItems([]);
       setReturnBatchBy("");
-      showToast(`รับเข้าตีกลับสำเร็จ ${validItems.length} รายการ — เพิ่มสต็อกเรียบร้อย`);
+      showToast(`รับเข้า${returnBatchIsReturn ? "ตีกลับ" : ""}สำเร็จ ${validItems.length} รายการ — เพิ่มสต็อกเรียบร้อย`);
     } catch (e) { showToast(e.message, "error"); }
     setSavingReturnBatch(false);
   };
@@ -2633,15 +2656,19 @@ export default function WarehouseApp() {
         [""],
         [
           { v: "ประเภท", s: HEADER }, { v: "SKU", s: HEADER }, { v: "สินค้า", s: HEADER },
-          { v: "จำนวน", s: HEADER }, { v: "วันที่", s: HEADER }, { v: "ผู้ทำรายการ", s: HEADER }, { v: "หมายเหตุ", s: HEADER },
+          { v: "จำนวน", s: HEADER }, { v: "หน่วย", s: HEADER }, { v: "วันที่", s: HEADER }, { v: "ผู้ทำรายการ", s: HEADER }, { v: "หมายเหตุ", s: HEADER },
         ],
         ...filteredTx.map(tx => {
           const p = products.find(x => x.id === tx.productId);
           const v = txView(tx, productUnit(tx.productId));
-          return [v.label, p?.sku || "-", productName(tx.productId), v.amount, tx.date, tx.by || "-", tx.note || "-"];
+          const signedQty = tx.type === "out" ? -tx.quantity : tx.quantity; // "in"/"adjust" เก็บค่าที่มีเครื่องหมายอยู่แล้ว, "out" เก็บเป็นค่าบวกจึงต้องใส่ลบเพื่อให้ sum ได้ถูกต้อง
+          return [v.label, p?.sku || "-", productName(tx.productId), { v: signedQty }, productUnit(tx.productId), tx.date, tx.by || "-", tx.note || "-"];
         }),
+        [""],
+        [{ v: "รวม", s: { font: { bold: true } } }, "", "",
+         { v: filteredTx.reduce((s, tx) => s + (tx.type === "out" ? -tx.quantity : tx.quantity), 0), s: { font: { bold: true } } }],
       ]);
-      ws["!cols"] = [{ wch: 14 }, { wch: 14 }, { wch: 30 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 30 }];
+      ws["!cols"] = [{ wch: 14 }, { wch: 14 }, { wch: 30 }, { wch: 10 }, { wch: 8 }, { wch: 12 }, { wch: 14 }, { wch: 30 }];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "รายการเคลื่อนไหว");
       const suffix = txDateFilter.mode === "all" ? "" : `_${txDateFilter.rangeFrom || ""}_${txDateFilter.rangeTo || ""}`;
@@ -3042,7 +3069,7 @@ export default function WarehouseApp() {
                 )}
                 <button onClick={openReturnBatchModal}
                   style={{ background: "#FFF7ED", color: "#C2410C", border: "1px solid #FED7AA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
-                  📮 รับเข้าตีกลับ (หลายรายการ)
+                  📦 รับเข้าหลายรายการ
                 </button>
                 <button onClick={openOutBatchModal}
                   style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
@@ -3347,27 +3374,44 @@ export default function WarehouseApp() {
           onClick={() => { if (!savingReturnBatch) setShowReturnBatchModal(false); }}>
           <div onClick={e => e.stopPropagation()}
             style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, width: "100%", maxWidth: 620, maxHeight: "90vh", overflowY: "auto", padding: 24, boxShadow: "0 24px 60px rgba(0,0,0,0.15)" }}>
-            <h3 style={{ fontSize: 18, fontWeight: 700, color: "#C2410C", marginBottom: 4 }}>📮 รับเข้าตีกลับ (หลายรายการ)</h3>
-            <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 14 }}>เลือกสินค้าที่ตีกลับเข้าคลัง — ระบบจะเพิ่มสต็อกและบันทึกหมายเหตุ "ตีกลับ" ให้อัตโนมัติ</p>
+            <h3 style={{ fontSize: 18, fontWeight: 700, color: "#C2410C", marginBottom: 4 }}>📦 รับเข้าหลายรายการ</h3>
+            <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 14 }}>เลือกสินค้าที่จะรับเข้าคลัง — ระบบจะเพิ่มสต็อกให้อัตโนมัติ</p>
+
+            <label style={{ display: "flex", alignItems: "center", gap: 8, background: "#FFFBF5", border: "1.5px solid #FED7AA", borderRadius: 10, padding: "9px 12px", marginBottom: 14, cursor: "pointer" }}>
+              <input type="checkbox" checked={returnBatchIsReturn} onChange={e => setReturnBatchIsReturn(e.target.checked)}
+                style={{ width: 16, height: 16, cursor: "pointer" }} />
+              <span style={{ fontSize: 13, color: "#C2410C", fontWeight: 600 }}>📮 เป็นการรับเข้าตีกลับ (บันทึกหมายเหตุ "ตีกลับ" ให้อัตโนมัติ)</span>
+            </label>
 
             <input className="inp" style={{ marginBottom: 10 }} placeholder="🔍 ค้นหาสินค้าเพื่อเพิ่มลงรายการ..."
               value={returnBatchSearch} onChange={e => setReturnBatchSearch(e.target.value)} />
 
             {returnBatchSearch.trim() !== "" && (
-              <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, maxHeight: 180, overflowY: "auto", marginBottom: 14 }}>
+              <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, maxHeight: 220, overflowY: "auto", marginBottom: returnBatchSelectedIds.size > 0 ? 8 : 14 }}>
                 {products
                   .filter(p => p.name.toLowerCase().includes(returnBatchSearch.trim().toLowerCase()) || p.sku.toLowerCase().includes(returnBatchSearch.trim().toLowerCase()))
-                  .slice(0, 20)
-                  .map(p => (
-                    <div key={p.id} onClick={() => addToReturnBatch(p)}
-                      style={{ padding: "8px 12px", borderBottom: "1px solid #F3F4F6", cursor: "pointer", fontSize: 13, display: "flex", justifyContent: "space-between" }}
-                      onMouseEnter={e => e.currentTarget.style.background = "#FFF7ED"}
-                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                      <span>{p.name} <span style={{ color: "#9CA3AF", fontFamily: "monospace", fontSize: 11 }}>({p.sku})</span></span>
-                      <span style={{ color: "#C2410C", fontWeight: 700 }}>＋ เพิ่ม</span>
-                    </div>
-                  ))}
+                  .slice(0, 50)
+                  .map(p => {
+                    const checked = returnBatchSelectedIds.has(p.id);
+                    return (
+                      <div key={p.id} onClick={() => toggleReturnBatchSelect(p.id)}
+                        style={{ padding: "8px 12px", borderBottom: "1px solid #F3F4F6", cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", gap: 10, background: checked ? "#FFF7ED" : "transparent" }}
+                        onMouseEnter={e => { if (!checked) e.currentTarget.style.background = "#FFFBF5"; }}
+                        onMouseLeave={e => { if (!checked) e.currentTarget.style.background = "transparent"; }}>
+                        <input type="checkbox" checked={checked} onChange={() => toggleReturnBatchSelect(p.id)} onClick={e => e.stopPropagation()}
+                          style={{ width: 15, height: 15, cursor: "pointer", flexShrink: 0 }} />
+                        <span style={{ flex: 1 }}>{p.name} <span style={{ color: "#9CA3AF", fontFamily: "monospace", fontSize: 11 }}>({p.sku})</span></span>
+                      </div>
+                    );
+                  })}
               </div>
+            )}
+
+            {returnBatchSelectedIds.size > 0 && (
+              <button onClick={addSelectedToReturnBatch}
+                style={{ width: "100%", background: "#C2410C", color: "#fff", border: "none", borderRadius: 10, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginBottom: 14 }}>
+                ＋ เพิ่มที่เลือก ({returnBatchSelectedIds.size} รายการ)
+              </button>
             )}
 
             <div style={{ border: "1.5px solid #FED7AA", borderRadius: 12, padding: 12, marginBottom: 14, background: "#FFFBF5" }}>
@@ -3400,7 +3444,7 @@ export default function WarehouseApp() {
                 style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "11px 18px", fontSize: 14, cursor: "pointer" }}>ยกเลิก</button>
               <button onClick={handleConfirmReturnBatch} disabled={savingReturnBatch || returnBatchItems.filter(it => it.quantity > 0).length === 0}
                 style={{ background: savingReturnBatch ? "#F3F4F6" : "#C2410C", color: savingReturnBatch ? "#9CA3AF" : "#fff", border: "none", borderRadius: 10, padding: "11px 22px", fontSize: 14, fontWeight: 700, cursor: savingReturnBatch ? "not-allowed" : "pointer" }}>
-                {savingReturnBatch ? "⏳ กำลังบันทึก..." : `✅ รับเข้า ${returnBatchItems.filter(it => it.quantity > 0).length} รายการ`}
+                {savingReturnBatch ? "⏳ กำลังบันทึก..." : `✅ รับเข้า${returnBatchIsReturn ? "ตีกลับ" : ""} ${returnBatchItems.filter(it => it.quantity > 0).length} รายการ`}
               </button>
             </div>
           </div>
