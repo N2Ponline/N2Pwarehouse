@@ -23,12 +23,28 @@ const sb = async (path, opts = {}) => {
   return text ? JSON.parse(text) : null;
 };
 
+// ดึงข้อมูลทั้งหมดแบบ paginate — Supabase/PostgREST จำกัดจำนวนแถวต่อ request ไว้ (ปกติ 1000)
+// ถ้าไม่ paginate รายการเก่า (เช่น เดือนที่แล้ว) จะหายไปเงียบๆ เมื่อจำนวนรายการรวมเกินลิมิต
+const sbAll = async (path) => {
+  const PAGE = 1000;
+  let all = [];
+  let offset = 0;
+  while (true) {
+    const sep = path.includes("?") ? "&" : "?";
+    const batch = await sb(`${path}${sep}limit=${PAGE}&offset=${offset}`);
+    all = all.concat(batch || []);
+    if (!batch || batch.length < PAGE) break;
+    offset += PAGE;
+  }
+  return all;
+};
+
 const api = {
-  getProducts: () => sb("products?select=*&order=name.asc"),
+  getProducts: () => sbAll("products?select=*&order=name.asc"),
   addProduct: (p) => sb("products", { method: "POST", body: JSON.stringify(p) }),
   updateProduct: (id, p) => sb(`products?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(p) }),
   deleteProduct: (id) => sb(`products?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
-  getTransactions: () => sb("transactions?select=*&order=created_at.desc"),
+  getTransactions: () => sbAll("transactions?select=*&order=created_at.desc"),
   addTransaction: (t) => sb("transactions", { method: "POST", body: JSON.stringify(t) }),
 };
 
@@ -2027,6 +2043,8 @@ export default function WarehouseApp() {
   const [disposeSearch, setDisposeSearch] = useState("");
   const [historyProduct, setHistoryProduct] = useState(null); // product ที่กดดูประวัติ
   const [filterProductId, setFilterProductId] = useState(null); // filter transactions by product
+  const txDateFilter = useDateFilterState("all"); // ตัวกรองวันที่/เดือนของรายการเคลื่อนไหว
+  const [exportingTx, setExportingTx] = useState(false);
   const [stockCheckMode, setStockCheckMode] = useState(false); // โหมดเช็ค/ปรับสต็อก
   const [stockCounts, setStockCounts] = useState({}); // { [productId]: "จำนวนนับจริง" }
   const [checkerName, setCheckerName] = useState(""); // ผู้ตรวจนับ
@@ -2285,6 +2303,50 @@ export default function WarehouseApp() {
       XLSX.writeFile(wb, `stock_check_${todayStr()}.xlsx`);
     } catch (e) { alert("Export ไม่สำเร็จ: " + e.message); }
     setExportingInventory(false);
+  };
+
+  // ── ใบเช็คสต็อกสำหรับพิมพ์ — ตั้งใจ "ไม่" แสดงยอดคงเหลือในระบบ ──
+  // เหตุผล: ถ้าพิมพ์ยอดคงเหลือติดไปด้วย คนนับจะเห็นตัวเลขแล้วนับผ่านๆ ใส่ตามยอดในระบบ
+  // แทนที่จะนับจริง ทำให้เช็คสต็อกไม่ได้ผล — ใบพิมพ์นี้จึงเว้นช่องว่างให้กรอกด้วยมือแทน
+  const handlePrintStockSheet = () => {
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    const dateStr = new Date().toLocaleDateString("th-TH", { dateStyle: "long" });
+    const rows = filteredProducts.map((p, i) => `
+      <tr>
+        <td class="c">${i + 1}</td>
+        <td>${esc(p.sku)}</td>
+        <td>${esc(p.name)}</td>
+        <td class="c">${esc(p.location)}</td>
+        <td class="c">${esc(p.unit)}</td>
+        <td class="count"></td>
+        <td class="note"></td>
+      </tr>`).join("");
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>ใบเช็คสต็อก ${dateStr}</title>
+      <style>
+        body { font-family: 'Sarabun', Tahoma, sans-serif; padding: 24px; color: #111827; }
+        h1 { font-size: 18px; margin: 0 0 2px; }
+        .sub { font-size: 12px; color: #6B7280; margin-bottom: 14px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th, td { border: 1px solid #D1D5DB; padding: 6px 8px; text-align: left; }
+        th { background: #F3F4F6; }
+        .c { text-align: center; }
+        .count { width: 70px; } .note { width: 110px; }
+        tfoot td { border: none; padding-top: 18px; font-size: 12px; }
+        @media print { body { padding: 8px; } }
+      </style></head><body>
+      <h1>📋 ใบเช็คสต็อกสินค้า</h1>
+      <div class="sub">วันที่พิมพ์: ${dateStr} · ${filteredProducts.length} รายการ · <b>ผู้ตรวจนับกรอกช่อง "นับจริง" ด้วยตนเอง</b></div>
+      <table>
+        <thead><tr><th class="c">#</th><th>SKU</th><th>ชื่อสินค้า</th><th class="c">ที่เก็บ</th><th class="c">หน่วย</th><th class="c">นับจริง</th><th>หมายเหตุ</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr><td colspan="7">ผู้ตรวจนับ: ____________________&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ลงชื่อ: ____________________&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; วันที่: ____________________</td></tr></tfoot>
+      </table>
+      <script>window.onload = () => window.print();</script>
+      </body></html>`;
+    const win = window.open("", "_blank");
+    if (!win) { alert("เบราว์เซอร์บล็อกการเปิดหน้าต่างพิมพ์ — กรุณาอนุญาต pop-up แล้วลองอีกครั้ง"); return; }
+    win.document.write(html);
+    win.document.close();
   };
 
   const SortTh = ({ col, label }) => {
@@ -2548,7 +2610,45 @@ export default function WarehouseApp() {
   const productName = (id) => products.find(p => p.id === id)?.name || `#${id}`;
   const productUnit = (id) => products.find(p => p.id === id)?.unit || "";
 
-  const filteredTx = filterProductId ? transactions.filter(tx => tx.productId === filterProductId) : transactions;
+  const filteredTx = useMemo(() => {
+    let arr = filterProductId ? transactions.filter(tx => tx.productId === filterProductId) : transactions;
+    if (txDateFilter.mode !== "all") {
+      const { rangeFrom, rangeTo } = txDateFilter;
+      arr = arr.filter(tx => (!rangeFrom || tx.date >= rangeFrom) && (!rangeTo || tx.date <= rangeTo));
+    }
+    return arr;
+  }, [transactions, filterProductId, txDateFilter.mode, txDateFilter.rangeFrom, txDateFilter.rangeTo]);
+
+  const handleExportTx = async () => {
+    setExportingTx(true);
+    try {
+      const XLSX = await loadXLSX();
+      const HEADER = { font: { bold: true, color: { rgb: "FFFFFF" } }, fill: { fgColor: { rgb: "1A3C5E" } } };
+      const rangeLabel = txDateFilter.mode === "all" ? "ทั้งหมด"
+        : `${txDateFilter.rangeFrom || "-"} ถึง ${txDateFilter.rangeTo || "-"}`;
+      const ws = XLSX.utils.aoa_to_sheet([
+        [{ v: "รายการเคลื่อนไหว N2P", s: { font: { bold: true, sz: 14 } } }],
+        ["ช่วงเวลา", rangeLabel],
+        ["วันที่ออกรายงาน", new Date().toLocaleDateString("th-TH", { dateStyle: "long" })],
+        [""],
+        [
+          { v: "ประเภท", s: HEADER }, { v: "SKU", s: HEADER }, { v: "สินค้า", s: HEADER },
+          { v: "จำนวน", s: HEADER }, { v: "วันที่", s: HEADER }, { v: "ผู้ทำรายการ", s: HEADER }, { v: "หมายเหตุ", s: HEADER },
+        ],
+        ...filteredTx.map(tx => {
+          const p = products.find(x => x.id === tx.productId);
+          const v = txView(tx, productUnit(tx.productId));
+          return [v.label, p?.sku || "-", productName(tx.productId), v.amount, tx.date, tx.by || "-", tx.note || "-"];
+        }),
+      ]);
+      ws["!cols"] = [{ wch: 14 }, { wch: 14 }, { wch: 30 }, { wch: 14 }, { wch: 12 }, { wch: 14 }, { wch: 30 }];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "รายการเคลื่อนไหว");
+      const suffix = txDateFilter.mode === "all" ? "" : `_${txDateFilter.rangeFrom || ""}_${txDateFilter.rangeTo || ""}`;
+      XLSX.writeFile(wb, `transactions${suffix}_${todayStr()}.xlsx`);
+    } catch (e) { showToast("Export ไม่สำเร็จ: " + e.message, "error"); }
+    setExportingTx(false);
+  };
 
   // รายการที่นับจริงต่างจากระบบ (ใช้แสดงจำนวนและปุ่มบันทึกในโหมดเช็ค/ปรับสต็อก)
   const stockCheckDiffs = Object.entries(stockCounts)
@@ -2758,6 +2858,10 @@ export default function WarehouseApp() {
                       style={{ background: stockCheckMode ? "#D97706" : "#FFFBEB", color: stockCheckMode ? "#fff" : "#B45309", border: "1px solid #FDE68A", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
                       {stockCheckMode ? "✕ ปิดเช็คสต็อก" : "🔍 เช็ค/ปรับสต็อก"}
                     </button>
+                    <button onClick={handlePrintStockSheet} title="พิมพ์ใบเช็คสต็อกแบบไม่โชว์ยอดคงเหลือ ให้นับจริงแล้วกรอกเอง"
+                      style={{ background: "#F0F9FF", color: "#0369A1", border: "1px solid #BAE6FD", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                      🖨️ พิมพ์ใบเช็คสต็อก
+                    </button>
                     <button onClick={() => { setDisposeMode(true); setSelectedForDispose(new Set()); setStockCheckMode(false); }}
                       style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
                       🗑️ โหมดจำหน่ายออก
@@ -2944,7 +3048,15 @@ export default function WarehouseApp() {
                   style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
                   📤 เบิกออก (หลายรายการ)
                 </button>
+                <button onClick={handleExportTx} disabled={exportingTx || filteredTx.length === 0}
+                  style={{ background: "#EDE9FE", color: "#7C3AED", border: "1px solid #DDD6FE", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: filteredTx.length === 0 ? "not-allowed" : "pointer", opacity: filteredTx.length === 0 ? 0.5 : 1 }}>
+                  {exportingTx ? "⏳..." : "📥 Export Excel"}
+                </button>
               </div>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <DateFilterRow filter={txDateFilter} accent="linear-gradient(135deg,#7C3AED,#3B82F6)" />
             </div>
 
             <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden", overflowX: "auto" }}>
@@ -2981,7 +3093,9 @@ export default function WarehouseApp() {
                 </tbody>
               </table>
               {filteredTx.length === 0 && (
-                <div style={{ textAlign: "center", padding: 48, color: "#9CA3AF" }}>ยังไม่มีรายการเคลื่อนไหว</div>
+                <div style={{ textAlign: "center", padding: 48, color: "#9CA3AF" }}>
+                  {transactions.length === 0 ? "ยังไม่มีรายการเคลื่อนไหว" : "ไม่พบรายการในช่วงที่เลือก — ลองเปลี่ยนตัวกรองวันที่"}
+                </div>
               )}
             </div>
           </div>
