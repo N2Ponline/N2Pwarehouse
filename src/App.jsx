@@ -2053,6 +2053,7 @@ export default function WarehouseApp() {
   const [stockCounts, setStockCounts] = useState({}); // { [productId]: "จำนวนนับจริง" }
   const [checkerName, setCheckerName] = useState(""); // ผู้ตรวจนับ
   const [savingStockCheck, setSavingStockCheck] = useState(false);
+  const [reorderDays, setReorderDays] = useState(7); // จำนวนวันที่ต้องการให้สต็อกพอ ในหน้า "ต้องสั่งซื้อ"
 
   // ── รับเข้าตีกลับ (หลายรายการ ครั้งเดียว) ──
   const [showReturnBatchModal, setShowReturnBatchModal] = useState(false);
@@ -2234,6 +2235,36 @@ export default function WarehouseApp() {
     // สินค้าที่มีสต็อก > 0 และไม่มี transaction ใน 15 วัน
     return products.filter(p => p.quantity > 0 && !recentProductIds.has(p.id));
   })();
+
+  // รายการที่ควรสั่งซื้อ — อิงอัตราเบิกจริง 30 วันล่าสุด, หักลบของที่สั่งรอเข้าแล้ว (qtyOnOrder) เพื่อไม่ให้สั่งซ้ำ
+  const reorderList = useMemo(() => {
+    const now = new Date();
+    const cutoff7 = new Date(now); cutoff7.setDate(cutoff7.getDate() - 7);
+    const cutoff30 = new Date(now); cutoff30.setDate(cutoff30.getDate() - 30);
+    const out7 = {}, out30 = {};
+    transactions.forEach(tx => {
+      if (tx.type !== "out") return;
+      const d = new Date(tx.date);
+      if (d >= cutoff30) out30[tx.productId] = (out30[tx.productId] || 0) + tx.quantity;
+      if (d >= cutoff7) out7[tx.productId] = (out7[tx.productId] || 0) + tx.quantity;
+    });
+    return products
+      .map(p => {
+        const o7 = out7[p.id] || 0;
+        const o30 = out30[p.id] || 0;
+        const dailyRate = o30 / 30;
+        const onOrder = p.qtyOnOrder || 0;
+        const available = p.quantity + onOrder; // นับของที่สั่งรอเข้าเป็นสต็อกที่กำลังจะมี ไม่ต้องสั่งซ้ำ
+        const daysLeft = dailyRate > 0 ? available / dailyRate : Infinity;
+        const targetQty = Math.ceil(dailyRate * reorderDays);
+        const suggested = Math.max(0, targetQty - available);
+        return { ...p, out7: o7, out30: o30, dailyRate, daysLeft, suggested };
+      })
+      .filter(p => p.suggested > 0)
+      .sort((a, b) => a.daysLeft - b.daysLeft);
+  }, [products, transactions, reorderDays]);
+  const reorderCost = reorderList.reduce((s, p) => s + p.suggested * p.price, 0);
+  const reorderOutOfStock = reorderList.filter(p => p.quantity <= 0);
 
   // Export สินค้าคงคลัง Excel
   const [exportingInventory, setExportingInventory] = useState(false);
@@ -2773,10 +2804,10 @@ export default function WarehouseApp() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {[["dashboard","🏠 แดชบอร์ด"],["inventory","📦 คลังสินค้า"],["transactions","🔄 เคลื่อนไหว"],["returns","📮 พัสดุตีกลับ"],["dispose","🗑️ จำหน่ายออก"]].map(([v,l]) => (
+            {[["dashboard","🏠 แดชบอร์ด"],["inventory","📦 คลังสินค้า"],["reorder","🛒 ต้องสั่งซื้อ"],["transactions","🔄 เคลื่อนไหว"],["returns","📮 พัสดุตีกลับ"],["dispose","🗑️ จำหน่ายออก"]].map(([v,l]) => (
               <button key={v} onClick={() => setTab(v)}
-                style={{ background: tab === v ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "transparent", color: tab === v ? "#fff" : "#6B7280", border: "none", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: tab === v ? 700 : 400, cursor: "pointer", transition: "all 0.2s" }}>
-                {l}
+                style={{ background: tab === v ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : v === "reorder" && reorderList.length > 0 ? "#FEF2F2" : "transparent", color: tab === v ? "#fff" : v === "reorder" && reorderList.length > 0 ? "#DC2626" : "#6B7280", border: "none", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: tab === v || (v === "reorder" && reorderList.length > 0) ? 700 : 400, cursor: "pointer", transition: "all 0.2s" }}>
+                {l}{v === "reorder" && reorderList.length > 0 ? ` (${reorderList.length})` : ""}
               </button>
             ))}
           </div>
@@ -3054,6 +3085,78 @@ export default function WarehouseApp() {
               </table>
               {filteredProducts.length === 0 && (
                 <div style={{ textAlign: "center", padding: 48, color: "#9CA3AF" }}>ไม่พบสินค้า — ลองเปลี่ยนคำค้นหรือตัวกรอง</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ─── ต้องสั่งซื้อ ─── */}
+        {tab === "reorder" && (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+              <div>
+                <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🛒 ต้องสั่งซื้อ</h2>
+                <p style={{ fontSize: 13, color: "#6B7280" }}>คำนวณจากอัตราเบิกจริง 30 วันล่าสุด หักลบ "รอเข้า" ที่สั่งไว้แล้วออกให้อัตโนมัติ</p>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <label style={{ fontSize: 13, color: "#6B7280" }}>ให้สต็อกพอสำหรับ</label>
+                <input type="number" min="1" className="inp" style={{ width: 64, padding: "8px 10px", textAlign: "center" }}
+                  value={reorderDays} onChange={e => setReorderDays(Math.max(1, parseInt(e.target.value) || 1))} />
+                <label style={{ fontSize: 13, color: "#6B7280" }}>วัน</label>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 14, marginBottom: 20 }}>
+              {[
+                { label: "รายการที่ต้องสั่ง", value: reorderList.length, icon: "📋", bg: "#F5F3FF", color: "#7C3AED" },
+                { label: "หมดสต็อกแล้ว", value: reorderOutOfStock.length, icon: "🚨", bg: reorderOutOfStock.length > 0 ? "#FEF2F2" : "#F0FDF4", color: reorderOutOfStock.length > 0 ? "#DC2626" : "#059669" },
+                { label: "ยอดสั่งซื้อประเมิน (฿)", value: reorderCost.toLocaleString("th-TH"), icon: "💰", bg: "#EFF6FF", color: "#2563EB" },
+              ].map((s, i) => (
+                <div key={i} style={{ background: "#fff", borderRadius: 16, padding: 18, border: "1px solid #E5E7EB" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ width: 40, height: 40, borderRadius: 10, background: s.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>{s.icon}</div>
+                    <div>
+                      <div style={{ fontSize: 12, color: "#6B7280" }}>{s.label}</div>
+                      <div style={{ fontSize: 20, fontWeight: 700, color: s.color }}>{s.value}</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden", overflowX: "auto" }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>SKU</th><th>ชื่อสินค้า</th><th>คงเหลือ</th><th>รอเข้า</th><th>เบิก 7 วัน</th><th>เบิก 30 วัน</th><th>พอใช้อีก</th><th>แนะนำสั่ง</th><th>ประเมินราคา (฿)</th><th style={{ textAlign: "right" }}>จัดการ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {reorderList.map(p => (
+                    <tr key={p.id}>
+                      <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>{p.sku}</td>
+                      <td>{p.name}</td>
+                      <td style={{ fontWeight: 700, color: statusColor(p).fg }}>{p.quantity}</td>
+                      <td style={{ color: p.qtyOnOrder > 0 ? "#7C3AED" : "#D1D5DB", fontWeight: p.qtyOnOrder > 0 ? 700 : 400 }}>{p.qtyOnOrder > 0 ? `+${p.qtyOnOrder}` : "-"}</td>
+                      <td>{p.out7}</td>
+                      <td>{p.out30}</td>
+                      <td style={{ fontWeight: 700, color: p.quantity <= 0 ? "#DC2626" : p.daysLeft <= 3 ? "#D97706" : "#6B7280" }}>
+                        {p.quantity <= 0 ? "หมดแล้ว" : isFinite(p.daysLeft) ? `${p.daysLeft.toFixed(1)} วัน` : "-"}
+                      </td>
+                      <td style={{ fontWeight: 700, color: "#7C3AED" }}>{p.suggested.toLocaleString("th-TH")}</td>
+                      <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(p.suggested * p.price).toLocaleString("th-TH")}</td>
+                      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                        <button onClick={() => { setTxType("in"); setTxForm({ productId: String(p.id), quantity: "", note: "", by: "" }); setShowModal("tx"); }}
+                          title="รับเข้า" style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", color: "#059669", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer", marginRight: 4, fontWeight: 700 }}>📥</button>
+                        <button onClick={() => openEdit(p)}
+                          title="ตั้งจำนวนรอเข้า" style={{ background: "#F5F3FF", border: "1px solid #DDD6FE", color: "#7C3AED", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer" }}>✏️</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {reorderList.length === 0 && (
+                <div style={{ textAlign: "center", padding: 48, color: "#9CA3AF" }}>ยังไม่มีรายการที่ต้องสั่งซื้อในรอบ {reorderDays} วันข้างหน้า 🎉</div>
               )}
             </div>
           </div>
@@ -3406,96 +3509,4 @@ export default function WarehouseApp() {
                     const checked = returnBatchSelectedIds.has(p.id);
                     return (
                       <div key={p.id} onClick={() => toggleReturnBatchSelect(p.id)}
-                        style={{ padding: "8px 12px", borderBottom: "1px solid #F3F4F6", cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", gap: 10, background: checked ? "#FFF7ED" : "transparent" }}
-                        onMouseEnter={e => { if (!checked) e.currentTarget.style.background = "#FFFBF5"; }}
-                        onMouseLeave={e => { if (!checked) e.currentTarget.style.background = "transparent"; }}>
-                        <input type="checkbox" checked={checked} onChange={() => toggleReturnBatchSelect(p.id)} onClick={e => e.stopPropagation()}
-                          style={{ width: 15, height: 15, cursor: "pointer", flexShrink: 0 }} />
-                        <span style={{ flex: 1 }}>{p.name} <span style={{ color: "#9CA3AF", fontFamily: "monospace", fontSize: 11 }}>({p.sku})</span></span>
-                      </div>
-                    );
-                  })}
-              </div>
-            )}
-
-            {returnBatchSelectedIds.size > 0 && (
-              <button onClick={addSelectedToReturnBatch}
-                style={{ width: "100%", background: "#C2410C", color: "#fff", border: "none", borderRadius: 10, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginBottom: 14 }}>
-                ＋ เพิ่มที่เลือก ({returnBatchSelectedIds.size} รายการ)
-              </button>
-            )}
-
-            <div style={{ border: "1.5px solid #FED7AA", borderRadius: 12, padding: 12, marginBottom: 14, background: "#FFFBF5" }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#C2410C", marginBottom: 8 }}>รายการที่จะรับเข้า ({returnBatchItems.length})</div>
-              {returnBatchItems.length === 0 && <div style={{ fontSize: 13, color: "#9CA3AF", textAlign: "center", padding: 12 }}>ยังไม่มีรายการ — ค้นหาแล้วกดเพิ่มด้านบน</div>}
-              {returnBatchItems.map(it => (
-                <div key={it.productId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid #FDEBD8" }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, color: "#111827" }}>{it.name}</div>
-                    <div style={{ fontSize: 11, color: "#9CA3AF", fontFamily: "monospace" }}>{it.sku}</div>
-                  </div>
-                  <input type="number" min="0" value={it.quantity}
-                    onChange={e => updateReturnBatchQty(it.productId, e.target.value)}
-                    style={{ width: 74, background: "#fff", border: "1.5px solid #FED7AA", borderRadius: 8, padding: "6px 8px", fontSize: 13, textAlign: "center", outline: "none", fontFamily: "'Sarabun', sans-serif" }} />
-                  <span style={{ fontSize: 12, color: "#6B7280", width: 36 }}>{it.unit}</span>
-                  <button onClick={() => removeFromReturnBatch(it.productId)}
-                    style={{ background: "none", border: "none", color: "#D1D5DB", fontSize: 14, cursor: "pointer" }}
-                    onMouseEnter={e => e.target.style.color = "#EF4444"} onMouseLeave={e => e.target.style.color = "#D1D5DB"}>✕</button>
-                </div>
-              ))}
-            </div>
-
-            <div>
-              <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>ผู้ดำเนินการ *</label>
-              <input className="inp" style={{ marginTop: 4 }} value={returnBatchBy} onChange={e => setReturnBatchBy(e.target.value)} placeholder="ชื่อผู้ดำเนินการ" />
-            </div>
-
-            <div style={{ display: "flex", gap: 10, marginTop: 18, justifyContent: "flex-end" }}>
-              <button onClick={() => setShowReturnBatchModal(false)} disabled={savingReturnBatch}
-                style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "11px 18px", fontSize: 14, cursor: "pointer" }}>ยกเลิก</button>
-              <button onClick={handleConfirmReturnBatch} disabled={savingReturnBatch || returnBatchItems.filter(it => it.quantity > 0).length === 0}
-                style={{ background: savingReturnBatch ? "#F3F4F6" : "#C2410C", color: savingReturnBatch ? "#9CA3AF" : "#fff", border: "none", borderRadius: 10, padding: "11px 22px", fontSize: 14, fontWeight: 700, cursor: savingReturnBatch ? "not-allowed" : "pointer" }}>
-                {savingReturnBatch ? "⏳ กำลังบันทึก..." : `✅ รับเข้า${returnBatchIsReturn ? "ตีกลับ" : ""} ${returnBatchItems.filter(it => it.quantity > 0).length} รายการ`}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ─── MODAL: ประวัติสินค้า ─── */}
-      {historyProduct && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(8px)" }}
-          onClick={() => setHistoryProduct(null)}>
-          <div onClick={e => e.stopPropagation()}
-            style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, width: "100%", maxWidth: 520, maxHeight: "85vh", overflowY: "auto", padding: 24, boxShadow: "0 24px 60px rgba(0,0,0,0.15)" }}>
-            <h3 style={{ fontSize: 17, fontWeight: 700, color: "#111827", marginBottom: 2 }}>🕘 ประวัติ: {historyProduct.name}</h3>
-            <p style={{ fontSize: 12, color: "#9CA3AF", fontFamily: "monospace", marginBottom: 14 }}>{historyProduct.sku} · คงเหลือ {historyProduct.quantity} {historyProduct.unit}</p>
-            {transactions.filter(tx => tx.productId === historyProduct.id).length === 0 && (
-              <div style={{ color: "#9CA3AF", fontSize: 13, textAlign: "center", padding: 24 }}>ยังไม่มีประวัติการเคลื่อนไหว</div>
-            )}
-            {transactions.filter(tx => tx.productId === historyProduct.id).map(tx => (
-              <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #F3F4F6", fontSize: 13 }}>
-                <div>
-                  <div style={{ color: "#111827" }}>{tx.type === "in" ? "📥 รับเข้า" : tx.type === "adjust" ? "⚖️ ปรับสต็อก" : "📤 เบิกออก"}{tx.note ? ` · ${tx.note}` : ""}</div>
-                  <div style={{ fontSize: 11, color: "#9CA3AF" }}>{tx.date} · โดย {tx.by || "-"}</div>
-                </div>
-                <span style={{ fontWeight: 700, color: txView(tx).color }}>{txView(tx).amount.trim()}</span>
-              </div>
-            ))}
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
-              <button onClick={() => setHistoryProduct(null)}
-                style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "10px 18px", fontSize: 14, cursor: "pointer" }}>ปิด</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ─── TOAST ─── */}
-      {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 400, background: toast.type === "success" ? "#065F46" : "#991B1B", color: "#fff", borderRadius: 12, padding: "12px 24px", fontSize: 14, fontWeight: 600, boxShadow: "0 12px 32px rgba(0,0,0,0.25)", maxWidth: "90vw" }}>
-          {toast.type === "success" ? "✅ " : "⚠️ "}{toast.msg}
-        </div>
-      )}
-    </div>
-  );
-}
+                        style={{ padding: "8px 12px", borderBottom: "1px solid #F3F4F6", cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", gap: 10, background: checked ? "#FF
