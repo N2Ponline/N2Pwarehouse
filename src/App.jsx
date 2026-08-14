@@ -2265,6 +2265,42 @@ export default function WarehouseApp() {
   }, [products, transactions, reorderDays]);
   const reorderCost = reorderList.reduce((s, p) => s + p.suggested * p.price, 0);
   const reorderOutOfStock = reorderList.filter(p => p.quantity <= 0);
+  const reorderLowStock = reorderList.filter(p => p.quantity > 0);
+
+  const ReorderTable = ({ list }) => (
+    <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden", overflowX: "auto" }}>
+      <table>
+        <thead>
+          <tr>
+            <th>SKU</th><th>ชื่อสินค้า</th><th>คงเหลือ</th><th>รอเข้า</th><th>เบิก 7 วัน</th><th>เบิก 30 วัน</th><th>พอใช้อีก</th><th>แนะนำสั่ง</th><th>ประเมินราคา (฿)</th><th style={{ textAlign: "right" }}>จัดการ</th>
+          </tr>
+        </thead>
+        <tbody>
+          {list.map(p => (
+            <tr key={p.id}>
+              <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>{p.sku}</td>
+              <td>{p.name}</td>
+              <td style={{ fontWeight: 700, color: statusColor(p).fg }}>{p.quantity}</td>
+              <td style={{ color: p.qtyOnOrder > 0 ? "#7C3AED" : "#D1D5DB", fontWeight: p.qtyOnOrder > 0 ? 700 : 400 }}>{p.qtyOnOrder > 0 ? `+${p.qtyOnOrder}` : "-"}</td>
+              <td>{p.out7}</td>
+              <td>{p.out30}</td>
+              <td style={{ fontWeight: 700, color: p.quantity <= 0 ? "#DC2626" : p.daysLeft <= 3 ? "#D97706" : "#6B7280" }}>
+                {p.quantity <= 0 ? "หมดแล้ว" : isFinite(p.daysLeft) ? `${p.daysLeft.toFixed(1)} วัน` : "-"}
+              </td>
+              <td style={{ fontWeight: 700, color: "#7C3AED" }}>{p.suggested.toLocaleString("th-TH")}</td>
+              <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(p.suggested * p.price).toLocaleString("th-TH")}</td>
+              <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                <button onClick={() => { setTxType("in"); setTxForm({ productId: String(p.id), quantity: "", note: "", by: "" }); setShowModal("tx"); }}
+                  title="รับเข้า" style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", color: "#059669", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer", marginRight: 4, fontWeight: 700 }}>📥</button>
+                <button onClick={() => openEdit(p)}
+                  title="ตั้งจำนวนรอเข้า" style={{ background: "#F5F3FF", border: "1px solid #DDD6FE", color: "#7C3AED", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer" }}>✏️</button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 
   // Export สินค้าคงคลัง Excel
   const [exportingInventory, setExportingInventory] = useState(false);
@@ -3106,7 +3142,7 @@ export default function WarehouseApp() {
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 14, marginBottom: 20 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 14, marginBottom: 28 }}>
               {[
                 { label: "รายการที่ต้องสั่ง", value: reorderList.length, icon: "📋", bg: "#F5F3FF", color: "#7C3AED" },
                 { label: "หมดสต็อกแล้ว", value: reorderOutOfStock.length, icon: "🚨", bg: reorderOutOfStock.length > 0 ? "#FEF2F2" : "#F0FDF4", color: reorderOutOfStock.length > 0 ? "#DC2626" : "#059669" },
@@ -3124,39 +3160,29 @@ export default function WarehouseApp() {
               ))}
             </div>
 
-            <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden", overflowX: "auto" }}>
-              <table>
-                <thead>
-                  <tr>
-                    <th>SKU</th><th>ชื่อสินค้า</th><th>คงเหลือ</th><th>รอเข้า</th><th>เบิก 7 วัน</th><th>เบิก 30 วัน</th><th>พอใช้อีก</th><th>แนะนำสั่ง</th><th>ประเมินราคา (฿)</th><th style={{ textAlign: "right" }}>จัดการ</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {reorderList.map(p => (
-                    <tr key={p.id}>
-                      <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>{p.sku}</td>
-                      <td>{p.name}</td>
-                      <td style={{ fontWeight: 700, color: statusColor(p).fg }}>{p.quantity}</td>
-                      <td style={{ color: p.qtyOnOrder > 0 ? "#7C3AED" : "#D1D5DB", fontWeight: p.qtyOnOrder > 0 ? 700 : 400 }}>{p.qtyOnOrder > 0 ? `+${p.qtyOnOrder}` : "-"}</td>
-                      <td>{p.out7}</td>
-                      <td>{p.out30}</td>
-                      <td style={{ fontWeight: 700, color: p.quantity <= 0 ? "#DC2626" : p.daysLeft <= 3 ? "#D97706" : "#6B7280" }}>
-                        {p.quantity <= 0 ? "หมดแล้ว" : isFinite(p.daysLeft) ? `${p.daysLeft.toFixed(1)} วัน` : "-"}
-                      </td>
-                      <td style={{ fontWeight: 700, color: "#7C3AED" }}>{p.suggested.toLocaleString("th-TH")}</td>
-                      <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(p.suggested * p.price).toLocaleString("th-TH")}</td>
-                      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                        <button onClick={() => { setTxType("in"); setTxForm({ productId: String(p.id), quantity: "", note: "", by: "" }); setShowModal("tx"); }}
-                          title="รับเข้า" style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", color: "#059669", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer", marginRight: 4, fontWeight: 700 }}>📥</button>
-                        <button onClick={() => openEdit(p)}
-                          title="ตั้งจำนวนรอเข้า" style={{ background: "#F5F3FF", border: "1px solid #DDD6FE", color: "#7C3AED", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer" }}>✏️</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {reorderList.length === 0 && (
-                <div style={{ textAlign: "center", padding: 48, color: "#9CA3AF" }}>ยังไม่มีรายการที่ต้องสั่งซื้อในรอบ {reorderDays} วันข้างหน้า 🎉</div>
+            {/* กลุ่ม 1: หมดสต็อกแล้ว */}
+            <div style={{ marginBottom: 28 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+                <span style={{ background: "#FEE2E2", color: "#DC2626", borderRadius: 999, padding: "3px 12px", fontSize: 12, fontWeight: 700 }}>ด่วนที่สุด</span>
+                <h3 style={{ fontSize: 16, fontWeight: 700, color: "#111827", margin: 0 }}>หมดสต็อกแล้ว แต่ยังขายได้ต่อเนื่อง</h3>
+                <span style={{ fontSize: 12, color: "#6B7280" }}>{reorderOutOfStock.length} รายการ</span>
+              </div>
+              <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 10 }}>สินค้ากลุ่มนี้เหลือ 0 ชิ้นในคลัง แต่ยังมีการเบิกออกในช่วงที่ผ่านมา — กำลังเสียโอกาสขายอยู่ตอนนี้ ควรสั่งก่อนกลุ่มอื่นทั้งหมด</p>
+              {reorderOutOfStock.length > 0 ? <ReorderTable list={reorderOutOfStock} /> : (
+                <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 28, color: "#9CA3AF" }}>ไม่มีสินค้าหมดสต็อก 🎉</div>
+              )}
+            </div>
+
+            {/* กลุ่ม 2: ใกล้หมด */}
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+                <span style={{ background: "#FEF3C7", color: "#B45309", borderRadius: 999, padding: "3px 12px", fontSize: 12, fontWeight: 700 }}>ใกล้หมด</span>
+                <h3 style={{ fontSize: 16, fontWeight: 700, color: "#111827", margin: 0 }}>จะหมดภายใน {reorderDays} วัน</h3>
+                <span style={{ fontSize: 12, color: "#6B7280" }}>{reorderLowStock.length} รายการ</span>
+              </div>
+              <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 10 }}>ยังมีของอยู่บ้าง แต่ที่อัตราเบิกปัจจุบันจะหมดภายในรอบที่กำหนด ควรสั่งควบคู่ไปกับกลุ่มด่วนที่สุด</p>
+              {reorderLowStock.length > 0 ? <ReorderTable list={reorderLowStock} /> : (
+                <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 28, color: "#9CA3AF" }}>ไม่มีสินค้าใกล้หมด 🎉</div>
               )}
             </div>
           </div>
