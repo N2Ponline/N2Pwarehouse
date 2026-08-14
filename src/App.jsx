@@ -2054,6 +2054,7 @@ export default function WarehouseApp() {
   const [checkerName, setCheckerName] = useState(""); // ผู้ตรวจนับ
   const [savingStockCheck, setSavingStockCheck] = useState(false);
   const [reorderDays, setReorderDays] = useState(7); // จำนวนวันที่ต้องการให้สต็อกพอ ในหน้า "ต้องสั่งซื้อ"
+  const [reorderSearch, setReorderSearch] = useState(""); // ค้นหาชื่อสินค้า/SKU ในหน้า "ต้องสั่งซื้อ"
 
   // ── รับเข้าตีกลับ (หลายรายการ ครั้งเดียว) ──
   const [showReturnBatchModal, setShowReturnBatchModal] = useState(false);
@@ -2266,8 +2267,30 @@ export default function WarehouseApp() {
   const reorderCost = reorderList.reduce((s, p) => s + p.suggested * p.price, 0);
   const reorderOutOfStock = reorderList.filter(p => p.quantity <= 0);
   const reorderLowStock = reorderList.filter(p => p.quantity > 0);
+  const matchesReorderSearch = (p) => {
+    const q = reorderSearch.trim().toLowerCase();
+    if (!q) return true;
+    return p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q);
+  };
+  const reorderOutOfStockView = reorderOutOfStock.filter(matchesReorderSearch);
+  const reorderLowStockView = reorderLowStock.filter(matchesReorderSearch);
 
-  const ReorderTable = ({ list }) => (
+  // ไฮไลท์ข้อความที่ตรงกับคำค้นหา
+  const highlightMatch = (text, query) => {
+    const q = query.trim();
+    if (!q) return text;
+    const idx = text.toLowerCase().indexOf(q.toLowerCase());
+    if (idx === -1) return text;
+    return (
+      <>
+        {text.slice(0, idx)}
+        <mark style={{ background: "#FDE047", color: "#111827", borderRadius: 3, padding: "0 1px" }}>{text.slice(idx, idx + q.length)}</mark>
+        {text.slice(idx + q.length)}
+      </>
+    );
+  };
+
+  const ReorderTable = ({ list, search }) => (
     <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden", overflowX: "auto" }}>
       <table>
         <thead>
@@ -2278,8 +2301,8 @@ export default function WarehouseApp() {
         <tbody>
           {list.map(p => (
             <tr key={p.id}>
-              <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>{p.sku}</td>
-              <td>{p.name}</td>
+              <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>{highlightMatch(p.sku, search)}</td>
+              <td>{highlightMatch(p.name, search)}</td>
               <td style={{ fontWeight: 700, color: statusColor(p).fg }}>{p.quantity}</td>
               <td style={{ color: p.qtyOnOrder > 0 ? "#7C3AED" : "#D1D5DB", fontWeight: p.qtyOnOrder > 0 ? 700 : 400 }}>{p.qtyOnOrder > 0 ? `+${p.qtyOnOrder}` : "-"}</td>
               <td>{p.out7}</td>
@@ -3142,7 +3165,7 @@ export default function WarehouseApp() {
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 14, marginBottom: 28 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 14, marginBottom: 20 }}>
               {[
                 { label: "รายการที่ต้องสั่ง", value: reorderList.length, icon: "📋", bg: "#F5F3FF", color: "#7C3AED" },
                 { label: "หมดสต็อกแล้ว", value: reorderOutOfStock.length, icon: "🚨", bg: reorderOutOfStock.length > 0 ? "#FEF2F2" : "#F0FDF4", color: reorderOutOfStock.length > 0 ? "#DC2626" : "#059669" },
@@ -3160,16 +3183,29 @@ export default function WarehouseApp() {
               ))}
             </div>
 
+            <div style={{ position: "relative", marginBottom: 24, maxWidth: 360 }}>
+              <input className="inp" style={{ width: "100%" }} placeholder="🔍 ค้นหาชื่อสินค้า / SKU..."
+                value={reorderSearch} onChange={e => setReorderSearch(e.target.value)} />
+              {reorderSearch && (
+                <button onClick={() => setReorderSearch("")} title="ล้างคำค้นหา"
+                  style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#9CA3AF", fontSize: 14, cursor: "pointer" }}>✕</button>
+              )}
+            </div>
+
             {/* กลุ่ม 1: หมดสต็อกแล้ว */}
             <div style={{ marginBottom: 28 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
                 <span style={{ background: "#FEE2E2", color: "#DC2626", borderRadius: 999, padding: "3px 12px", fontSize: 12, fontWeight: 700 }}>ด่วนที่สุด</span>
                 <h3 style={{ fontSize: 16, fontWeight: 700, color: "#111827", margin: 0 }}>หมดสต็อกแล้ว แต่ยังขายได้ต่อเนื่อง</h3>
-                <span style={{ fontSize: 12, color: "#6B7280" }}>{reorderOutOfStock.length} รายการ</span>
+                <span style={{ fontSize: 12, color: "#6B7280" }}>{reorderSearch ? `${reorderOutOfStockView.length} / ${reorderOutOfStock.length}` : reorderOutOfStock.length} รายการ</span>
               </div>
               <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 10 }}>สินค้ากลุ่มนี้เหลือ 0 ชิ้นในคลัง แต่ยังมีการเบิกออกในช่วงที่ผ่านมา — กำลังเสียโอกาสขายอยู่ตอนนี้ ควรสั่งก่อนกลุ่มอื่นทั้งหมด</p>
-              {reorderOutOfStock.length > 0 ? <ReorderTable list={reorderOutOfStock} /> : (
+              {reorderOutOfStock.length === 0 ? (
                 <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 28, color: "#9CA3AF" }}>ไม่มีสินค้าหมดสต็อก 🎉</div>
+              ) : reorderOutOfStockView.length === 0 ? (
+                <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 28, color: "#9CA3AF" }}>ไม่พบสินค้าที่ค้นหาในกลุ่มนี้</div>
+              ) : (
+                <ReorderTable list={reorderOutOfStockView} search={reorderSearch} />
               )}
             </div>
 
@@ -3178,11 +3214,15 @@ export default function WarehouseApp() {
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
                 <span style={{ background: "#FEF3C7", color: "#B45309", borderRadius: 999, padding: "3px 12px", fontSize: 12, fontWeight: 700 }}>ใกล้หมด</span>
                 <h3 style={{ fontSize: 16, fontWeight: 700, color: "#111827", margin: 0 }}>จะหมดภายใน {reorderDays} วัน</h3>
-                <span style={{ fontSize: 12, color: "#6B7280" }}>{reorderLowStock.length} รายการ</span>
+                <span style={{ fontSize: 12, color: "#6B7280" }}>{reorderSearch ? `${reorderLowStockView.length} / ${reorderLowStock.length}` : reorderLowStock.length} รายการ</span>
               </div>
               <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 10 }}>ยังมีของอยู่บ้าง แต่ที่อัตราเบิกปัจจุบันจะหมดภายในรอบที่กำหนด ควรสั่งควบคู่ไปกับกลุ่มด่วนที่สุด</p>
-              {reorderLowStock.length > 0 ? <ReorderTable list={reorderLowStock} /> : (
+              {reorderLowStock.length === 0 ? (
                 <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 28, color: "#9CA3AF" }}>ไม่มีสินค้าใกล้หมด 🎉</div>
+              ) : reorderLowStockView.length === 0 ? (
+                <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 28, color: "#9CA3AF" }}>ไม่พบสินค้าที่ค้นหาในกลุ่มนี้</div>
+              ) : (
+                <ReorderTable list={reorderLowStockView} search={reorderSearch} />
               )}
             </div>
           </div>
