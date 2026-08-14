@@ -3096,7 +3096,7 @@ export default function WarehouseApp() {
                     const clearance = clearanceIds.includes(String(p.id));
                     const sel = selectedForDispose.has(p.id);
                     return (
-                      <tr key={p.id} style={{ background: sel ? "#FEF2F2" : pinned ? "#FFFBEB" : "transparent", borderLeft: clearance ? "4px solid #EA580C" : "4px solid transparent" }}>
+                      <tr key={p.id} style={{ background: sel ? "#FEF2F2" : clearance ? "#F5F3FF" : pinned ? "#FFFBEB" : "transparent" }}>
                         {disposeMode && (
                           <td>
                             <input type="checkbox" checked={sel} onChange={() => toggleDispose(p.id)} style={{ width: 16, height: 16, cursor: "pointer" }} />
