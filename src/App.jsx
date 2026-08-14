@@ -52,6 +52,7 @@ const dbToProduct = (r) => ({
   id: r.id, sku: r.sku, name: r.name, category: r.category || "-",
   quantity: r.quantity, minStock: r.min_stock, price: Number(r.price),
   location: r.location || "-", unit: r.unit, imageUrl: r.image_url,
+  qtyOnOrder: r.qty_on_order || 0,
 });
 const productToDb = (p) => ({
   sku: p.sku, name: p.name, category: p.category,
@@ -60,6 +61,7 @@ const productToDb = (p) => ({
   price: parseFloat(p.price) || 0,
   location: p.location || "-", unit: p.unit || "ชิ้น",
   image_url: p.imageUrl || null,
+  qty_on_order: parseInt(p.qtyOnOrder) || 0,
 });
 const dbToTx = (r) => ({
   id: r.id, type: r.type, productId: r.product_id,
@@ -2447,9 +2449,12 @@ export default function WarehouseApp() {
     setSaving(true);
     try {
       const newQty = txType === "in" ? product.quantity + qty : product.quantity - qty;
-      await api.updateProduct(pid, { quantity: newQty });
+      // รับเข้าจริง = ตัดยอด "สั่งซื้อรอเข้า" ลงตามจำนวนที่รับ (ไม่ให้ติดลบ)
+      const newQtyOnOrder = txType === "in" ? Math.max(0, (product.qtyOnOrder || 0) - qty) : (product.qtyOnOrder || 0);
+      const updatePayload = txType === "in" ? { quantity: newQty, qty_on_order: newQtyOnOrder } : { quantity: newQty };
+      await api.updateProduct(pid, updatePayload);
       const [newTx] = await api.addTransaction({ type: txType, product_id: pid, quantity: qty, date: new Date().toISOString().split("T")[0], note: txForm.note || null, by: txForm.by });
-      setProducts(prev => prev.map(p => p.id === pid ? { ...p, quantity: newQty } : p));
+      setProducts(prev => prev.map(p => p.id === pid ? { ...p, quantity: newQty, qtyOnOrder: newQtyOnOrder } : p));
       setTransactions(prev => [dbToTx(newTx), ...prev]);
       setTxForm({ productId: "", quantity: "", note: "", by: "" });
       setShowModal(null);
@@ -2611,7 +2616,7 @@ export default function WarehouseApp() {
 
   const openEdit = (product) => {
     setSelectedProduct(product);
-    setForm({ ...product, quantity: String(product.quantity), minStock: String(product.minStock), price: String(product.price), editBy: "" });
+    setForm({ ...product, quantity: String(product.quantity), minStock: String(product.minStock), price: String(product.price), qtyOnOrder: String(product.qtyOnOrder || 0), editBy: "" });
     setShowModal("edit");
   };
 
@@ -2963,6 +2968,7 @@ export default function WarehouseApp() {
                     <SortTh col="sku" label="SKU" />
                     <SortTh col="name" label="ชื่อสินค้า" />
                     <SortTh col="quantity" label="คงเหลือ" />
+                    <SortTh col="qtyOnOrder" label="รอเข้า" />
                     {stockCheckMode && <th style={{ color: "#FDE68A" }}>นับจริง</th>}
                     <th>หน่วย</th>
                     <SortTh col="minStock" label="ขั้นต่ำ" />
@@ -2999,6 +3005,7 @@ export default function WarehouseApp() {
                           {p.name}
                         </td>
                         <td style={{ fontWeight: 700, color: statusColor(p).fg }}>{p.quantity}</td>
+                        <td style={{ color: p.qtyOnOrder > 0 ? "#7C3AED" : "#D1D5DB", fontWeight: p.qtyOnOrder > 0 ? 700 : 400 }}>{p.qtyOnOrder > 0 ? `+${p.qtyOnOrder}` : "-"}</td>
                         {stockCheckMode && (() => {
                           const raw = stockCounts[p.id] ?? "";
                           const counted = parseInt(raw);
@@ -3240,6 +3247,10 @@ export default function WarehouseApp() {
                   <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>ตำแหน่งจัดเก็บ</label>
                   <input className="inp" style={{ marginTop: 4 }} value={form.location || ""} onChange={e => setForm(f => ({ ...f, location: e.target.value }))} placeholder="เช่น ชั้น A-1" />
                 </div>
+              </div>
+              <div>
+                <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>สั่งซื้อรอเข้า <span style={{ color: "#9CA3AF", fontWeight: 400 }}>(สั่งจากซัพพลายเออร์แล้ว ยังไม่ถึงคลัง — กด 📥รับเข้า ตอนของมาจะตัดยอดนี้ให้อัตโนมัติ)</span></label>
+                <input className="inp" style={{ marginTop: 4 }} type="number" min="0" value={form.qtyOnOrder ?? ""} onChange={e => setForm(f => ({ ...f, qtyOnOrder: e.target.value }))} placeholder="0" />
               </div>
               {showModal === "edit" && (
                 <div style={{ marginTop: 14 }}>
