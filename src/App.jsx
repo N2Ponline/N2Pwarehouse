@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 
 const SUPABASE_URL = "https://slwbzbnomsugffyzjyuv.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsd2J6Ym5vbXN1Z2ZmeXpqeXV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MjIxMDcsImV4cCI6MjA5NTI5ODEwN30.qG3CPT6J_evddK8qmpF7P3bVswn_Du43MEHo33bUnqA";
@@ -2076,16 +2076,7 @@ export default function WarehouseApp() {
   });
   const [scanPasswordInput, setScanPasswordInput] = useState("");
   const [scanPasswordError, setScanPasswordError] = useState("");
-  const [expandedCompareDates, setExpandedCompareDates] = useState(new Set());
   const [showAllCompareDates, setShowAllCompareDates] = useState(false);
-
-  const toggleCompareDate = (date) => {
-    setExpandedCompareDates(prev => {
-      const next = new Set(prev);
-      next.has(date) ? next.delete(date) : next.add(date);
-      return next;
-    });
-  };
 
   const handleUnlockScans = () => {
     if (scanPasswordInput === ORDER_SCANS_PASSWORD) {
@@ -3544,109 +3535,83 @@ export default function WarehouseApp() {
 
             {/* ─── สรุปรายวัน: ตัดสต็อกจริง VS ยอดจาก Extension (เอามาชนกัน) ─── */}
             <div style={{ marginBottom: 20 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#111827", marginBottom: 8 }}>📊 สรุปรายวัน — ตัดสต็อกจริง vs ยอดจาก Extension</div>
-              <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden", overflowX: "auto" }}>
-                {comparisonDates.length === 0 ? (
-                  <div style={{ textAlign: "center", padding: 32, color: "#9CA3AF", fontSize: 13 }}>ยังไม่มีข้อมูลให้เทียบ</div>
-                ) : (
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>วันที่</th>
-                        <th>ตัดสต็อกจริง (ชิ้น)</th>
-                        <th>ยอดจาก Extension (ชิ้น)</th>
-                        <th>ส่วนต่าง</th>
-                        <th>สถานะ</th>
-                        <th></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {comparisonDates.map(date => {
-                        const stockOut = dailyStockOutByDate[date]?.totalQty || 0;
-                        const scanTotal = dailyScanByDate[date]?.totalItems || 0;
-                        const diff = stockOut - scanTotal;
-                        const isOpen = expandedCompareDates.has(date);
-                        const hasBoth = dailyStockOutByDate[date] && dailyScanByDate[date];
-                        const ok = hasBoth && diff === 0;
-                        const productNames = hasBoth
-                          ? Array.from(new Set([
-                              ...Object.keys(dailyStockOutByDate[date]?.byProduct || {}),
-                              ...Object.keys(dailyScanByDate[date]?.byProduct || {}),
-                            ])).sort()
-                          : [];
-                        return (
-                          <Fragment key={date}>
-                            <tr onClick={() => toggleCompareDate(date)} style={{ cursor: "pointer" }}>
-                              <td style={{ whiteSpace: "nowrap", fontWeight: 600 }}>{new Date(date).toLocaleDateString("th-TH", { day: "2-digit", month: "short", year: "numeric" })}</td>
-                              <td style={{ fontFamily: "monospace" }}>{stockOut.toLocaleString("th-TH")}</td>
-                              <td style={{ fontFamily: "monospace" }}>{dailyScanByDate[date] ? scanTotal.toLocaleString("th-TH") : "-"}</td>
-                              <td style={{ fontFamily: "monospace", fontWeight: 700, color: diff === 0 ? "#065F46" : diff > 0 ? "#DC2626" : "#D97706" }}>
-                                {hasBoth ? (diff > 0 ? `+${diff}` : diff) : "-"}
-                              </td>
-                              <td>
-                                {!hasBoth ? (
-                                  <span style={{ fontSize: 12, background: "#F3F4F6", color: "#6B7280", padding: "3px 9px", borderRadius: 20, fontWeight: 700 }}>
-                                    {dailyStockOutByDate[date] ? "ไม่มียอดสแกน" : "ไม่มีการตัดสต็อก"}
-                                  </span>
-                                ) : ok ? (
-                                  <span style={{ fontSize: 12, background: "#D1FAE5", color: "#065F46", padding: "3px 9px", borderRadius: 20, fontWeight: 700 }}>✅ ตรงกัน</span>
-                                ) : (
-                                  <span style={{ fontSize: 12, background: "#FEE2E2", color: "#991B1B", padding: "3px 9px", borderRadius: 20, fontWeight: 700 }}>⚠️ ไม่ตรง</span>
-                                )}
-                              </td>
-                              <td style={{ color: "#9CA3AF" }}>{isOpen ? "▲" : "▼"}</td>
-                            </tr>
-                            {isOpen && (
-                              <tr>
-                                <td colSpan={6} style={{ background: "#F9FAFB", padding: 0 }}>
-                                  <div style={{ padding: "12px 16px" }}>
-                                    {productNames.length === 0 ? (
-                                      <div style={{ fontSize: 12, color: "#9CA3AF" }}>ไม่มีรายละเอียดสินค้า</div>
-                                    ) : (
-                                      <table>
-                                        <thead>
-                                          <tr>
-                                            <th>สินค้า</th>
-                                            <th>ตัดสต็อกจริง</th>
-                                            <th>ยอดจาก Extension</th>
-                                            <th>ส่วนต่าง</th>
-                                          </tr>
-                                        </thead>
-                                        <tbody>
-                                          {productNames.map(name => {
-                                            const outQty = dailyStockOutByDate[date]?.byProduct?.[name] || 0;
-                                            const scanQty = dailyScanByDate[date]?.byProduct?.[name] || 0;
-                                            const pdiff = outQty - scanQty;
-                                            return (
-                                              <tr key={name}>
-                                                <td>{name}</td>
-                                                <td style={{ fontFamily: "monospace" }}>{outQty}</td>
-                                                <td style={{ fontFamily: "monospace" }}>{scanQty}</td>
-                                                <td style={{ fontFamily: "monospace", fontWeight: 700, color: pdiff === 0 ? "#065F46" : "#DC2626" }}>{pdiff > 0 ? `+${pdiff}` : pdiff}</td>
-                                              </tr>
-                                            );
-                                          })}
-                                        </tbody>
-                                      </table>
-                                    )}
-                                    <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 8 }}>* เทียบตามชื่อสินค้าตรงตัว ชื่อที่สะกดต่างกันระหว่างหน้าออเดอร์กับคลังจะไม่จับคู่กันอัตโนมัติ ต้องดูด้วยตาอีกที</p>
-                                  </div>
-                                </td>
-                              </tr>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#111827", marginBottom: 8 }}>📊 สรุปรายวัน — ตัดสต็อกจริง vs ยอดจาก Extension (แยกตามสินค้า)</div>
+              {comparisonDates.length === 0 ? (
+                <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 32, color: "#9CA3AF", fontSize: 13 }}>ยังไม่มีข้อมูลให้เทียบ</div>
+              ) : (
+                <div style={{ display: "grid", gap: 12 }}>
+                  {comparisonDates.map(date => {
+                    const stockOut = dailyStockOutByDate[date]?.totalQty || 0;
+                    const scanTotal = dailyScanByDate[date]?.totalItems || 0;
+                    const diff = stockOut - scanTotal;
+                    const hasBoth = !!dailyStockOutByDate[date] && !!dailyScanByDate[date];
+                    const ok = hasBoth && diff === 0;
+                    const productNames = Array.from(new Set([
+                      ...Object.keys(dailyStockOutByDate[date]?.byProduct || {}),
+                      ...Object.keys(dailyScanByDate[date]?.byProduct || {}),
+                    ])).sort();
+                    return (
+                      <div key={date} style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden" }}>
+                        <div style={{ padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", background: "#F9FAFB", borderBottom: "1px solid #F1F5F9" }}>
+                          <div style={{ fontWeight: 700, fontSize: 13, color: "#111827" }}>{new Date(date).toLocaleDateString("th-TH", { day: "2-digit", month: "short", year: "numeric" })}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", fontSize: 12 }}>
+                            <span style={{ color: "#6B7280" }}>ตัดสต็อกจริง: <b style={{ fontFamily: "monospace", color: "#111827" }}>{stockOut.toLocaleString("th-TH")}</b></span>
+                            <span style={{ color: "#6B7280" }}>ยอด Extension: <b style={{ fontFamily: "monospace", color: "#111827" }}>{dailyScanByDate[date] ? scanTotal.toLocaleString("th-TH") : "-"}</b></span>
+                            <span style={{ color: "#6B7280" }}>ส่วนต่าง: <b style={{ fontFamily: "monospace", color: !hasBoth ? "#9CA3AF" : diff === 0 ? "#065F46" : "#DC2626" }}>{hasBoth ? (diff > 0 ? `+${diff}` : diff) : "-"}</b></span>
+                            {!hasBoth ? (
+                              <span style={{ background: "#F3F4F6", color: "#6B7280", padding: "3px 9px", borderRadius: 20, fontWeight: 700 }}>
+                                {dailyStockOutByDate[date] ? "ไม่มียอดสแกน" : "ไม่มีการตัดสต็อก"}
+                              </span>
+                            ) : ok ? (
+                              <span style={{ background: "#D1FAE5", color: "#065F46", padding: "3px 9px", borderRadius: 20, fontWeight: 700 }}>✅ ตรงกัน</span>
+                            ) : (
+                              <span style={{ background: "#FEE2E2", color: "#991B1B", padding: "3px 9px", borderRadius: 20, fontWeight: 700 }}>⚠️ ไม่ตรง</span>
                             )}
-                          </Fragment>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                )}
-              </div>
+                          </div>
+                        </div>
+                        <div style={{ overflowX: "auto" }}>
+                          {productNames.length === 0 ? (
+                            <div style={{ fontSize: 12, color: "#9CA3AF", padding: 16, textAlign: "center" }}>ไม่มีรายละเอียดสินค้า</div>
+                          ) : (
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th>สินค้า</th>
+                                  <th>ตัดสต็อกจริง</th>
+                                  <th>ยอดจาก Extension</th>
+                                  <th>ส่วนต่าง</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {productNames.map(name => {
+                                  const outQty = dailyStockOutByDate[date]?.byProduct?.[name] || 0;
+                                  const scanQty = dailyScanByDate[date]?.byProduct?.[name] || 0;
+                                  const pdiff = outQty - scanQty;
+                                  return (
+                                    <tr key={name}>
+                                      <td>{name}</td>
+                                      <td style={{ fontFamily: "monospace" }}>{outQty}</td>
+                                      <td style={{ fontFamily: "monospace" }}>{scanQty}</td>
+                                      <td style={{ fontFamily: "monospace", fontWeight: 700, color: pdiff === 0 ? "#065F46" : "#DC2626" }}>{pdiff > 0 ? `+${pdiff}` : pdiff}</td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
               {!showAllCompareDates && comparisonDatesAll.length > comparisonDates.length && (
                 <button onClick={() => setShowAllCompareDates(true)}
-                  style={{ marginTop: 8, background: "transparent", border: "none", color: "#7C3AED", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                  style={{ marginTop: 10, background: "transparent", border: "none", color: "#7C3AED", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
                   ดูย้อนหลังทั้งหมด ({comparisonDatesAll.length - comparisonDates.length} วันที่เหลือ) ▼
                 </button>
               )}
+              <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 8 }}>* เทียบตามชื่อสินค้าตรงตัว ชื่อที่สะกดต่างกันระหว่างหน้าออเดอร์กับคลังจะไม่จับคู่กันอัตโนมัติ ต้องดูด้วยตาอีกที</p>
             </div>
 
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
