@@ -46,6 +46,9 @@ const api = {
   deleteProduct: (id) => sb(`products?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
   getTransactions: () => sbAll("transactions?select=*&order=created_at.desc"),
   addTransaction: (t) => sb("transactions", { method: "POST", body: JSON.stringify(t) }),
+  getOrderScans: () => sbAll("order_scans?select=*&order=created_at.desc"),
+  reviewOrderScan: (id, by) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ reviewed: true, reviewed_by: by, reviewed_at: new Date().toISOString() }) }),
+  unreviewOrderScan: (id) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ reviewed: false, reviewed_by: null, reviewed_at: null }) }),
 };
 
 const dbToProduct = (r) => ({
@@ -2059,6 +2062,13 @@ export default function WarehouseApp() {
   const [reorderDays, setReorderDays] = useState(7); // จำนวนวันที่ต้องการให้สต็อกพอ ในหน้า "ต้องสั่งซื้อ"
   const [reorderSearch, setReorderSearch] = useState(""); // ค้นหาชื่อสินค้า/SKU ในหน้า "ต้องสั่งซื้อ"
 
+  // ── ยอดออเดอร์ (จาก MyOrder extension) — ไว้ให้แอดมินเทียบกับที่พนักงานตัดสต็อกจริง ──
+  const [orderScans, setOrderScans] = useState([]);
+  const [loadingOrderScans, setLoadingOrderScans] = useState(false);
+  const [orderScanSearch, setOrderScanSearch] = useState("");
+  const [expandedScanIds, setExpandedScanIds] = useState(new Set());
+  const [reviewerName, setReviewerName] = useState("");
+
   // ── รับเข้าตีกลับ (หลายรายการ ครั้งเดียว) ──
   const [showReturnBatchModal, setShowReturnBatchModal] = useState(false);
   const [returnBatchSearch, setReturnBatchSearch] = useState("");
@@ -2082,6 +2092,36 @@ export default function WarehouseApp() {
       setDisposeRecords(data || []);
     } catch (e) { console.error(e); }
     setLoadingDispose(false);
+  };
+
+  const loadOrderScans = async () => {
+    setLoadingOrderScans(true);
+    try {
+      const data = await api.getOrderScans();
+      setOrderScans(data || []);
+    } catch (e) { console.error(e); }
+    setLoadingOrderScans(false);
+  };
+
+  const toggleScanExpanded = (id) => {
+    setExpandedScanIds(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const toggleScanReviewed = async (scan) => {
+    try {
+      if (scan.reviewed) {
+        await api.unreviewOrderScan(scan.id);
+        setOrderScans(prev => prev.map(s => s.id === scan.id ? { ...s, reviewed: false, reviewed_by: null, reviewed_at: null } : s));
+      } else {
+        if (!reviewerName.trim()) return showToast("กรุณากรอกชื่อผู้ตรวจก่อน", "error");
+        await api.reviewOrderScan(scan.id, reviewerName.trim());
+        setOrderScans(prev => prev.map(s => s.id === scan.id ? { ...s, reviewed: true, reviewed_by: reviewerName.trim(), reviewed_at: new Date().toISOString() } : s));
+      }
+    } catch (e) { showToast(e.message, "error"); }
   };
 
   const toggleDispose = (id) => {
@@ -2199,6 +2239,7 @@ export default function WarehouseApp() {
 
   useEffect(() => { loadAll(); }, [loadAll]);
   useEffect(() => { if (tab === "dispose") loadDisposeRecords(); }, [tab]);
+  useEffect(() => { if (tab === "orderscans") loadOrderScans(); }, [tab]);
 
   const handleSort = (col) => {
     if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -2835,6 +2876,15 @@ export default function WarehouseApp() {
     (r.disposed_by || "").toLowerCase().includes(disposeSearch.trim().toLowerCase())
   );
 
+  const filteredOrderScans = orderScans.filter(s => {
+    const q = orderScanSearch.trim().toLowerCase();
+    if (!q) return true;
+    if ((s.page_name || "").toLowerCase().includes(q)) return true;
+    const products = Array.isArray(s.products) ? s.products : [];
+    return products.some(p => (p.name || "").toLowerCase().includes(q));
+  });
+  const unreviewedScanCount = orderScans.filter(s => !s.reviewed).length;
+
   const appStyles = `
     @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -2885,12 +2935,15 @@ export default function WarehouseApp() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {[["dashboard","🏠 แดชบอร์ด"],["inventory","📦 คลังสินค้า"],["reorder","🛒 ต้องสั่งซื้อ"],["transactions","🔄 เคลื่อนไหว"],["returns","📮 พัสดุตีกลับ"],["dispose","🗑️ จำหน่ายออก"]].map(([v,l]) => (
+            {[["dashboard","🏠 แดชบอร์ด"],["inventory","📦 คลังสินค้า"],["reorder","🛒 ต้องสั่งซื้อ"],["transactions","🔄 เคลื่อนไหว"],["returns","📮 พัสดุตีกลับ"],["dispose","🗑️ จำหน่ายออก"],["orderscans","🧾 ยอดออเดอร์"]].map(([v,l]) => {
+              const badgeCount = v === "reorder" ? reorderList.length : v === "orderscans" ? unreviewedScanCount : 0;
+              return (
               <button key={v} onClick={() => setTab(v)}
-                style={{ background: tab === v ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : v === "reorder" && reorderList.length > 0 ? "#FEF2F2" : "transparent", color: tab === v ? "#fff" : v === "reorder" && reorderList.length > 0 ? "#DC2626" : "#6B7280", border: "none", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: tab === v || (v === "reorder" && reorderList.length > 0) ? 700 : 400, cursor: "pointer", transition: "all 0.2s" }}>
-                {l}{v === "reorder" && reorderList.length > 0 ? ` (${reorderList.length})` : ""}
+                style={{ background: tab === v ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : badgeCount > 0 ? "#FEF2F2" : "transparent", color: tab === v ? "#fff" : badgeCount > 0 ? "#DC2626" : "#6B7280", border: "none", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: tab === v || badgeCount > 0 ? 700 : 400, cursor: "pointer", transition: "all 0.2s" }}>
+                {l}{badgeCount > 0 ? ` (${badgeCount})` : ""}
               </button>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>
@@ -3390,6 +3443,106 @@ export default function WarehouseApp() {
             )}
           </div>
         )}
+
+        {/* ─── ยอดออเดอร์ (จาก MyOrder extension) ─── */}
+        {tab === "orderscans" && (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
+              <div>
+                <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🧾 ยอดออเดอร์ (จาก MyOrder)</h2>
+                <p style={{ fontSize: 13, color: "#6B7280" }}>ยอดสรุปสินค้าที่พนักงานติ๊กไว้บน myorder.ai ก่อนแพ็ก — ใช้เทียบกับรายการ "เบิกออก" จริงในระบบ เพื่อตรวจว่าตัดสต็อกตรงกันหรือไม่ · ค้างตรวจ {unreviewedScanCount} รายการ</p>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+              <input className="inp" style={{ flex: "1 1 240px" }} placeholder="🔍 ค้นหาชื่อร้าน/เพจ หรือชื่อสินค้า..."
+                value={orderScanSearch} onChange={e => setOrderScanSearch(e.target.value)} />
+              <input className="inp" style={{ flex: "1 1 180px" }} placeholder="ชื่อผู้ตรวจ (กรอกก่อนกดตรวจแล้ว)"
+                value={reviewerName} onChange={e => setReviewerName(e.target.value)} />
+            </div>
+
+            {loadingOrderScans && <div style={{ textAlign: "center", padding: 40, color: "#6B7280" }}>กำลังโหลดข้อมูล...</div>}
+
+            {!loadingOrderScans && filteredOrderScans.length === 0 && (
+              <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 48, color: "#9CA3AF" }}>
+                {orderScans.length === 0 ? "ยังไม่มียอดที่ส่งเข้ามาจาก extension" : "ไม่พบรายการที่ค้นหา"}
+              </div>
+            )}
+
+            {!loadingOrderScans && filteredOrderScans.length > 0 && (
+              <div style={{ display: "grid", gap: 12 }}>
+                {filteredOrderScans.map(s => {
+                  const isOpen = expandedScanIds.has(s.id);
+                  const products = Array.isArray(s.products) ? s.products : [];
+                  const shipEntries = s.ship_summary && typeof s.ship_summary === "object" ? Object.entries(s.ship_summary) : [];
+                  const codEntries = s.cod_amount_summary && typeof s.cod_amount_summary === "object" ? Object.entries(s.cod_amount_summary) : [];
+                  return (
+                    <div key={s.id} style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden" }}>
+                      <div style={{ padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", cursor: "pointer" }}
+                        onClick={() => toggleScanExpanded(s.id)}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>{s.page_name || "ไม่ระบุร้าน"}</span>
+                          <span style={{ fontSize: 12, color: "#9CA3AF" }}>{s.created_at ? new Date(s.created_at).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" }) : "-"}</span>
+                          <span style={{ fontSize: 12, background: "#EEF2FF", color: "#4F46E5", padding: "2px 8px", borderRadius: 20, fontWeight: 700 }}>{s.total_orders} ออเดอร์</span>
+                          <span style={{ fontSize: 12, background: "#EEF2FF", color: "#4F46E5", padding: "2px 8px", borderRadius: 20, fontWeight: 700 }}>{s.total_items} ชิ้น</span>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ fontSize: 12, fontWeight: 700, padding: "4px 10px", borderRadius: 20, background: s.reviewed ? "#D1FAE5" : "#FEF3C7", color: s.reviewed ? "#065F46" : "#92400E" }}>
+                            {s.reviewed ? `✅ ตรวจแล้ว · ${s.reviewed_by || ""}` : "⏳ ยังไม่ตรวจ"}
+                          </span>
+                          <button onClick={(e) => { e.stopPropagation(); toggleScanReviewed(s); }}
+                            style={{ background: s.reviewed ? "#F3F4F6" : "#7C3AED", color: s.reviewed ? "#6B7280" : "#fff", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                            {s.reviewed ? "เลิกตรวจ" : "ตรวจแล้ว"}
+                          </button>
+                          <span style={{ color: "#9CA3AF", fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
+                        </div>
+                      </div>
+                      {isOpen && (
+                        <div style={{ borderTop: "1px solid #F1F5F9", padding: "14px 16px", display: "grid", gap: 14 }}>
+                          <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+                            <div style={{ fontSize: 12, color: "#6B7280" }}>💳 COD: <b style={{ color: "#92400E" }}>{s.cod_count ?? 0}</b> · โอนเงิน/Bank: <b style={{ color: "#065F46" }}>{s.bank_count ?? 0}</b></div>
+                          </div>
+                          {codEntries.length > 0 && (
+                            <div>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 6 }}>💵 ยอด COD</div>
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                {codEntries.map(([amount, count]) => (
+                                  <span key={amount} style={{ fontSize: 12, background: "#FEF3C7", color: "#92400E", padding: "4px 10px", borderRadius: 8 }}>{Number(amount).toLocaleString("th-TH")} บาท × {count}</span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {shipEntries.length > 0 && (
+                            <div>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 6 }}>🚚 ขนส่ง</div>
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                {shipEntries.map(([name, count]) => (
+                                  <span key={name} style={{ fontSize: 12, background: "#EEF2FF", color: "#4F46E5", padding: "4px 10px", borderRadius: 8 }}>{name} × {count}</span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          <div>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 6 }}>📦 สินค้า (รวม {s.total_items} ชิ้น) — เทียบกับรายการเบิกออกจริง</div>
+                            <div style={{ border: "1px solid #F1F5F9", borderRadius: 10, overflow: "hidden" }}>
+                              {products.map((p, i) => (
+                                <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", borderBottom: i < products.length - 1 ? "1px solid #F1F5F9" : "none", fontSize: 13 }}>
+                                  <span style={{ color: "#334155" }}>{p.name}</span>
+                                  <span style={{ fontWeight: 700, color: "#4F46E5" }}>{p.qty} ชิ้น</span>
+                                </div>
+                              ))}
+                              {products.length === 0 && <div style={{ padding: 12, color: "#9CA3AF", fontSize: 12, textAlign: "center" }}>ไม่มีรายการสินค้า</div>}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ─── MODAL: เพิ่ม/แก้ไขสินค้า ─── */}
@@ -3563,133 +3716,4 @@ export default function WarehouseApp() {
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 20, justifyContent: "flex-end" }}>
               <button onClick={() => setShowModal(null)} disabled={saving}
-                style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "11px 18px", fontSize: 14, cursor: "pointer" }}>ยกเลิก</button>
-              <button onClick={handleTransaction} disabled={saving}
-                style={{ background: saving ? "#F3F4F6" : txType === "in" ? "#059669" : "#DC2626", color: saving ? "#9CA3AF" : "#fff", border: "none", borderRadius: 10, padding: "11px 22px", fontSize: 14, fontWeight: 700, cursor: saving ? "not-allowed" : "pointer" }}>
-                {saving ? "⏳ กำลังบันทึก..." : txType === "in" ? "✅ รับเข้า" : "✅ เบิกออก"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ─── MODAL: รับเข้าตีกลับ (หลายรายการ) ─── */}
-      {showReturnBatchModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(8px)" }}
-          onClick={() => { if (!savingReturnBatch) setShowReturnBatchModal(false); }}>
-          <div onClick={e => e.stopPropagation()}
-            style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, width: "100%", maxWidth: 620, maxHeight: "90vh", overflowY: "auto", padding: 24, boxShadow: "0 24px 60px rgba(0,0,0,0.15)" }}>
-            <h3 style={{ fontSize: 18, fontWeight: 700, color: "#C2410C", marginBottom: 4 }}>📦 รับเข้าหลายรายการ</h3>
-            <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 14 }}>เลือกสินค้าที่จะรับเข้าคลัง — ระบบจะเพิ่มสต็อกให้อัตโนมัติ</p>
-
-            <label style={{ display: "flex", alignItems: "center", gap: 8, background: "#FFFBF5", border: "1.5px solid #FED7AA", borderRadius: 10, padding: "9px 12px", marginBottom: 14, cursor: "pointer" }}>
-              <input type="checkbox" checked={returnBatchIsReturn} onChange={e => setReturnBatchIsReturn(e.target.checked)}
-                style={{ width: 16, height: 16, cursor: "pointer" }} />
-              <span style={{ fontSize: 13, color: "#C2410C", fontWeight: 600 }}>📮 เป็นการรับเข้าตีกลับ (บันทึกหมายเหตุ "ตีกลับ" ให้อัตโนมัติ)</span>
-            </label>
-
-            <input className="inp" style={{ marginBottom: 10 }} placeholder="🔍 ค้นหาสินค้าเพื่อเพิ่มลงรายการ..."
-              value={returnBatchSearch} onChange={e => setReturnBatchSearch(e.target.value)} />
-
-            {returnBatchSearch.trim() !== "" && (
-              <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, maxHeight: 220, overflowY: "auto", marginBottom: returnBatchSelectedIds.size > 0 ? 8 : 14 }}>
-                {products
-                  .filter(p => p.name.toLowerCase().includes(returnBatchSearch.trim().toLowerCase()) || p.sku.toLowerCase().includes(returnBatchSearch.trim().toLowerCase()))
-                  .slice(0, 50)
-                  .map(p => {
-                    const checked = returnBatchSelectedIds.has(p.id);
-                    return (
-                      <div key={p.id} onClick={() => toggleReturnBatchSelect(p.id)}
-                        style={{ padding: "8px 12px", borderBottom: "1px solid #F3F4F6", cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", gap: 10, background: checked ? "#FFF7ED" : "transparent" }}
-                        onMouseEnter={e => { if (!checked) e.currentTarget.style.background = "#FFFBF5"; }}
-                        onMouseLeave={e => { if (!checked) e.currentTarget.style.background = "transparent"; }}>
-                        <input type="checkbox" checked={checked} onChange={() => toggleReturnBatchSelect(p.id)} onClick={e => e.stopPropagation()}
-                          style={{ width: 15, height: 15, cursor: "pointer", flexShrink: 0 }} />
-                        <span style={{ flex: 1 }}>{p.name} <span style={{ color: "#9CA3AF", fontFamily: "monospace", fontSize: 11 }}>({p.sku})</span></span>
-                      </div>
-                    );
-                  })}
-              </div>
-            )}
-
-            {returnBatchSelectedIds.size > 0 && (
-              <button onClick={addSelectedToReturnBatch}
-                style={{ width: "100%", background: "#C2410C", color: "#fff", border: "none", borderRadius: 10, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", marginBottom: 14 }}>
-                ＋ เพิ่มที่เลือก ({returnBatchSelectedIds.size} รายการ)
-              </button>
-            )}
-
-            <div style={{ border: "1.5px solid #FED7AA", borderRadius: 12, padding: 12, marginBottom: 14, background: "#FFFBF5" }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#C2410C", marginBottom: 8 }}>รายการที่จะรับเข้า ({returnBatchItems.length})</div>
-              {returnBatchItems.length === 0 && <div style={{ fontSize: 13, color: "#9CA3AF", textAlign: "center", padding: 12 }}>ยังไม่มีรายการ — ค้นหาแล้วกดเพิ่มด้านบน</div>}
-              {returnBatchItems.map(it => (
-                <div key={it.productId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid #FDEBD8" }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, color: "#111827" }}>{it.name}</div>
-                    <div style={{ fontSize: 11, color: "#9CA3AF", fontFamily: "monospace" }}>{it.sku}</div>
-                  </div>
-                  <input type="number" min="0" value={it.quantity}
-                    onChange={e => updateReturnBatchQty(it.productId, e.target.value)}
-                    style={{ width: 74, background: "#fff", border: "1.5px solid #FED7AA", borderRadius: 8, padding: "6px 8px", fontSize: 13, textAlign: "center", outline: "none", fontFamily: "'Sarabun', sans-serif" }} />
-                  <span style={{ fontSize: 12, color: "#6B7280", width: 36 }}>{it.unit}</span>
-                  <button onClick={() => removeFromReturnBatch(it.productId)}
-                    style={{ background: "none", border: "none", color: "#D1D5DB", fontSize: 14, cursor: "pointer" }}
-                    onMouseEnter={e => e.target.style.color = "#EF4444"} onMouseLeave={e => e.target.style.color = "#D1D5DB"}>✕</button>
-                </div>
-              ))}
-            </div>
-
-            <div>
-              <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>ผู้ดำเนินการ *</label>
-              <input className="inp" style={{ marginTop: 4 }} value={returnBatchBy} onChange={e => setReturnBatchBy(e.target.value)} placeholder="ชื่อผู้ดำเนินการ" />
-            </div>
-
-            <div style={{ display: "flex", gap: 10, marginTop: 18, justifyContent: "flex-end" }}>
-              <button onClick={() => setShowReturnBatchModal(false)} disabled={savingReturnBatch}
-                style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "11px 18px", fontSize: 14, cursor: "pointer" }}>ยกเลิก</button>
-              <button onClick={handleConfirmReturnBatch} disabled={savingReturnBatch || returnBatchItems.filter(it => it.quantity > 0).length === 0}
-                style={{ background: savingReturnBatch ? "#F3F4F6" : "#C2410C", color: savingReturnBatch ? "#9CA3AF" : "#fff", border: "none", borderRadius: 10, padding: "11px 22px", fontSize: 14, fontWeight: 700, cursor: savingReturnBatch ? "not-allowed" : "pointer" }}>
-                {savingReturnBatch ? "⏳ กำลังบันทึก..." : `✅ รับเข้า${returnBatchIsReturn ? "ตีกลับ" : ""} ${returnBatchItems.filter(it => it.quantity > 0).length} รายการ`}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ─── MODAL: ประวัติสินค้า ─── */}
-      {historyProduct && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(8px)" }}
-          onClick={() => setHistoryProduct(null)}>
-          <div onClick={e => e.stopPropagation()}
-            style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, width: "100%", maxWidth: 520, maxHeight: "85vh", overflowY: "auto", padding: 24, boxShadow: "0 24px 60px rgba(0,0,0,0.15)" }}>
-            <h3 style={{ fontSize: 17, fontWeight: 700, color: "#111827", marginBottom: 2 }}>🕘 ประวัติ: {historyProduct.name}</h3>
-            <p style={{ fontSize: 12, color: "#9CA3AF", fontFamily: "monospace", marginBottom: 14 }}>{historyProduct.sku} · คงเหลือ {historyProduct.quantity} {historyProduct.unit}</p>
-            {transactions.filter(tx => tx.productId === historyProduct.id).length === 0 && (
-              <div style={{ color: "#9CA3AF", fontSize: 13, textAlign: "center", padding: 24 }}>ยังไม่มีประวัติการเคลื่อนไหว</div>
-            )}
-            {transactions.filter(tx => tx.productId === historyProduct.id).map(tx => (
-              <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #F3F4F6", fontSize: 13 }}>
-                <div>
-                  <div style={{ color: "#111827" }}>{tx.type === "in" ? "📥 รับเข้า" : tx.type === "adjust" ? "⚖️ ปรับสต็อก" : "📤 เบิกออก"}{tx.note ? ` · ${tx.note}` : ""}</div>
-                  <div style={{ fontSize: 11, color: "#9CA3AF" }}>{tx.date} · โดย {tx.by || "-"}</div>
-                </div>
-                <span style={{ fontWeight: 700, color: txView(tx).color }}>{txView(tx).amount.trim()}</span>
-              </div>
-            ))}
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
-              <button onClick={() => setHistoryProduct(null)}
-                style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "10px 18px", fontSize: 14, cursor: "pointer" }}>ปิด</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ─── TOAST ─── */}
-      {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 400, background: toast.type === "success" ? "#065F46" : "#991B1B", color: "#fff", borderRadius: 12, padding: "12px 24px", fontSize: 14, fontWeight: 600, boxShadow: "0 12px 32px rgba(0,0,0,0.25)", maxWidth: "90vw" }}>
-          {toast.type === "success" ? "✅ " : "⚠️ "}{toast.msg}
-        </div>
-      )}
-    </div>
-  );
-}
+                style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10,
