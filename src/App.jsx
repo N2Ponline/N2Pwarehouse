@@ -3,6 +3,9 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 const SUPABASE_URL = "https://slwbzbnomsugffyzjyuv.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsd2J6Ym5vbXN1Z2ZmeXpqeXV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MjIxMDcsImV4cCI6MjA5NTI5ODEwN30.qG3CPT6J_evddK8qmpF7P3bVswn_Du43MEHo33bUnqA";
 
+// รหัสเข้าดูแท็บ "ยอดออเดอร์" — เฉพาะผู้จัดการ (กันคนทั่วไปกดเข้าไปโดยไม่ตั้งใจ ไม่ใช่ระบบ auth จริง)
+const ORDER_SCANS_PASSWORD = "168168";
+
 const sb = async (path, opts = {}) => {
   const { headers: extraHeaders, prefer, ...restOpts } = opts;
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
@@ -2068,6 +2071,22 @@ export default function WarehouseApp() {
   const [orderScanSearch, setOrderScanSearch] = useState("");
   const [expandedScanIds, setExpandedScanIds] = useState(new Set());
   const [reviewerName, setReviewerName] = useState("");
+  const [scansUnlocked, setScansUnlocked] = useState(() => {
+    try { return sessionStorage.getItem("orderScansUnlocked") === "1"; } catch { return false; }
+  });
+  const [scanPasswordInput, setScanPasswordInput] = useState("");
+  const [scanPasswordError, setScanPasswordError] = useState("");
+
+  const handleUnlockScans = () => {
+    if (scanPasswordInput === ORDER_SCANS_PASSWORD) {
+      setScansUnlocked(true);
+      setScanPasswordError("");
+      setScanPasswordInput("");
+      try { sessionStorage.setItem("orderScansUnlocked", "1"); } catch {}
+    } else {
+      setScanPasswordError("รหัสไม่ถูกต้อง");
+    }
+  };
 
   // ── รับเข้าตีกลับ (หลายรายการ ครั้งเดียว) ──
   const [showReturnBatchModal, setShowReturnBatchModal] = useState(false);
@@ -2239,7 +2258,7 @@ export default function WarehouseApp() {
 
   useEffect(() => { loadAll(); }, [loadAll]);
   useEffect(() => { if (tab === "dispose") loadDisposeRecords(); }, [tab]);
-  useEffect(() => { if (tab === "orderscans") loadOrderScans(); }, [tab]);
+  useEffect(() => { if (tab === "orderscans" && scansUnlocked) loadOrderScans(); }, [tab, scansUnlocked]);
 
   const handleSort = (col) => {
     if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -3444,8 +3463,27 @@ export default function WarehouseApp() {
           </div>
         )}
 
-        {/* ─── ยอดออเดอร์ (จาก MyOrder extension) ─── */}
-        {tab === "orderscans" && (
+        {/* ─── ยอดออเดอร์ (จาก MyOrder extension) — เฉพาะผู้จัดการ ─── */}
+        {tab === "orderscans" && !scansUnlocked && (
+          <div style={{ display: "flex", justifyContent: "center", padding: "60px 20px" }}>
+            <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 32, width: "100%", maxWidth: 340, textAlign: "center" }}>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
+              <div style={{ fontWeight: 700, fontSize: 15, color: "#111827", marginBottom: 4 }}>หน้านี้เฉพาะผู้จัดการ</div>
+              <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 16 }}>กรุณากรอกรหัสผ่านเพื่อดูยอดตรวจสอบออเดอร์</div>
+              <input className="inp" type="password" inputMode="numeric" placeholder="รหัสผ่าน"
+                value={scanPasswordInput}
+                onChange={e => { setScanPasswordInput(e.target.value); setScanPasswordError(""); }}
+                onKeyDown={e => { if (e.key === "Enter") handleUnlockScans(); }}
+                style={{ textAlign: "center", letterSpacing: 4, marginBottom: 8 }} autoFocus />
+              {scanPasswordError && <div style={{ color: "#DC2626", fontSize: 12, marginBottom: 8 }}>{scanPasswordError}</div>}
+              <button onClick={handleUnlockScans}
+                style={{ width: "100%", background: "#7C3AED", color: "#fff", border: "none", borderRadius: 10, padding: "10px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                ปลดล็อก
+              </button>
+            </div>
+          </div>
+        )}
+        {tab === "orderscans" && scansUnlocked && (
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
               <div>
