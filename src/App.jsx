@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from "react";
 
 const SUPABASE_URL = "https://slwbzbnomsugffyzjyuv.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsd2J6Ym5vbXN1Z2ZmeXpqeXV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MjIxMDcsImV4cCI6MjA5NTI5ODEwN30.qG3CPT6J_evddK8qmpF7P3bVswn_Du43MEHo33bUnqA";
@@ -52,6 +52,7 @@ const api = {
   getOrderScans: () => sbAll("order_scans?select=*&order=created_at.desc"),
   reviewOrderScan: (id, by) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ reviewed: true, reviewed_by: by, reviewed_at: new Date().toISOString() }) }),
   unreviewOrderScan: (id) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ reviewed: false, reviewed_by: null, reviewed_at: null }) }),
+  deleteOrderScan: (id) => sb(`order_scans?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
 };
 
 const dbToProduct = (r) => ({
@@ -2076,7 +2077,18 @@ export default function WarehouseApp() {
   });
   const [scanPasswordInput, setScanPasswordInput] = useState("");
   const [scanPasswordError, setScanPasswordError] = useState("");
-  const [showAllCompareDates, setShowAllCompareDates] = useState(false);
+  const [orderScansView, setOrderScansView] = useState("summary"); // "summary" | "list"
+  const [expandedCompareDates, setExpandedCompareDates] = useState(new Set());
+  const [scanDateFrom, setScanDateFrom] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 13); return localDateStr(d); });
+  const [scanDateTo, setScanDateTo] = useState(() => localDateStr(new Date()));
+
+  const toggleCompareDate = (date) => {
+    setExpandedCompareDates(prev => {
+      const next = new Set(prev);
+      next.has(date) ? next.delete(date) : next.add(date);
+      return next;
+    });
+  };
 
   const handleUnlockScans = () => {
     if (scanPasswordInput === ORDER_SCANS_PASSWORD) {
@@ -2141,6 +2153,15 @@ export default function WarehouseApp() {
         await api.reviewOrderScan(scan.id, reviewerName.trim());
         setOrderScans(prev => prev.map(s => s.id === scan.id ? { ...s, reviewed: true, reviewed_by: reviewerName.trim(), reviewed_at: new Date().toISOString() } : s));
       }
+    } catch (e) { showToast(e.message, "error"); }
+  };
+
+  const handleDeleteScan = async (scan) => {
+    if (!window.confirm(`ลบรายการนี้ถาวร?\n${scan.page_name || "ไม่ระบุ"} · ${scan.total_orders} ออเดอร์ · ${scan.total_items} ชิ้น`)) return;
+    try {
+      await api.deleteOrderScan(scan.id);
+      setOrderScans(prev => prev.filter(s => s.id !== scan.id));
+      showToast("ลบรายการแล้ว");
     } catch (e) { showToast(e.message, "error"); }
   };
 
@@ -2896,7 +2917,14 @@ export default function WarehouseApp() {
     (r.disposed_by || "").toLowerCase().includes(disposeSearch.trim().toLowerCase())
   );
 
+  const scanInDateRange = (s) => {
+    if (!s.created_at) return false;
+    const date = localDateStr(new Date(s.created_at));
+    return (!scanDateFrom || date >= scanDateFrom) && (!scanDateTo || date <= scanDateTo);
+  };
+
   const filteredOrderScans = orderScans.filter(s => {
+    if (!scanInDateRange(s)) return false;
     const q = orderScanSearch.trim().toLowerCase();
     if (!q) return true;
     if ((s.page_name || "").toLowerCase().includes(q)) return true;
@@ -2906,11 +2934,6 @@ export default function WarehouseApp() {
   const unreviewedScanCount = orderScans.filter(s => !s.reviewed).length;
 
   // ── สรุปรายวัน: ยอดตัดสต็อกจริง (master stock) VS ยอดจาก extension เพื่อชนกัน ──
-  const localDateStr = (isoOrDate) => {
-    const d = new Date(isoOrDate);
-    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().split("T")[0];
-  };
-
   const dailyStockOutByDate = useMemo(() => {
     const map = {};
     transactions.forEach(tx => {
@@ -2927,23 +2950,30 @@ export default function WarehouseApp() {
     const map = {};
     orderScans.forEach(s => {
       if (!s.created_at) return;
-      const date = localDateStr(s.created_at);
-      if (!map[date]) map[date] = { totalOrders: 0, totalItems: 0, scanCount: 0, byProduct: {} };
+      const date = localDateStr(new Date(s.created_at));
+      if (!map[date]) map[date] = { totalOrders: 0, totalItems: 0, scanCount: 0, byProduct: {}, notes: [] };
       map[date].totalOrders += s.total_orders || 0;
       map[date].totalItems += s.total_items || 0;
       map[date].scanCount += 1;
       (Array.isArray(s.products) ? s.products : []).forEach(p => {
         map[date].byProduct[p.name] = (map[date].byProduct[p.name] || 0) + (Number(p.qty) || 0);
       });
+      if (s.note && s.note.trim()) {
+        map[date].notes.push({
+          time: new Date(s.created_at).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }),
+          pageName: s.page_name || "ไม่ระบุ",
+          note: s.note.trim(),
+        });
+      }
     });
     return map;
   }, [orderScans]);
 
-  const comparisonDatesAll = useMemo(() => {
-    const set = new Set([...Object.keys(dailyStockOutByDate), ...Object.keys(dailyScanByDate)]);
+  const comparisonDates = useMemo(() => {
+    const inRange = (d) => (!scanDateFrom || d >= scanDateFrom) && (!scanDateTo || d <= scanDateTo);
+    const set = new Set([...Object.keys(dailyStockOutByDate), ...Object.keys(dailyScanByDate)].filter(inRange));
     return Array.from(set).sort((a, b) => b.localeCompare(a));
-  }, [dailyStockOutByDate, dailyScanByDate]);
-  const comparisonDates = showAllCompareDates ? comparisonDatesAll : comparisonDatesAll.slice(0, 14);
+  }, [dailyStockOutByDate, dailyScanByDate, scanDateFrom, scanDateTo]);
 
   const appStyles = `
     @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');
@@ -3533,172 +3563,238 @@ export default function WarehouseApp() {
               </div>
             </div>
 
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+              <div style={{ display: "flex", gap: 6 }}>
+                {[["summary", "📊 สรุปรายวัน"], ["list", "📋 รายการที่ส่งเข้ามา"]].map(([v, l]) => (
+                  <button key={v} onClick={() => setOrderScansView(v)}
+                    style={{ background: orderScansView === v ? "#7C3AED" : "#F3F4F6", color: orderScansView === v ? "#fff" : "#6B7280", border: "none", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "#6B7280" }}>
+                <span>ช่วงวันที่:</span>
+                <input type="date" className="inp" style={{ padding: "6px 8px", fontSize: 12 }} value={scanDateFrom} onChange={e => setScanDateFrom(e.target.value)} />
+                <span>ถึง</span>
+                <input type="date" className="inp" style={{ padding: "6px 8px", fontSize: 12 }} value={scanDateTo} onChange={e => setScanDateTo(e.target.value)} />
+              </div>
+            </div>
+
             {/* ─── สรุปรายวัน: ตัดสต็อกจริง VS ยอดจาก Extension (เอามาชนกัน) ─── */}
-            <div style={{ marginBottom: 20 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#111827", marginBottom: 8 }}>📊 สรุปรายวัน — ตัดสต็อกจริง vs ยอดจาก Extension (แยกตามสินค้า)</div>
-              {comparisonDates.length === 0 ? (
-                <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 32, color: "#9CA3AF", fontSize: 13 }}>ยังไม่มีข้อมูลให้เทียบ</div>
-              ) : (
-                <div style={{ display: "grid", gap: 12 }}>
-                  {comparisonDates.map(date => {
-                    const stockOut = dailyStockOutByDate[date]?.totalQty || 0;
-                    const scanTotal = dailyScanByDate[date]?.totalItems || 0;
-                    const diff = stockOut - scanTotal;
-                    const hasBoth = !!dailyStockOutByDate[date] && !!dailyScanByDate[date];
-                    const ok = hasBoth && diff === 0;
-                    const productNames = Array.from(new Set([
-                      ...Object.keys(dailyStockOutByDate[date]?.byProduct || {}),
-                      ...Object.keys(dailyScanByDate[date]?.byProduct || {}),
-                    ])).sort();
-                    return (
-                      <div key={date} style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden" }}>
-                        <div style={{ padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", background: "#F9FAFB", borderBottom: "1px solid #F1F5F9" }}>
-                          <div style={{ fontWeight: 700, fontSize: 13, color: "#111827" }}>{new Date(date).toLocaleDateString("th-TH", { day: "2-digit", month: "short", year: "numeric" })}</div>
-                          <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", fontSize: 12 }}>
-                            <span style={{ color: "#6B7280" }}>ตัดสต็อกจริง: <b style={{ fontFamily: "monospace", color: "#111827" }}>{stockOut.toLocaleString("th-TH")}</b></span>
-                            <span style={{ color: "#6B7280" }}>ยอด Extension: <b style={{ fontFamily: "monospace", color: "#111827" }}>{dailyScanByDate[date] ? scanTotal.toLocaleString("th-TH") : "-"}</b></span>
-                            <span style={{ color: "#6B7280" }}>ส่วนต่าง: <b style={{ fontFamily: "monospace", color: !hasBoth ? "#9CA3AF" : diff === 0 ? "#065F46" : "#DC2626" }}>{hasBoth ? (diff > 0 ? `+${diff}` : diff) : "-"}</b></span>
-                            {!hasBoth ? (
-                              <span style={{ background: "#F3F4F6", color: "#6B7280", padding: "3px 9px", borderRadius: 20, fontWeight: 700 }}>
-                                {dailyStockOutByDate[date] ? "ไม่มียอดสแกน" : "ไม่มีการตัดสต็อก"}
-                              </span>
-                            ) : ok ? (
-                              <span style={{ background: "#D1FAE5", color: "#065F46", padding: "3px 9px", borderRadius: 20, fontWeight: 700 }}>✅ ตรงกัน</span>
-                            ) : (
-                              <span style={{ background: "#FEE2E2", color: "#991B1B", padding: "3px 9px", borderRadius: 20, fontWeight: 700 }}>⚠️ ไม่ตรง</span>
-                            )}
-                          </div>
-                        </div>
-                        <div style={{ overflowX: "auto" }}>
-                          {productNames.length === 0 ? (
-                            <div style={{ fontSize: 12, color: "#9CA3AF", padding: 16, textAlign: "center" }}>ไม่มีรายละเอียดสินค้า</div>
-                          ) : (
-                            <table>
-                              <thead>
+            {orderScansView === "summary" && (
+              <div>
+                {comparisonDates.length === 0 ? (
+                  <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 32, color: "#9CA3AF", fontSize: 13 }}>ไม่มีข้อมูลในช่วงวันที่เลือก</div>
+                ) : (
+                  <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden", overflowX: "auto" }}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>วันที่</th>
+                          <th>ตัดสต็อกจริง (ชิ้น)</th>
+                          <th>ยอดจาก Extension (ชิ้น)</th>
+                          <th>ส่วนต่าง</th>
+                          <th>สถานะ</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {comparisonDates.map(date => {
+                          const stockOut = dailyStockOutByDate[date]?.totalQty || 0;
+                          const scanTotal = dailyScanByDate[date]?.totalItems || 0;
+                          const diff = stockOut - scanTotal;
+                          const isOpen = expandedCompareDates.has(date);
+                          const hasBoth = !!dailyStockOutByDate[date] && !!dailyScanByDate[date];
+                          const ok = hasBoth && diff === 0;
+                          const notes = dailyScanByDate[date]?.notes || [];
+                          const productNames = Array.from(new Set([
+                            ...Object.keys(dailyStockOutByDate[date]?.byProduct || {}),
+                            ...Object.keys(dailyScanByDate[date]?.byProduct || {}),
+                          ])).sort();
+                          return (
+                            <Fragment key={date}>
+                              <tr onClick={() => toggleCompareDate(date)} style={{ cursor: "pointer" }}>
+                                <td style={{ whiteSpace: "nowrap", fontWeight: 600 }}>{new Date(date).toLocaleDateString("th-TH", { day: "2-digit", month: "short", year: "numeric" })}</td>
+                                <td style={{ fontFamily: "monospace" }}>{stockOut.toLocaleString("th-TH")}</td>
+                                <td style={{ fontFamily: "monospace" }}>{dailyScanByDate[date] ? scanTotal.toLocaleString("th-TH") : "-"}</td>
+                                <td style={{ fontFamily: "monospace", fontWeight: 700, color: !hasBoth ? "#9CA3AF" : diff === 0 ? "#065F46" : "#DC2626" }}>
+                                  {hasBoth ? (diff > 0 ? `+${diff}` : diff) : "-"}
+                                </td>
+                                <td>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                    {!hasBoth ? (
+                                      <span style={{ fontSize: 12, background: "#F3F4F6", color: "#6B7280", padding: "3px 9px", borderRadius: 20, fontWeight: 700 }}>
+                                        {dailyStockOutByDate[date] ? "ไม่มียอดสแกน" : "ไม่มีการตัดสต็อก"}
+                                      </span>
+                                    ) : ok ? (
+                                      <span style={{ fontSize: 12, background: "#D1FAE5", color: "#065F46", padding: "3px 9px", borderRadius: 20, fontWeight: 700 }}>✅ ตรงกัน</span>
+                                    ) : (
+                                      <span style={{ fontSize: 12, background: "#FEE2E2", color: "#991B1B", padding: "3px 9px", borderRadius: 20, fontWeight: 700 }}>⚠️ ไม่ตรง</span>
+                                    )}
+                                    {notes.length > 0 && <span title="มีหมายเหตุ">📝</span>}
+                                  </div>
+                                </td>
+                                <td style={{ color: "#9CA3AF" }}>{isOpen ? "▲" : "▼"}</td>
+                              </tr>
+                              {isOpen && (
                                 <tr>
-                                  <th>สินค้า</th>
-                                  <th>ตัดสต็อกจริง</th>
-                                  <th>ยอดจาก Extension</th>
-                                  <th>ส่วนต่าง</th>
+                                  <td colSpan={6} style={{ background: "#F9FAFB", padding: 0 }}>
+                                    <div style={{ padding: "12px 16px" }}>
+                                      {notes.length > 0 && (
+                                        <div style={{ marginBottom: 12 }}>
+                                          <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 6 }}>📝 หมายเหตุ</div>
+                                          <div style={{ display: "grid", gap: 4 }}>
+                                            {notes.map((n, i) => (
+                                              <div key={i} style={{ fontSize: 12, color: "#92400E", background: "#FEF3C7", padding: "6px 10px", borderRadius: 8 }}>
+                                                <b>{n.time} · {n.pageName}:</b> {n.note}
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {productNames.length === 0 ? (
+                                        <div style={{ fontSize: 12, color: "#9CA3AF" }}>ไม่มีรายละเอียดสินค้า</div>
+                                      ) : (
+                                        <table>
+                                          <thead>
+                                            <tr>
+                                              <th>สินค้า</th>
+                                              <th>ตัดสต็อกจริง</th>
+                                              <th>ยอดจาก Extension</th>
+                                              <th>ส่วนต่าง</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {productNames.map(name => {
+                                              const outQty = dailyStockOutByDate[date]?.byProduct?.[name] || 0;
+                                              const scanQty = dailyScanByDate[date]?.byProduct?.[name] || 0;
+                                              const pdiff = outQty - scanQty;
+                                              return (
+                                                <tr key={name}>
+                                                  <td>{name}</td>
+                                                  <td style={{ fontFamily: "monospace" }}>{outQty}</td>
+                                                  <td style={{ fontFamily: "monospace" }}>{scanQty}</td>
+                                                  <td style={{ fontFamily: "monospace", fontWeight: 700, color: pdiff === 0 ? "#065F46" : "#DC2626" }}>{pdiff > 0 ? `+${pdiff}` : pdiff}</td>
+                                                </tr>
+                                              );
+                                            })}
+                                          </tbody>
+                                        </table>
+                                      )}
+                                      <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 8 }}>* เทียบตามชื่อสินค้าตรงตัว ชื่อที่สะกดต่างกันระหว่างหน้าออเดอร์กับคลังจะไม่จับคู่กันอัตโนมัติ ต้องดูด้วยตาอีกที</p>
+                                    </div>
+                                  </td>
                                 </tr>
-                              </thead>
-                              <tbody>
-                                {productNames.map(name => {
-                                  const outQty = dailyStockOutByDate[date]?.byProduct?.[name] || 0;
-                                  const scanQty = dailyScanByDate[date]?.byProduct?.[name] || 0;
-                                  const pdiff = outQty - scanQty;
-                                  return (
-                                    <tr key={name}>
-                                      <td>{name}</td>
-                                      <td style={{ fontFamily: "monospace" }}>{outQty}</td>
-                                      <td style={{ fontFamily: "monospace" }}>{scanQty}</td>
-                                      <td style={{ fontFamily: "monospace", fontWeight: 700, color: pdiff === 0 ? "#065F46" : "#DC2626" }}>{pdiff > 0 ? `+${pdiff}` : pdiff}</td>
-                                    </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-              {!showAllCompareDates && comparisonDatesAll.length > comparisonDates.length && (
-                <button onClick={() => setShowAllCompareDates(true)}
-                  style={{ marginTop: 10, background: "transparent", border: "none", color: "#7C3AED", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-                  ดูย้อนหลังทั้งหมด ({comparisonDatesAll.length - comparisonDates.length} วันที่เหลือ) ▼
-                </button>
-              )}
-              <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 8 }}>* เทียบตามชื่อสินค้าตรงตัว ชื่อที่สะกดต่างกันระหว่างหน้าออเดอร์กับคลังจะไม่จับคู่กันอัตโนมัติ ต้องดูด้วยตาอีกที</p>
-            </div>
-
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-              <input className="inp" style={{ flex: "1 1 240px" }} placeholder="🔍 ค้นหาชื่อร้าน/เพจ หรือชื่อสินค้า..."
-                value={orderScanSearch} onChange={e => setOrderScanSearch(e.target.value)} />
-              <input className="inp" style={{ flex: "1 1 180px" }} placeholder="ชื่อผู้ตรวจ (กรอกก่อนกดตรวจแล้ว)"
-                value={reviewerName} onChange={e => setReviewerName(e.target.value)} />
-            </div>
-
-            {loadingOrderScans && <div style={{ textAlign: "center", padding: 40, color: "#6B7280" }}>กำลังโหลดข้อมูล...</div>}
-
-            {!loadingOrderScans && filteredOrderScans.length === 0 && (
-              <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 48, color: "#9CA3AF" }}>
-                {orderScans.length === 0 ? "ยังไม่มียอดที่ส่งเข้ามาจาก extension" : "ไม่พบรายการที่ค้นหา"}
+                              )}
+                            </Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
 
-            {!loadingOrderScans && filteredOrderScans.length > 0 && (
-              <div style={{ display: "grid", gap: 12 }}>
-                {filteredOrderScans.map(s => {
-                  const isOpen = expandedScanIds.has(s.id);
-                  const products = Array.isArray(s.products) ? s.products : [];
-                  const shipEntries = s.ship_summary && typeof s.ship_summary === "object" ? Object.entries(s.ship_summary) : [];
-                  const codEntries = s.cod_amount_summary && typeof s.cod_amount_summary === "object" ? Object.entries(s.cod_amount_summary) : [];
-                  return (
-                    <div key={s.id} style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden" }}>
-                      <div style={{ padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", cursor: "pointer" }}
-                        onClick={() => toggleScanExpanded(s.id)}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                          <span style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>{s.page_name || "ไม่ระบุร้าน"}</span>
-                          <span style={{ fontSize: 12, color: "#9CA3AF" }}>{s.created_at ? new Date(s.created_at).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" }) : "-"}</span>
-                          <span style={{ fontSize: 12, background: "#EEF2FF", color: "#4F46E5", padding: "2px 8px", borderRadius: 20, fontWeight: 700 }}>{s.total_orders} ออเดอร์</span>
-                          <span style={{ fontSize: 12, background: "#EEF2FF", color: "#4F46E5", padding: "2px 8px", borderRadius: 20, fontWeight: 700 }}>{s.total_items} ชิ้น</span>
-                        </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <span style={{ fontSize: 12, fontWeight: 700, padding: "4px 10px", borderRadius: 20, background: s.reviewed ? "#D1FAE5" : "#FEF3C7", color: s.reviewed ? "#065F46" : "#92400E" }}>
-                            {s.reviewed ? `✅ ตรวจแล้ว · ${s.reviewed_by || ""}` : "⏳ ยังไม่ตรวจ"}
-                          </span>
-                          <button onClick={(e) => { e.stopPropagation(); toggleScanReviewed(s); }}
-                            style={{ background: s.reviewed ? "#F3F4F6" : "#7C3AED", color: s.reviewed ? "#6B7280" : "#fff", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
-                            {s.reviewed ? "เลิกตรวจ" : "ตรวจแล้ว"}
-                          </button>
-                          <span style={{ color: "#9CA3AF", fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
-                        </div>
-                      </div>
-                      {isOpen && (
-                        <div style={{ borderTop: "1px solid #F1F5F9", padding: "14px 16px", display: "grid", gap: 14 }}>
-                          <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
-                            <div style={{ fontSize: 12, color: "#6B7280" }}>💳 COD: <b style={{ color: "#92400E" }}>{s.cod_count ?? 0}</b> · โอนเงิน/Bank: <b style={{ color: "#065F46" }}>{s.bank_count ?? 0}</b></div>
+            {/* ─── รายการดิบที่ส่งเข้ามาจาก extension ─── */}
+            {orderScansView === "list" && (
+              <div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+                  <input className="inp" style={{ flex: "1 1 240px" }} placeholder="🔍 ค้นหาชื่อร้าน/เพจ หรือชื่อสินค้า..."
+                    value={orderScanSearch} onChange={e => setOrderScanSearch(e.target.value)} />
+                  <input className="inp" style={{ flex: "1 1 180px" }} placeholder="ชื่อผู้ตรวจ (กรอกก่อนกดตรวจแล้ว)"
+                    value={reviewerName} onChange={e => setReviewerName(e.target.value)} />
+                </div>
+
+                {loadingOrderScans && <div style={{ textAlign: "center", padding: 40, color: "#6B7280" }}>กำลังโหลดข้อมูล...</div>}
+
+                {!loadingOrderScans && filteredOrderScans.length === 0 && (
+                  <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 48, color: "#9CA3AF" }}>
+                    {orderScans.length === 0 ? "ยังไม่มียอดที่ส่งเข้ามาจาก extension" : "ไม่พบรายการในช่วงวันที่/คำค้นหานี้"}
+                  </div>
+                )}
+
+                {!loadingOrderScans && filteredOrderScans.length > 0 && (
+                  <div style={{ display: "grid", gap: 12 }}>
+                    {filteredOrderScans.map(s => {
+                      const isOpen = expandedScanIds.has(s.id);
+                      const products = Array.isArray(s.products) ? s.products : [];
+                      const shipEntries = s.ship_summary && typeof s.ship_summary === "object" ? Object.entries(s.ship_summary) : [];
+                      const codEntries = s.cod_amount_summary && typeof s.cod_amount_summary === "object" ? Object.entries(s.cod_amount_summary) : [];
+                      return (
+                        <div key={s.id} style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden" }}>
+                          <div style={{ padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", cursor: "pointer" }}
+                            onClick={() => toggleScanExpanded(s.id)}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>{s.page_name || "ไม่ระบุร้าน"}</span>
+                              <span style={{ fontSize: 12, color: "#9CA3AF" }}>{s.created_at ? new Date(s.created_at).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" }) : "-"}</span>
+                              <span style={{ fontSize: 12, background: "#EEF2FF", color: "#4F46E5", padding: "2px 8px", borderRadius: 20, fontWeight: 700 }}>{s.total_orders} ออเดอร์</span>
+                              <span style={{ fontSize: 12, background: "#EEF2FF", color: "#4F46E5", padding: "2px 8px", borderRadius: 20, fontWeight: 700 }}>{s.total_items} ชิ้น</span>
+                              {s.note && <span style={{ fontSize: 12, background: "#FEF3C7", color: "#92400E", padding: "2px 8px", borderRadius: 20 }}>📝 {s.note}</span>}
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                              <span style={{ fontSize: 12, fontWeight: 700, padding: "4px 10px", borderRadius: 20, background: s.reviewed ? "#D1FAE5" : "#FEF3C7", color: s.reviewed ? "#065F46" : "#92400E" }}>
+                                {s.reviewed ? `✅ ตรวจแล้ว · ${s.reviewed_by || ""}` : "⏳ ยังไม่ตรวจ"}
+                              </span>
+                              <button onClick={(e) => { e.stopPropagation(); toggleScanReviewed(s); }}
+                                style={{ background: s.reviewed ? "#F3F4F6" : "#7C3AED", color: s.reviewed ? "#6B7280" : "#fff", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                                {s.reviewed ? "เลิกตรวจ" : "ตรวจแล้ว"}
+                              </button>
+                              <button onClick={(e) => { e.stopPropagation(); handleDeleteScan(s); }}
+                                title="ลบรายการนี้ (เช่น ส่งซ้ำ)"
+                                style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                                🗑️
+                              </button>
+                              <span style={{ color: "#9CA3AF", fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
+                            </div>
                           </div>
-                          {codEntries.length > 0 && (
-                            <div>
-                              <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 6 }}>💵 ยอด COD</div>
-                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                {codEntries.map(([amount, count]) => (
-                                  <span key={amount} style={{ fontSize: 12, background: "#FEF3C7", color: "#92400E", padding: "4px 10px", borderRadius: 8 }}>{Number(amount).toLocaleString("th-TH")} บาท × {count}</span>
-                                ))}
+                          {isOpen && (
+                            <div style={{ borderTop: "1px solid #F1F5F9", padding: "14px 16px", display: "grid", gap: 14 }}>
+                              <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+                                <div style={{ fontSize: 12, color: "#6B7280" }}>💳 COD: <b style={{ color: "#92400E" }}>{s.cod_count ?? 0}</b> · โอนเงิน/Bank: <b style={{ color: "#065F46" }}>{s.bank_count ?? 0}</b></div>
                               </div>
-                            </div>
-                          )}
-                          {shipEntries.length > 0 && (
-                            <div>
-                              <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 6 }}>🚚 ขนส่ง</div>
-                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                                {shipEntries.map(([name, count]) => (
-                                  <span key={name} style={{ fontSize: 12, background: "#EEF2FF", color: "#4F46E5", padding: "4px 10px", borderRadius: 8 }}>{name} × {count}</span>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                          <div>
-                            <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 6 }}>📦 สินค้า (รวม {s.total_items} ชิ้น) — เทียบกับรายการเบิกออกจริง</div>
-                            <div style={{ border: "1px solid #F1F5F9", borderRadius: 10, overflow: "hidden" }}>
-                              {products.map((p, i) => (
-                                <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", borderBottom: i < products.length - 1 ? "1px solid #F1F5F9" : "none", fontSize: 13 }}>
-                                  <span style={{ color: "#334155" }}>{p.name}</span>
-                                  <span style={{ fontWeight: 700, color: "#4F46E5" }}>{p.qty} ชิ้น</span>
+                              {s.note && (
+                                <div style={{ fontSize: 12, color: "#92400E", background: "#FEF3C7", padding: "8px 10px", borderRadius: 8 }}>📝 <b>หมายเหตุ:</b> {s.note}</div>
+                              )}
+                              {codEntries.length > 0 && (
+                                <div>
+                                  <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 6 }}>💵 ยอด COD</div>
+                                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                    {codEntries.map(([amount, count]) => (
+                                      <span key={amount} style={{ fontSize: 12, background: "#FEF3C7", color: "#92400E", padding: "4px 10px", borderRadius: 8 }}>{Number(amount).toLocaleString("th-TH")} บาท × {count}</span>
+                                    ))}
+                                  </div>
                                 </div>
-                              ))}
-                              {products.length === 0 && <div style={{ padding: 12, color: "#9CA3AF", fontSize: 12, textAlign: "center" }}>ไม่มีรายการสินค้า</div>}
+                              )}
+                              {shipEntries.length > 0 && (
+                                <div>
+                                  <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 6 }}>🚚 ขนส่ง</div>
+                                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                    {shipEntries.map(([name, count]) => (
+                                      <span key={name} style={{ fontSize: 12, background: "#EEF2FF", color: "#4F46E5", padding: "4px 10px", borderRadius: 8 }}>{name} × {count}</span>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                              <div>
+                                <div style={{ fontSize: 12, fontWeight: 700, color: "#475569", marginBottom: 6 }}>📦 สินค้า (รวม {s.total_items} ชิ้น) — เทียบกับรายการเบิกออกจริง</div>
+                                <div style={{ border: "1px solid #F1F5F9", borderRadius: 10, overflow: "hidden" }}>
+                                  {products.map((p, i) => (
+                                    <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", borderBottom: i < products.length - 1 ? "1px solid #F1F5F9" : "none", fontSize: 13 }}>
+                                      <span style={{ color: "#334155" }}>{p.name}</span>
+                                      <span style={{ fontWeight: 700, color: "#4F46E5" }}>{p.qty} ชิ้น</span>
+                                    </div>
+                                  ))}
+                                  {products.length === 0 && <div style={{ padding: 12, color: "#9CA3AF", fontSize: 12, textAlign: "center" }}>ไม่มีรายการสินค้า</div>}
+                                </div>
+                              </div>
                             </div>
-                          </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  );
-                })}
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
