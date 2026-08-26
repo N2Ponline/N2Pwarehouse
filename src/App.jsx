@@ -53,6 +53,7 @@ const api = {
   reviewOrderScan: (id, by) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ reviewed: true, reviewed_by: by, reviewed_at: new Date().toISOString() }) }),
   unreviewOrderScan: (id) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ reviewed: false, reviewed_by: null, reviewed_at: null }) }),
   deleteOrderScan: (id) => sb(`order_scans?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
+  setOrderScanEffectiveDate: (id, date) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ effective_date: date }) }),
 };
 
 const dbToProduct = (r) => ({
@@ -2165,6 +2166,15 @@ export default function WarehouseApp() {
     } catch (e) { showToast(e.message, "error"); }
   };
 
+  const handleChangeScanDate = async (scan, newDate) => {
+    if (!newDate) return;
+    try {
+      await api.setOrderScanEffectiveDate(scan.id, newDate);
+      setOrderScans(prev => prev.map(s => s.id === scan.id ? { ...s, effective_date: newDate } : s));
+      showToast("ย้ายวันที่ใช้เทียบแล้ว");
+    } catch (e) { showToast(e.message, "error"); }
+  };
+
   const toggleDispose = (id) => {
     setSelectedForDispose(prev => {
       const next = new Set(prev);
@@ -2917,9 +2927,12 @@ export default function WarehouseApp() {
     (r.disposed_by || "").toLowerCase().includes(disposeSearch.trim().toLowerCase())
   );
 
+  // วันที่ใช้เทียบกับตัดสต็อก — ใช้ effective_date ถ้าแอดมินย้ายวันไว้ ไม่งั้น fallback ไปวันที่ส่งจริง (created_at)
+  const scanEffectiveDate = (s) => s.effective_date || (s.created_at ? localDateStr(new Date(s.created_at)) : null);
+
   const scanInDateRange = (s) => {
-    if (!s.created_at) return false;
-    const date = localDateStr(new Date(s.created_at));
+    const date = scanEffectiveDate(s);
+    if (!date) return false;
     return (!scanDateFrom || date >= scanDateFrom) && (!scanDateTo || date <= scanDateTo);
   };
 
@@ -2949,8 +2962,8 @@ export default function WarehouseApp() {
   const dailyScanByDate = useMemo(() => {
     const map = {};
     orderScans.forEach(s => {
-      if (!s.created_at) return;
-      const date = localDateStr(new Date(s.created_at));
+      const date = scanEffectiveDate(s);
+      if (!date) return;
       if (!map[date]) map[date] = { totalOrders: 0, totalItems: 0, scanCount: 0, byProduct: {}, notes: [] };
       map[date].totalOrders += s.total_orders || 0;
       map[date].totalItems += s.total_items || 0;
@@ -3731,6 +3744,9 @@ export default function WarehouseApp() {
                               <span style={{ fontSize: 12, background: "#EEF2FF", color: "#4F46E5", padding: "2px 8px", borderRadius: 20, fontWeight: 700 }}>{s.total_orders} ออเดอร์</span>
                               <span style={{ fontSize: 12, background: "#EEF2FF", color: "#4F46E5", padding: "2px 8px", borderRadius: 20, fontWeight: 700 }}>{s.total_items} ชิ้น</span>
                               {s.note && <span style={{ fontSize: 12, background: "#FEF3C7", color: "#92400E", padding: "2px 8px", borderRadius: 20 }}>📝 {s.note}</span>}
+                              {s.effective_date && s.created_at && s.effective_date !== localDateStr(new Date(s.created_at)) && (
+                                <span title="วันที่ใช้เทียบถูกย้ายแล้ว" style={{ fontSize: 12, background: "#F3E8FF", color: "#7C3AED", padding: "2px 8px", borderRadius: 20 }}>📅 ย้ายวัน</span>
+                              )}
                             </div>
                             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                               <span style={{ fontSize: 12, fontWeight: 700, padding: "4px 10px", borderRadius: 20, background: s.reviewed ? "#D1FAE5" : "#FEF3C7", color: s.reviewed ? "#065F46" : "#92400E" }}>
@@ -3749,7 +3765,15 @@ export default function WarehouseApp() {
                             </div>
                           </div>
                           {isOpen && (
-                            <div style={{ borderTop: "1px solid #F1F5F9", padding: "14px 16px", display: "grid", gap: 14 }}>
+                            <div style={{ borderTop: "1px solid #F1F5F9", padding: "14px 16px", display: "grid", gap: 14 }} onClick={e => e.stopPropagation()}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 12, color: "#6B7280" }}>
+                                📅 วันที่ใช้เทียบกับตัดสต็อก:
+                                <input type="date" className="inp" style={{ padding: "4px 8px", fontSize: 12 }}
+                                  value={scanEffectiveDate(s) || ""} onChange={e => handleChangeScanDate(s, e.target.value)} />
+                                {s.effective_date && s.created_at && s.effective_date !== localDateStr(new Date(s.created_at)) && (
+                                  <span style={{ color: "#9CA3AF" }}>(ย้ายจากวันที่ส่งจริง {new Date(s.created_at).toLocaleDateString("th-TH", { day: "2-digit", month: "short" })})</span>
+                                )}
+                              </div>
                               <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
                                 <div style={{ fontSize: 12, color: "#6B7280" }}>💳 COD: <b style={{ color: "#92400E" }}>{s.cod_count ?? 0}</b> · โอนเงิน/Bank: <b style={{ color: "#065F46" }}>{s.bank_count ?? 0}</b></div>
                               </div>
