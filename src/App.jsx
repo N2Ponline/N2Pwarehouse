@@ -74,6 +74,7 @@ const productToDb = (p) => ({
 const dbToTx = (r) => ({
   id: r.id, type: r.type, productId: r.product_id,
   quantity: r.quantity, date: r.date, note: r.note, by: r.by,
+  createdAt: r.created_at,
 });
 
 // มุมมองการแสดงผลของแต่ละรายการเคลื่อนไหว (รองรับ in / out / adjust)
@@ -4100,15 +4101,30 @@ export default function WarehouseApp() {
             {transactions.filter(tx => tx.productId === historyProduct.id).length === 0 && (
               <div style={{ color: "#9CA3AF", fontSize: 13, textAlign: "center", padding: 24 }}>ยังไม่มีประวัติการเคลื่อนไหว</div>
             )}
-            {transactions.filter(tx => tx.productId === historyProduct.id).map(tx => (
-              <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #F3F4F6", fontSize: 13 }}>
-                <div>
-                  <div style={{ color: "#111827" }}>{tx.type === "in" ? "📥 รับเข้า" : tx.type === "adjust" ? "⚖️ ปรับสต็อก" : "📤 เบิกออก"}{tx.note ? ` · ${tx.note}` : ""}</div>
-                  <div style={{ fontSize: 11, color: "#9CA3AF" }}>{tx.date} · โดย {tx.by || "-"}</div>
+            {(() => {
+              // transactions มาเรียง created_at.desc อยู่แล้ว (ใหม่สุดก่อน) — ไล่ย้อนคำนวณสต็อกก่อน/หลังแต่ละรายการจากยอดคงเหลือปัจจุบัน
+              const txs = transactions.filter(tx => tx.productId === historyProduct.id);
+              let running = historyProduct.quantity;
+              const withBalance = txs.map(tx => {
+                const delta = tx.type === "out" ? -tx.quantity : tx.quantity;
+                const after = running;
+                const before = after - delta;
+                running = before;
+                return { tx, before, after };
+              });
+              return withBalance.map(({ tx, before, after }) => (
+                <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #F3F4F6", fontSize: 13 }}>
+                  <div>
+                    <div style={{ color: "#111827" }}>{tx.type === "in" ? "📥 รับเข้า" : tx.type === "adjust" ? "⚖️ ปรับสต็อก" : "📤 เบิกออก"}{tx.note ? ` · ${tx.note}` : ""}</div>
+                    <div style={{ fontSize: 11, color: "#9CA3AF" }}>
+                      {tx.createdAt ? new Date(tx.createdAt).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" }) : tx.date} · โดย {tx.by || "-"}
+                    </div>
+                    <div style={{ fontSize: 11, color: "#9CA3AF" }}>คงเหลือ {before} → {after} {historyProduct.unit}</div>
+                  </div>
+                  <span style={{ fontWeight: 700, color: txView(tx).color }}>{txView(tx).amount.trim()}</span>
                 </div>
-                <span style={{ fontWeight: 700, color: txView(tx).color }}>{txView(tx).amount.trim()}</span>
-              </div>
-            ))}
+              ));
+            })()}
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
               <button onClick={() => setHistoryProduct(null)}
                 style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "10px 18px", fontSize: 14, cursor: "pointer" }}>ปิด</button>
