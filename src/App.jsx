@@ -3616,6 +3616,7 @@ export default function WarehouseApp() {
                         {comparisonDates.map(date => {
                           const stockOut = dailyStockOutByDate[date]?.totalQty || 0;
                           const scanTotal = dailyScanByDate[date]?.totalItems || 0;
+                          const scanOrders = dailyScanByDate[date]?.totalOrders || 0;
                           const diff = stockOut - scanTotal;
                           const isOpen = expandedCompareDates.has(date);
                           const hasBoth = !!dailyStockOutByDate[date] && !!dailyScanByDate[date];
@@ -3630,7 +3631,14 @@ export default function WarehouseApp() {
                               <tr onClick={() => toggleCompareDate(date)} style={{ cursor: "pointer" }}>
                                 <td style={{ whiteSpace: "nowrap", fontWeight: 600 }}>{new Date(date).toLocaleDateString("th-TH", { day: "2-digit", month: "short", year: "numeric" })}</td>
                                 <td style={{ fontFamily: "monospace" }}>{stockOut.toLocaleString("th-TH")}</td>
-                                <td style={{ fontFamily: "monospace" }}>{dailyScanByDate[date] ? scanTotal.toLocaleString("th-TH") : "-"}</td>
+                                <td style={{ fontFamily: "monospace", whiteSpace: "nowrap" }}>
+                                  {dailyScanByDate[date] ? (
+                                    <>
+                                      {scanTotal.toLocaleString("th-TH")}
+                                      <span style={{ color: "#6B7280", fontSize: 12, marginLeft: 4 }}>({scanOrders.toLocaleString("th-TH")} ออเดอร์)</span>
+                                    </>
+                                  ) : "-"}
+                                </td>
                                 <td style={{ fontFamily: "monospace", fontWeight: 700, color: !hasBoth ? "#9CA3AF" : diff === 0 ? "#065F46" : "#DC2626" }}>
                                   {hasBoth ? (diff > 0 ? `+${diff}` : diff) : "-"}
                                 </td>
@@ -4142,3 +4150,4 @@ export default function WarehouseApp() {
     </div>
   );
 }
+
