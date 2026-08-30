@@ -50,6 +50,8 @@ const api = {
   getTransactions: () => sbAll("transactions?select=*&order=created_at.desc"),
   addTransaction: (t) => sb("transactions", { method: "POST", body: JSON.stringify(t) }),
   getOrderScans: () => sbAll("order_scans?select=*&order=created_at.desc"),
+  // ตารางของระบบใบสั่ง (n2p-order.netlify.app) — อยู่ Supabase project เดียวกัน อ่านอย่างเดียว ไม่เขียนกลับ
+  getBacklog: () => sbAll("n2p_backlog?select=id,name,total,rounds"),
   reviewOrderScan: (id, by) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ reviewed: true, reviewed_by: by, reviewed_at: new Date().toISOString() }) }),
   unreviewOrderScan: (id) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ reviewed: false, reviewed_by: null, reviewed_at: null }) }),
   deleteOrderScan: (id) => sb(`order_scans?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
@@ -76,6 +78,92 @@ const dbToTx = (r) => ({
   quantity: r.quantity, date: r.date, note: r.note, by: r.by,
   createdAt: r.created_at,
 });
+
+// ═══════════ จับคู่ "ของรอเข้า" จากระบบใบสั่ง (n2p_backlog) กับสินค้าในคลัง ═══════════
+// ชื่อสินค้าสองระบบพิมพ์กันคนละที เช่น "ดินสอเขียนคิ้วแท่งทอง(สีน้ำตาลเข้ม)" ในใบสั่ง
+// กับ "ดินสอเขียนคิ้วแท่งทอง(น้ำตาลเข้ม)" ในคลัง — ต้องเทียบแบบยืดหยุ่น
+// แต่ห้ามยืดหยุ่นจนจับผิดสี/ผิดไซซ์ (ทดสอบแล้วแบบหลวมๆ จะเอา "(สีกรม)" ไปชน "แครรอท")
+// กติกา: ข้อความในวงเล็บถือเป็น "คุณสมบัติ" (สี/ไซซ์/ทรง) ถ้าชนกันตัดทิ้งทันที ไม่ต้องดูความคล้าย
+
+const THAI_TONES = "\u0e48\u0e49\u0e4a\u0e4b";
+// คำว่า "สี" — ต้องไม่กิน "สี่" ใน "สี่เหลี่ยม" จึงกันด้วย lookahead วรรณยุกต์
+const RE_SI = new RegExp("\u0e2a\u0e35(?![" + THAI_TONES + "])", "g");
+const RE_PAREN = /[([][^)\]]*[)\]]/g;
+
+const normName = (s) => String(s || "").toLowerCase()
+  .replace(RE_SI, "")
+  .replace(/size\s*/g, "size")
+  .replace(/[\s\u200B\-_/\\.,'"+*#!?]/g, "");
+
+// แยกชื่อออกเป็น "ชื่อหลัก" กับ "คุณสมบัติในวงเล็บ"
+const splitAttrs = (name) => {
+  const raw = String(name || "").toLowerCase();
+  const attrs = new Set();
+  (raw.match(RE_PAREN) || []).forEach(g => {
+    const a = normName(g.slice(1, -1));
+    if (a) attrs.add(a);
+  });
+  return { base: normName(raw.replace(RE_PAREN, "")), attrs };
+};
+
+const isSubset = (a, b) => [...a].every(x => b.has(x));
+
+// ความคล้าย 0–1 จากระยะ Levenshtein
+const levRatio = (a, b) => {
+  if (a === b) return 1;
+  const m = Math.max(a.length, b.length);
+  if (!m) return 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return 1 - prev[b.length] / m;
+};
+
+const MATCH_CUTOFF = 0.86; // ต่ำกว่านี้ถือว่าไม่ใช่ตัวเดียวกัน ให้ไปจับคู่เอง
+
+const nameScore = (bName, pName) => {
+  const fb = normName(bName), fp = normName(pName);
+  if (fb === fp) return { score: 1, how: "ชื่อตรงกัน" };
+  const B = splitAttrs(bName), P = splitAttrs(pName);
+  // สี/ไซซ์ในวงเล็บขัดกัน = คนละตัวแน่นอน
+  if (B.attrs.size && P.attrs.size && !isSubset(B.attrs, P.attrs) && !isSubset(P.attrs, B.attrs))
+    return { score: 0, how: "สี/ไซซ์ไม่ตรง" };
+  const attrsEqual = B.attrs.size === P.attrs.size && isSubset(B.attrs, P.attrs);
+  if (B.base === P.base && attrsEqual) return { score: 0.99, how: "ชื่อ+วงเล็บตรงกัน" };
+
+  const cands = [];
+  // เทียบเฉพาะ "ชื่อหลัก" ได้ต่อเมื่อมีวงเล็บทั้งคู่หรือไม่มีทั้งคู่
+  // ถ้ามีฝั่งเดียว อีกฝั่งอาจซ่อนสี/รุ่นไว้ในชื่อหลัก ตัดวงเล็บทิ้งแล้วเทียบจะจับผิดตัว
+  if (B.base && P.base && (B.attrs.size > 0) === (P.attrs.size > 0)) {
+    if (B.base === P.base) cands.push({ score: 0.97, how: "ชื่อหลักตรงกัน" });
+    else if (Math.min(B.base.length, P.base.length) >= 6 && (B.base.startsWith(P.base) || P.base.startsWith(B.base)))
+      cands.push({ score: 0.95, how: "ชื่อหลักขึ้นต้นเหมือนกัน" });
+    else cands.push({ score: levRatio(B.base, P.base), how: "ชื่อหลักคล้ายกัน" });
+  }
+  if (Math.min(fb.length, fp.length) >= 6 && (fb.startsWith(fp) || fp.startsWith(fb)))
+    cands.push({ score: 0.95, how: "ชื่อขึ้นต้นเหมือนกัน" });
+  cands.push({ score: levRatio(fb, fp), how: "ชื่อคล้ายกัน" });
+
+  const best = cands.reduce((a, c) => (c.score > a.score ? c : a));
+  return best.score >= MATCH_CUTOFF ? best : { score: 0, how: "ไม่ใกล้พอ" };
+};
+
+// ของรอเข้าของรายการหนึ่ง = ผลรวมของรอบที่ยังเข้าไม่ครบ (สูตรเดียวกับหน้ารอสั่งของระบบใบสั่ง)
+// รอบแรกอาจเป็น meta element ที่ระบบใบสั่งใช้เก็บ tag — ต้องข้าม
+const backlogInTransit = (row) => (Array.isArray(row?.rounds) ? row.rounds : [])
+  .reduce((sum, r) => (r && r.___meta ? sum : sum + Math.max(0, (Number(r?.qty) || 0) - (Number(r?.receivedQty) || 0))), 0);
+
+// การจับคู่ที่ผู้ใช้ตั้งเอง เก็บใน localStorage — ตาราง n2p_backlog เพิ่มคอลัมน์ไม่ได้
+// และ meta element ใน rounds ถูกระบบใบสั่งเขียนทับทุกครั้งที่บันทึก
+const ALIAS_KEY = "n2p_incoming_alias_v1";
+const loadAliasMap = () => {
+  try { return JSON.parse(localStorage.getItem(ALIAS_KEY) || "{}"); } catch { return {}; }
+};
 
 // มุมมองการแสดงผลของแต่ละรายการเคลื่อนไหว (รองรับ in / out / adjust)
 const txView = (tx, unit) => {
@@ -2029,7 +2117,11 @@ function ReturnCheckerTab() {
 
 // ============================================================
 export default function WarehouseApp() {
-  const [products, setProducts] = useState([]);
+  const [rawProducts, setRawProducts] = useState([]);
+  const [backlog, setBacklog] = useState([]);            // n2p_backlog จากระบบใบสั่ง
+  const [showIncomingModal, setShowIncomingModal] = useState(false);
+  const [incomingAlias, setIncomingAlias] = useState(loadAliasMap);
+  const [incomingSearch, setIncomingSearch] = useState("");
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [dbError, setDbError] = useState(null);
@@ -2243,7 +2335,7 @@ export default function WarehouseApp() {
         // 3. ลบสินค้า
         await api.deleteProduct(p.id);
       }
-      setProducts(prev => prev.filter(p => !selectedForDispose.has(p.id)));
+      setRawProducts(prev => prev.filter(p => !selectedForDispose.has(p.id)));
       setTransactions(prev => prev.filter(tx => !selectedForDispose.has(tx.productId)));
       setSelectedForDispose(new Set());
       setDisposeMode(false);
@@ -2279,9 +2371,15 @@ export default function WarehouseApp() {
     setLoading(true);
     setDbError(null);
     try {
-      const [prods, txs] = await Promise.all([api.getProducts(), api.getTransactions()]);
-      setProducts((prods || []).map(dbToProduct));
+      const [prods, txs, bl] = await Promise.all([
+        api.getProducts(),
+        api.getTransactions(),
+        // ของระบบใบสั่ง — ถ้าดึงไม่ได้ก็ให้คลังทำงานต่อได้ตามปกติ แค่ไม่มียอดรอเข้า
+        api.getBacklog().catch(() => []),
+      ]);
+      setRawProducts((prods || []).map(dbToProduct));
       setTransactions((txs || []).map(dbToTx));
+      setBacklog(bl || []);
     } catch (e) {
       setDbError(e.message);
     } finally {
@@ -2296,6 +2394,56 @@ export default function WarehouseApp() {
   const handleSort = (col) => {
     if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc");
     else { setSortCol(col); setSortDir("asc"); }
+  };
+
+  // จับคู่รายการค้างสั่งจากระบบใบสั่งเข้ากับสินค้าในคลัง
+  // ที่ผู้ใช้ตั้งเองมาก่อนเสมอ ถ้าไม่มีค่อยให้ระบบเดา และเดาได้ต่อเมื่อ "ชนะขาด" ตัวรองเท่านั้น
+  const incoming = useMemo(() => {
+    const rows = backlog.map(b => {
+      const inTransit = backlogInTransit(b);
+      const key = String(b.name || "").trim();
+      if (Object.prototype.hasOwnProperty.call(incomingAlias, key)) {
+        const pid = incomingAlias[key];
+        return { id: b.id, name: key, inTransit, productId: pid == null ? null : pid,
+                 how: pid == null ? "ตั้งเองว่าไม่จับคู่" : "จับคู่เอง", score: 1, manual: true };
+      }
+      let best = null, second = 0;
+      rawProducts.forEach(p => {
+        const r = nameScore(key, p.name);
+        if (r.score <= 0) return;
+        if (!best || r.score > best.score) { if (best) second = Math.max(second, best.score); best = { ...r, p }; }
+        else if (r.score > second) second = r.score;
+      });
+      if (best && (best.score >= 0.99 || best.score - second >= 0.03))
+        return { id: b.id, name: key, inTransit, productId: best.p.id, how: best.how, score: best.score, manual: false };
+      return { id: b.id, name: key, inTransit, productId: null,
+               how: best ? "ใกล้เคียงหลายตัว เลือกเองก่อน" : "ไม่พบสินค้าที่ตรงกัน", score: 0, manual: false };
+    }).sort((a, b) => b.inTransit - a.inTransit);
+
+    const byProduct = new Map();
+    rows.forEach(r => {
+      if (r.productId == null) return;
+      const cur = byProduct.get(r.productId) || { qty: 0, sources: [] };
+      cur.qty += r.inTransit;
+      cur.sources.push({ name: r.name, qty: r.inTransit });
+      byProduct.set(r.productId, cur);
+    });
+    return { rows, byProduct };
+  }, [backlog, rawProducts, incomingAlias]);
+
+  // ยอด "รอเข้า" ของสินค้าที่จับคู่ได้ ให้ยึดตามระบบใบสั่ง (แหล่งข้อมูลจริง)
+  // ที่จับคู่ไม่ได้ ใช้ค่าที่กรอกมือไว้ในคลังเหมือนเดิม
+  const products = useMemo(() => rawProducts.map(p => {
+    const inc = incoming.byProduct.get(p.id);
+    return { ...p, qtyOnOrder: inc ? inc.qty : (p.qtyOnOrder || 0), incomingSources: inc ? inc.sources : null };
+  }), [rawProducts, incoming]);
+
+  const incomingUnmatched = incoming.rows.filter(r => r.productId == null && r.inTransit > 0);
+  const setAlias = (name, productId) => {
+    const next = { ...incomingAlias };
+    if (productId === "auto") delete next[name]; else next[name] = productId;
+    setIncomingAlias(next);
+    try { localStorage.setItem(ALIAS_KEY, JSON.stringify(next)); } catch { /* โหมดส่วนตัวเขียนไม่ได้ ไม่เป็นไร */ }
   };
 
   const filteredProducts = useMemo(() => {
@@ -2409,7 +2557,11 @@ export default function WarehouseApp() {
               <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>{highlightMatch(p.sku, search)}</td>
               <td>{highlightMatch(p.name, search)}</td>
               <td style={{ fontWeight: 700, color: statusColor(p).fg }}>{p.quantity}</td>
-              <td style={{ color: p.qtyOnOrder > 0 ? "#7C3AED" : "#D1D5DB", fontWeight: p.qtyOnOrder > 0 ? 700 : 400 }}>{p.qtyOnOrder > 0 ? `+${p.qtyOnOrder}` : "-"}</td>
+              <td style={{ color: p.qtyOnOrder > 0 ? "#7C3AED" : "#D1D5DB", fontWeight: p.qtyOnOrder > 0 ? 700 : 400, whiteSpace: "nowrap" }}
+                                title={p.incomingSources ? "จากระบบใบสั่ง:\n" + p.incomingSources.map(x => "• " + x.name + " — " + x.qty).join("\n") : undefined}>
+                                {p.qtyOnOrder > 0 ? `+${p.qtyOnOrder}` : "-"}
+                                {p.incomingSources && <span style={{ marginLeft: 3, fontSize: 10, opacity: 0.65 }}>🧾</span>}
+                              </td>
               <td>{p.out7}</td>
               <td>{p.out30}</td>
               <td style={{ fontWeight: 700, color: p.quantity <= 0 ? "#DC2626" : p.daysLeft <= 3 ? "#D97706" : "#6B7280" }}>
@@ -2565,7 +2717,7 @@ export default function WarehouseApp() {
     try {
       const [created] = await api.addProduct(productToDb(form));
       const product = dbToProduct(created);
-      setProducts(prev => [...prev, product].sort((a,b) => a.name.localeCompare(b.name, "th")));
+      setRawProducts(prev => [...prev, product].sort((a,b) => a.name.localeCompare(b.name, "th")));
       // สินค้าใหม่ที่ใส่จำนวนเริ่มต้น > 0 ให้บันทึก log "รับเข้า" ไว้ด้วย จะได้มีวันที่ตั้งต้นในประวัติ
       const initialQty = parseInt(form.quantity) || 0;
       if (initialQty > 0) {
@@ -2611,7 +2763,7 @@ export default function WarehouseApp() {
       if ((form.location || "") !== (before.location || "")) changes.push("ที่เก็บ");
 
       const [updated] = await api.updateProduct(selectedProduct.id, productToDb(form));
-      setProducts(prev => prev.map(p => p.id === selectedProduct.id ? dbToProduct(updated) : p));
+      setRawProducts(prev => prev.map(p => p.id === selectedProduct.id ? dbToProduct(updated) : p));
 
       // บันทึก log เมื่อมีการเปลี่ยนแปลงจริง
       if (changes.length) {
@@ -2636,7 +2788,7 @@ export default function WarehouseApp() {
     if (!confirm("ยืนยันลบสินค้านี้?")) return;
     try {
       await api.deleteProduct(id);
-      setProducts(prev => prev.filter(p => p.id !== id));
+      setRawProducts(prev => prev.filter(p => p.id !== id));
       showToast("ลบสินค้าสำเร็จ");
     } catch (e) { showToast(e.message, "error"); }
   };
@@ -2659,7 +2811,7 @@ export default function WarehouseApp() {
       const updatePayload = txType === "in" ? { quantity: newQty, qty_on_order: newQtyOnOrder } : { quantity: newQty };
       await api.updateProduct(pid, updatePayload);
       const [newTx] = await api.addTransaction({ type: txType, product_id: pid, quantity: qty, date: new Date().toISOString().split("T")[0], note: txForm.note || null, by: txForm.by });
-      setProducts(prev => prev.map(p => p.id === pid ? { ...p, quantity: newQty, qtyOnOrder: newQtyOnOrder } : p));
+      setRawProducts(prev => prev.map(p => p.id === pid ? { ...p, quantity: newQty, qtyOnOrder: newQtyOnOrder } : p));
       setTransactions(prev => [dbToTx(newTx), ...prev]);
       setTxForm({ productId: "", quantity: "", note: "", by: "" });
       setShowModal(null);
@@ -2721,7 +2873,7 @@ export default function WarehouseApp() {
     setSavingReturnBatch(true);
     try {
       const today = new Date().toISOString().split("T")[0];
-      const updatedProducts = [...products];
+      const updatedProducts = [...rawProducts];
       const newTxList = [];
       for (const item of validItems) {
         const idx = updatedProducts.findIndex(p => p.id === item.productId);
@@ -2741,7 +2893,7 @@ export default function WarehouseApp() {
         });
         newTxList.push(dbToTx(newTx));
       }
-      setProducts(updatedProducts);
+      setRawProducts(updatedProducts);
       setTransactions(prev => [...newTxList, ...prev]);
       setShowReturnBatchModal(false);
       setReturnBatchItems([]);
@@ -2790,7 +2942,7 @@ export default function WarehouseApp() {
     setSavingOutBatch(true);
     try {
       const today = new Date().toISOString().split("T")[0];
-      const updatedProducts = [...products];
+      const updatedProducts = [...rawProducts];
       const newTxList = [];
       for (const item of validItems) {
         const idx = updatedProducts.findIndex(p => p.id === item.productId);
@@ -2809,7 +2961,7 @@ export default function WarehouseApp() {
         });
         newTxList.push(dbToTx(newTx));
       }
-      setProducts(updatedProducts);
+      setRawProducts(updatedProducts);
       setTransactions(prev => [...newTxList, ...prev]);
       setShowOutBatchModal(false);
       setOutBatchItems([]);
@@ -2831,7 +2983,7 @@ export default function WarehouseApp() {
       const dataUrl = e.target.result;
       try {
         await api.updateProduct(product.id, { image_url: dataUrl });
-        setProducts(prev => prev.map(p => p.id === product.id ? { ...p, imageUrl: dataUrl } : p));
+        setRawProducts(prev => prev.map(p => p.id === product.id ? { ...p, imageUrl: dataUrl } : p));
         showToast("อัปโหลดรูปสำเร็จ");
       } catch (err) { showToast(err.message, "error"); }
     };
@@ -2912,7 +3064,7 @@ export default function WarehouseApp() {
           by: checkerName || "ตรวจนับ",
         });
         if (tx) newTxs.push(dbToTx(tx));
-        setProducts(prev => prev.map(p => p.id === d.prod.id ? { ...p, quantity: d.counted } : p));
+        setRawProducts(prev => prev.map(p => p.id === d.prod.id ? { ...p, quantity: d.counted } : p));
       }
       setTransactions(prev => [...newTxs.reverse(), ...prev]);
       setStockCounts({}); setCheckerName(""); setStockCheckMode(false);
@@ -3155,6 +3307,11 @@ export default function WarehouseApp() {
                       style={{ background: "#EDE9FE", color: "#7C3AED", border: "1px solid #DDD6FE", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
                       {exportingInventory ? "⏳..." : "📥 Export Excel"}
                     </button>
+                    <button onClick={() => setShowIncomingModal(true)}
+                      title="ของที่สั่งแล้วรอเข้า ดึงจากระบบใบสั่ง แล้วจับคู่ชื่อกับสินค้าในคลังให้อัตโนมัติ"
+                      style={{ background: incomingUnmatched.length > 0 ? "#FEF3C7" : "#F5F3FF", color: incomingUnmatched.length > 0 ? "#B45309" : "#7C3AED", border: `1px solid ${incomingUnmatched.length > 0 ? "#FDE68A" : "#DDD6FE"}`, borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+                      🧾 ของรอเข้า{incomingUnmatched.length > 0 ? ` · ${incomingUnmatched.length} ยังไม่จับคู่` : ""}
+                    </button>
                     <button onClick={() => { setStockCheckMode(!stockCheckMode); setStockCounts({}); }}
                       style={{ background: stockCheckMode ? "#D97706" : "#FFFBEB", color: stockCheckMode ? "#fff" : "#B45309", border: "1px solid #FDE68A", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
                       {stockCheckMode ? "✕ ปิดเช็คสต็อก" : "🔍 เช็ค/ปรับสต็อก"}
@@ -3277,7 +3434,11 @@ export default function WarehouseApp() {
                           {p.name}
                         </td>
                         <td style={{ fontWeight: 700, color: statusColor(p).fg }}>{p.quantity}</td>
-                        <td style={{ color: p.qtyOnOrder > 0 ? "#7C3AED" : "#D1D5DB", fontWeight: p.qtyOnOrder > 0 ? 700 : 400 }}>{p.qtyOnOrder > 0 ? `+${p.qtyOnOrder}` : "-"}</td>
+                        <td style={{ color: p.qtyOnOrder > 0 ? "#7C3AED" : "#D1D5DB", fontWeight: p.qtyOnOrder > 0 ? 700 : 400, whiteSpace: "nowrap" }}
+                                title={p.incomingSources ? "จากระบบใบสั่ง:\n" + p.incomingSources.map(x => "• " + x.name + " — " + x.qty).join("\n") : undefined}>
+                                {p.qtyOnOrder > 0 ? `+${p.qtyOnOrder}` : "-"}
+                                {p.incomingSources && <span style={{ marginLeft: 3, fontSize: 10, opacity: 0.65 }}>🧾</span>}
+                              </td>
                         {stockCheckMode && (() => {
                           const raw = stockCounts[p.id] ?? "";
                           const counted = parseInt(raw);
@@ -4142,6 +4303,91 @@ export default function WarehouseApp() {
       )}
 
       {/* ─── TOAST ─── */}
+      {/* ─── ของรอเข้า: จับคู่ชื่อจากระบบใบสั่งกับสินค้าในคลัง ─── */}
+      {showIncomingModal && (() => {
+        const q = incomingSearch.trim().toLowerCase();
+        const rows = incoming.rows.filter(r => !q || r.name.toLowerCase().includes(q));
+        const matched = incoming.rows.filter(r => r.productId != null);
+        const totalIn = incoming.rows.reduce((t, r) => t + (r.productId != null ? r.inTransit : 0), 0);
+        const lostIn = incomingUnmatched.reduce((t, r) => t + r.inTransit, 0);
+        const nameOf = (id) => rawProducts.find(p => p.id === id)?.name || "-";
+        return (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(8px)" }}
+            onClick={() => setShowIncomingModal(false)}>
+            <div onClick={e => e.stopPropagation()}
+              style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, width: "100%", maxWidth: 900, maxHeight: "90vh", display: "flex", flexDirection: "column", boxShadow: "0 24px 60px rgba(0,0,0,0.15)" }}>
+              <div style={{ padding: "22px 24px 14px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                  <div>
+                    <h3 style={{ fontSize: 18, fontWeight: 700, color: "#111827" }}>🧾 ของรอเข้า (จากระบบใบสั่ง)</h3>
+                    <p style={{ fontSize: 12.5, color: "#6B7280", marginTop: 4 }}>
+                      ยอดที่สั่งแล้วยังเข้าไม่ครบ ดึงมาจากระบบใบสั่งโดยตรง — จับคู่ชื่อให้อัตโนมัติ ตัวที่จับไม่ได้เลือกเองด้านล่าง
+                    </p>
+                  </div>
+                  <button onClick={() => setShowIncomingModal(false)}
+                    style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "7px 14px", fontSize: 13, cursor: "pointer", whiteSpace: "nowrap" }}>ปิด</button>
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 12 }}>
+                  {[
+                    { label: "จับคู่แล้ว", value: `${matched.length} รายการ`, bg: "#ECFDF5", color: "#065F46" },
+                    { label: "รวมของรอเข้า", value: `${totalIn.toLocaleString("th-TH")} ชิ้น`, bg: "#F5F3FF", color: "#6D28D9" },
+                    { label: "ยังไม่จับคู่", value: `${incomingUnmatched.length} รายการ · ${lostIn.toLocaleString("th-TH")} ชิ้น`, bg: incomingUnmatched.length ? "#FEF3C7" : "#F3F4F6", color: incomingUnmatched.length ? "#B45309" : "#6B7280" },
+                  ].map(c => (
+                    <div key={c.label} style={{ background: c.bg, borderRadius: 10, padding: "8px 14px" }}>
+                      <div style={{ fontSize: 11, color: c.color, opacity: 0.8 }}>{c.label}</div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: c.color }}>{c.value}</div>
+                    </div>
+                  ))}
+                </div>
+                <input className="inp" style={{ marginTop: 12 }} placeholder="🔍 ค้นหาชื่อจากใบสั่ง..."
+                  value={incomingSearch} onChange={e => setIncomingSearch(e.target.value)} />
+              </div>
+
+              <div style={{ overflowY: "auto", padding: "0 24px 20px" }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>ชื่อในใบสั่ง</th>
+                      <th style={{ whiteSpace: "nowrap" }}>รอเข้า</th>
+                      <th>สินค้าในคลัง</th>
+                      <th style={{ whiteSpace: "nowrap" }}>วิธีจับคู่</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(r => (
+                      <tr key={r.id} style={{ background: r.productId == null && r.inTransit > 0 ? "#FFFBEB" : "transparent" }}>
+                        <td style={{ fontSize: 13 }}>{r.name}</td>
+                        <td style={{ fontFamily: "monospace", fontWeight: r.inTransit > 0 ? 700 : 400, color: r.inTransit > 0 ? "#7C3AED" : "#D1D5DB" }}>
+                          {r.inTransit > 0 ? r.inTransit.toLocaleString("th-TH") : "-"}
+                        </td>
+                        <td>
+                          <select className="inp" style={{ padding: "6px 8px", fontSize: 12.5, maxWidth: 320 }}
+                            value={r.manual ? (r.productId == null ? "none" : String(r.productId)) : "auto"}
+                            onChange={e => {
+                              const v = e.target.value;
+                              setAlias(r.name, v === "auto" ? "auto" : v === "none" ? null : Number(v));
+                            }}>
+                            <option value="auto">{r.productId != null && !r.manual ? `⚙️ อัตโนมัติ — ${nameOf(r.productId)}` : "⚙️ ให้ระบบจับคู่เอง"}</option>
+                            <option value="none">— ไม่จับคู่ —</option>
+                            {rawProducts.map(p => <option key={p.id} value={String(p.id)}>{p.name}</option>)}
+                          </select>
+                        </td>
+                        <td style={{ fontSize: 11.5, color: r.productId == null ? "#B45309" : "#6B7280", whiteSpace: "nowrap" }}>{r.how}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {rows.length === 0 && <div style={{ textAlign: "center", padding: 36, color: "#9CA3AF", fontSize: 13 }}>ไม่พบรายการ</div>}
+                <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 10 }}>
+                  * ยอดรอเข้าอ่านจากระบบใบสั่งอย่างเดียว ไม่เขียนกลับ — แก้จำนวนต้องไปแก้ที่ระบบใบสั่ง
+                  <br />* การจับคู่ที่เลือกเองเก็บไว้ในเบราว์เซอร์เครื่องนี้ (เครื่องอื่นจะเห็นเฉพาะที่ระบบจับคู่ให้อัตโนมัติ)
+                </p>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {toast && (
         <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 400, background: toast.type === "success" ? "#065F46" : "#991B1B", color: "#fff", borderRadius: 12, padding: "12px 24px", fontSize: 14, fontWeight: 600, boxShadow: "0 12px 32px rgba(0,0,0,0.25)", maxWidth: "90vw" }}>
           {toast.type === "success" ? "✅ " : "⚠️ "}{toast.msg}
@@ -4150,4 +4396,3 @@ export default function WarehouseApp() {
     </div>
   );
 }
-
