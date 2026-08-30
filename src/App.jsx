@@ -165,6 +165,53 @@ const loadAliasMap = () => {
   try { return JSON.parse(localStorage.getItem(ALIAS_KEY) || "{}"); } catch { return {}; }
 };
 
+// ช่องเลือกสินค้าแบบพิมพ์กรองได้ — คลังมีร้อยกว่ารายการ ใช้ <select> ธรรมดาแล้วเลื่อนหาไม่ไหว
+// กางแบบดันเนื้อหาลง (ไม่ลอยทับ) เพราะอยู่ในกล่องที่เลื่อนได้ ถ้าลอยจะโดนตัดขอบ
+function ProductPicker({ products, value, autoLabel, onPick }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const kw = q.trim().toLowerCase();
+  const list = kw
+    ? products.filter(p => p.name.toLowerCase().includes(kw) || String(p.sku || "").toLowerCase().includes(kw))
+    : products;
+  const NONE_LABEL = "— ไม่จับคู่ —";
+  const current = value === "auto" ? autoLabel
+    : value === "none" ? NONE_LABEL
+    : (products.find(p => String(p.id) === value)?.name || NONE_LABEL);
+  const pick = (v) => { onPick(v); setOpen(false); setQ(""); };
+  const Row = ({ v, label, active }) => (
+    <div onClick={() => pick(v)}
+      style={{ padding: "7px 10px", fontSize: 12.5, cursor: "pointer", borderRadius: 8, background: active ? "#F5F3FF" : "transparent", color: active ? "#6D28D9" : "#374151", fontWeight: active ? 700 : 400 }}
+      onMouseEnter={e => { if (!active) e.currentTarget.style.background = "#F9FAFB"; }}
+      onMouseLeave={e => { if (!active) e.currentTarget.style.background = "transparent"; }}>
+      {label}
+    </div>
+  );
+  return (
+    <div style={{ maxWidth: 320 }}>
+      <button type="button" className="inp" onClick={() => { setOpen(o => !o); setQ(""); }}
+        style={{ width: "100%", textAlign: "left", cursor: "pointer", padding: "6px 8px", fontSize: 12.5, background: "#fff", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{current}</span>
+        <span style={{ color: "#9CA3AF", fontSize: 10 }}>{open ? "▲" : "▼"}</span>
+      </button>
+      {open && (
+        <div style={{ marginTop: 4, border: "1px solid #E5E7EB", borderRadius: 12, background: "#fff", boxShadow: "0 8px 24px rgba(0,0,0,0.08)", padding: 6 }}>
+          <input className="inp" autoFocus placeholder="🔍 พิมพ์ชื่อ / SKU เพื่อกรอง..."
+            value={q} onChange={e => setQ(e.target.value)} style={{ padding: "6px 8px", fontSize: 12.5, marginBottom: 4 }} />
+          <div style={{ maxHeight: 190, overflowY: "auto" }}>
+            {!kw && <Row v="auto" label={autoLabel} active={value === "auto"} />}
+            {!kw && <Row v="none" label={NONE_LABEL} active={value === "none"} />}
+            {list.map(p => <Row key={p.id} v={String(p.id)} label={`${p.name}  ·  ${p.sku}`} active={value === String(p.id)} />)}
+            {list.length === 0 && (
+              <div style={{ padding: 12, fontSize: 12, color: "#9CA3AF", textAlign: "center" }}>ไม่พบสินค้าที่ตรงกับ "{q}"</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // มุมมองการแสดงผลของแต่ละรายการเคลื่อนไหว (รองรับ in / out / adjust)
 const txView = (tx, unit) => {
   const u = unit || "";
@@ -4349,50 +4396,4 @@ export default function WarehouseApp() {
                     <tr>
                       <th>ชื่อในใบสั่ง</th>
                       <th style={{ whiteSpace: "nowrap" }}>รอเข้า</th>
-                      <th>สินค้าในคลัง</th>
-                      <th style={{ whiteSpace: "nowrap" }}>วิธีจับคู่</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map(r => (
-                      <tr key={r.id} style={{ background: r.productId == null && r.inTransit > 0 ? "#FFFBEB" : "transparent" }}>
-                        <td style={{ fontSize: 13 }}>{r.name}</td>
-                        <td style={{ fontFamily: "monospace", fontWeight: r.inTransit > 0 ? 700 : 400, color: r.inTransit > 0 ? "#7C3AED" : "#D1D5DB" }}>
-                          {r.inTransit > 0 ? r.inTransit.toLocaleString("th-TH") : "-"}
-                        </td>
-                        <td>
-                          <select className="inp" style={{ padding: "6px 8px", fontSize: 12.5, maxWidth: 320 }}
-                            value={r.manual ? (r.productId == null ? "none" : String(r.productId)) : "auto"}
-                            onChange={e => {
-                              const v = e.target.value;
-                              setAlias(r.name, v === "auto" ? "auto" : v === "none" ? null : Number(v));
-                            }}>
-                            <option value="auto">{r.productId != null && !r.manual ? `⚙️ อัตโนมัติ — ${nameOf(r.productId)}` : "⚙️ ให้ระบบจับคู่เอง"}</option>
-                            <option value="none">— ไม่จับคู่ —</option>
-                            {rawProducts.map(p => <option key={p.id} value={String(p.id)}>{p.name}</option>)}
-                          </select>
-                        </td>
-                        <td style={{ fontSize: 11.5, color: r.productId == null ? "#B45309" : "#6B7280", whiteSpace: "nowrap" }}>{r.how}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {rows.length === 0 && <div style={{ textAlign: "center", padding: 36, color: "#9CA3AF", fontSize: 13 }}>ไม่พบรายการ</div>}
-                <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 10 }}>
-                  * ยอดรอเข้าอ่านจากระบบใบสั่งอย่างเดียว ไม่เขียนกลับ — แก้จำนวนต้องไปแก้ที่ระบบใบสั่ง
-                  <br />* การจับคู่ที่เลือกเองเก็บไว้ในเบราว์เซอร์เครื่องนี้ (เครื่องอื่นจะเห็นเฉพาะที่ระบบจับคู่ให้อัตโนมัติ)
-                </p>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {toast && (
-        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 400, background: toast.type === "success" ? "#065F46" : "#991B1B", color: "#fff", borderRadius: 12, padding: "12px 24px", fontSize: 14, fontWeight: 600, boxShadow: "0 12px 32px rgba(0,0,0,0.25)", maxWidth: "90vw" }}>
-          {toast.type === "success" ? "✅ " : "⚠️ "}{toast.msg}
-        </div>
-      )}
-    </div>
-  );
-}
+                      <th>สินค้าในคลั
