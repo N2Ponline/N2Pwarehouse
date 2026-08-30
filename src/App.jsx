@@ -4396,4 +4396,46 @@ export default function WarehouseApp() {
                     <tr>
                       <th>ชื่อในใบสั่ง</th>
                       <th style={{ whiteSpace: "nowrap" }}>รอเข้า</th>
-                      <th>สินค้าในคลั
+                      <th>สินค้าในคลัง</th>
+                      <th style={{ whiteSpace: "nowrap" }}>วิธีจับคู่</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(r => (
+                      <tr key={r.id} style={{ background: r.productId == null && r.inTransit > 0 ? "#FFFBEB" : "transparent" }}>
+                        <td style={{ fontSize: 13 }}>{r.name}</td>
+                        <td style={{ fontFamily: "monospace", fontWeight: r.inTransit > 0 ? 700 : 400, color: r.inTransit > 0 ? "#7C3AED" : "#D1D5DB" }}>
+                          {r.inTransit > 0 ? r.inTransit.toLocaleString("th-TH") : "-"}
+                        </td>
+                        <td>
+                          <ProductPicker
+                            products={rawProducts}
+                            value={r.manual ? (r.productId == null ? "none" : String(r.productId)) : "auto"}
+                            autoLabel={r.productId != null && !r.manual ? `⚙️ อัตโนมัติ — ${nameOf(r.productId)}` : "⚙️ ให้ระบบจับคู่เอง"}
+                            onPick={v => setAlias(r.name, v === "auto" ? "auto" : v === "none" ? null : Number(v))}
+                          />
+                        </td>
+                        <td style={{ fontSize: 11.5, color: r.productId == null ? "#B45309" : "#6B7280", whiteSpace: "nowrap" }}>{r.how}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {rows.length === 0 && <div style={{ textAlign: "center", padding: 36, color: "#9CA3AF", fontSize: 13 }}>ไม่พบรายการ</div>}
+                <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 10 }}>
+                  * ยอดรอเข้าอ่านจากระบบใบสั่งอย่างเดียว ไม่เขียนกลับ — แก้จำนวนต้องไปแก้ที่ระบบใบสั่ง
+                  <br />* การจับคู่ที่เลือกเองเก็บไว้ในเบราว์เซอร์เครื่องนี้ (เครื่องอื่นจะเห็นเฉพาะที่ระบบจับคู่ให้อัตโนมัติ)
+                </p>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {toast && (
+        <div style={{ position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", zIndex: 400, background: toast.type === "success" ? "#065F46" : "#991B1B", color: "#fff", borderRadius: 12, padding: "12px 24px", fontSize: 14, fontWeight: 600, boxShadow: "0 12px 32px rgba(0,0,0,0.25)", maxWidth: "90vw" }}>
+          {toast.type === "success" ? "✅ " : "⚠️ "}{toast.msg}
+        </div>
+      )}
+    </div>
+  );
+}
