@@ -552,7 +552,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
     if (summaryFilter.mode === "all") return scans;
     const from = summaryFilter.rangeFrom, to = summaryFilter.rangeTo;
     return scans.filter(sc => {
-      const d = sc.scanned_at ? sc.scanned_at.slice(0, 10) : (sc.scan_date || null);
+      const d = sc.scan_date || (sc.scanned_at ? sc.scanned_at.slice(0, 10) : null); // scan_date = วันที่ไทยตอนยิง, scanned_at เป็น UTC (เพี้ยนช่วงเที่ยงคืน–7 โมงเช้า)
       if (!d) return false;
       if (from && d < from) return false;
       if (to && d > to) return false;
@@ -560,19 +560,23 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
     });
   }, [scans, summaryFilter.mode, summaryFilter.rangeFrom, summaryFilter.rangeTo]);
 
-  const scannedSet = useMemo(() => new Set(scansFiltered.map(sc => sc.tracking_code)), [scansFiltered]);
+  // สถานะ "ถึงคลังหรือยัง" ต้องเทียบกับการยิงทั้งหมดเสมอ — ไม่ผูกกับช่วงเวลาที่เลือกดู
+  // เพราะของที่ Flash แจ้งปลายเดือน/เมื่อวาน มักถูกยิงรับเข้าคลังวันถัดไป ถ้ากรองด้วยช่วงเดียวกันจะขึ้นแดงปลอมทั้งชุด
+  const scannedSet = useMemo(() => new Set(scans.map(sc => sc.tracking_code)), [scans]);
   const matched = useMemo(() => sortedSystemList.filter(c => scannedSet.has(c)), [sortedSystemList, scannedSet]);
   const missing = useMemo(() => sortedSystemList.filter(c => !scannedSet.has(c)), [sortedSystemList, scannedSet]);
-  // ยิงเกิน: ถึงคลัง (ตามช่วงเวลาเดียวกัน) ที่ไม่อยู่ใน Flash แจ้ง (ตามช่วงเวลาเดียวกัน)
+  // ยิงเกิน: ของที่ยิงเข้าคลัง (ในช่วงที่เลือก) แต่ไม่มีอยู่ใน Flash แจ้ง "ทั้งหมด"
+  // ใช้ systemListAll ไม่ใช่ systemList — ไม่งั้นของที่ Flash แจ้งข้ามเดือนจะถูกนับเป็นยิงเกินผิดๆ
+  const systemSetAll = useMemo(() => new Set(systemListAll), [systemListAll]);
   const extra = useMemo(() => {
     const seen = new Set();
     return scansFiltered.filter(sc => {
-      if (systemList.includes(sc.tracking_code)) return false;
+      if (systemSetAll.has(sc.tracking_code)) return false;
       if (seen.has(sc.tracking_code)) return false;
       seen.add(sc.tracking_code);
       return true;
     });
-  }, [scansFiltered, systemList]);
+  }, [scansFiltered, systemSetAll]);
 
   // ── panel ที่ 3: ตีกลับ myorder — เทียบ outbound_tracking ของ myorder กับ return_flash_items (เลขขาไปตรงกัน) ──
   const flashOutboundMap = useMemo(() => {
@@ -684,7 +688,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
       const ws3 = XLSX.utils.aoa_to_sheet([
         [{ v: "เลข Tracking", s: HEADER }, { v: "ผู้ยิง", s: HEADER }, { v: "เวลายิง", s: HEADER }, { v: "สถานะ", s: HEADER }],
         ...scansFiltered.map(sc => {
-          const inSystem = systemList.includes(sc.tracking_code);
+          const inSystem = systemSetAll.has(sc.tracking_code);
           return [
             { v: sc.tracking_code, s: inSystem ? GREEN : ORANGE },
             sc.scanned_by || "-",
@@ -844,7 +848,7 @@ function ReturnSummaryPanel({ onGoToMyorder }) {
             </div>
             <div style={{ maxHeight: 640, overflowY: "auto" }}>
               {scansFiltered.map((sc, i) => {
-                const inSystem = systemList.includes(sc.tracking_code);
+                const inSystem = systemSetAll.has(sc.tracking_code);
                 return (
                   <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: "1px solid #F3F4F6", fontSize: 12 }}>
                     <span style={{ fontFamily: "monospace", color: inSystem ? "#065F46" : "#92400E" }}>{sc.tracking_code}</span>
@@ -946,20 +950,8 @@ function ReturnAdminPanel() {
     });
   }, [allFlashItems, filter.mode, filter.rangeFrom, filter.rangeTo]);
 
-  // scans ตามช่วงเวลาเดียวกัน (อิงวันที่ยิงรับเข้าคลัง) — ใช้คำนวณสรุปยอดของหน้านี้
-  const scansInRange = useMemo(() => {
-    if (filter.mode === "all") return allScans;
-    const from = filter.rangeFrom, to = filter.rangeTo;
-    return allScans.filter(sc => {
-      const d = sc.scanned_at ? sc.scanned_at.slice(0, 10) : (sc.scan_date || null);
-      if (!d) return false;
-      if (from && d < from) return false;
-      if (to && d > to) return false;
-      return true;
-    });
-  }, [allScans, filter.mode, filter.rangeFrom, filter.rangeTo]);
-
-  const scannedSet = useMemo(() => new Set(scansInRange.map(s => s.tracking_code)), [scansInRange]);
+  // เทียบกับการยิงทั้งหมดเสมอ (เหตุผลเดียวกับ ReturnSummaryPanel) — ตัวกรองช่วงเวลาใช้เลือกว่าจะ "ดู" Flash ชุดไหนเท่านั้น
+  const scannedSet = useMemo(() => new Set(allScans.map(s => s.tracking_code)), [allScans]);
   const flashCodes = useMemo(() => [...new Set(items.map(it => it.return_tracking).filter(Boolean))], [items]);
   const matchedCount = useMemo(() => flashCodes.filter(c => scannedSet.has(c)).length, [flashCodes, scannedSet]);
   const missingCount = flashCodes.length - matchedCount;
