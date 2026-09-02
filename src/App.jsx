@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from "rea
 const SUPABASE_URL = "https://slwbzbnomsugffyzjyuv.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsd2J6Ym5vbXN1Z2ZmeXpqeXV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MjIxMDcsImV4cCI6MjA5NTI5ODEwN30.qG3CPT6J_evddK8qmpF7P3bVswn_Du43MEHo33bUnqA";
 
-// รหัสเข้าดูแท็บ "ยอดออเดอร์" — เฉพาะผู้จัดการ (กันคนทั่วไปกดเข้าไปโดยไม่ตั้งใจ ไม่ใช่ระบบ auth จริง)
+// รหัสเข้าดูเมนูย่อย "เช็คออเดอร์" (ใต้แท็บเช็คสต็อก) — เฉพาะผู้จัดการ (กันคนทั่วไปกดเข้าไปโดยไม่ตั้งใจ ไม่ใช่ระบบ auth จริง)
 const ORDER_SCANS_PASSWORD = "168168";
 
 const sb = async (path, opts = {}) => {
@@ -2194,6 +2194,7 @@ export default function WarehouseApp() {
   const [exportingTx, setExportingTx] = useState(false);
   const [stockCheckMode, setStockCheckMode] = useState(false); // โหมดเช็ค/ปรับสต็อก
   const [stockCounts, setStockCounts] = useState({}); // { [productId]: "จำนวนนับจริง" }
+  const [stockSub, setStockSub] = useState("orders"); // เมนูย่อยของ "เช็คสต็อก": orders | adjust | dispose
   const [checkerName, setCheckerName] = useState(""); // ผู้ตรวจนับ
   const [savingStockCheck, setSavingStockCheck] = useState(false);
   const [reorderDays, setReorderDays] = useState(7); // จำนวนวันที่ต้องการให้สต็อกพอ ในหน้า "ต้องสั่งซื้อ"
@@ -2428,7 +2429,13 @@ export default function WarehouseApp() {
 
   useEffect(() => { loadAll(); }, [loadAll]);
   useEffect(() => { if (tab === "dispose") loadDisposeRecords(); }, [tab]);
-  useEffect(() => { if (tab === "orderscans" && scansUnlocked) loadOrderScans(); }, [tab, scansUnlocked]);
+  useEffect(() => { if (tab === "stockcheck" && stockSub === "orders" && scansUnlocked) loadOrderScans(); }, [tab, stockSub, scansUnlocked]);
+  // เมนูย่อยของ "เช็คสต็อก" เป็นตัวกำหนดโหมดของตารางสินค้า — ออกจากแท็บเมื่อไหร่ โหมดดับทั้งคู่
+  useEffect(() => {
+    const inStock = tab === "stockcheck";
+    setStockCheckMode(inStock && stockSub === "adjust");
+    setDisposeMode(inStock && stockSub === "dispose");
+  }, [tab, stockSub]);
 
   const handleSort = (col) => {
     if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -3215,6 +3222,27 @@ export default function WarehouseApp() {
     </div>
   );
 
+  // ── เมนูย่อยของแท็บ "เช็คสต็อก" ── (พิมพ์ใบเช็คสต็อกเป็นคำสั่ง ไม่ใช่หน้า จึงสั่งพิมพ์เลยไม่เปลี่ยนหน้า)
+  const goStockSub = (v) => {
+    if (v === "print") { handlePrintStockSheet(); return; }
+    setStockSub(v);
+    setStockCounts({});
+    setSelectedForDispose(new Set());
+  };
+  const stockSubTabs = tab === "stockcheck" ? (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
+      {[["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"], ["dispose", "🗑️ จำหน่ายสินค้า"]].map(([v, l]) => {
+        const on = v !== "print" && stockSub === v;
+        return (
+          <button key={v} onClick={() => goStockSub(v)}
+            style={{ background: on ? "#7C3AED" : "#fff", color: on ? "#fff" : "#6B7280", border: "1px solid " + (on ? "#7C3AED" : "#E5E7EB"), borderRadius: 10, padding: "8px 16px", fontSize: 13, fontWeight: on ? 700 : 500, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+            {l}{v === "orders" && unreviewedScanCount > 0 ? ` (${unreviewedScanCount})` : ""}
+          </button>
+        );
+      })}
+    </div>
+  ) : null;
+
   return (
     <div style={{ minHeight: "100vh", background: "#F3F4F6", fontFamily: "'Sarabun', sans-serif", paddingBottom: 60 }}>
       <style>{appStyles}</style>
@@ -3230,8 +3258,8 @@ export default function WarehouseApp() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {[["dashboard","🏠 แดชบอร์ด"],["inventory","📦 คลังสินค้า"],["reorder","🛒 ต้องสั่งซื้อ"],["transactions","🔄 เคลื่อนไหว"],["returns","📮 พัสดุตีกลับ"],["dispose","🗑️ จำหน่ายออก"],["orderscans","🧾 ยอดออเดอร์"]].map(([v,l]) => {
-              const badgeCount = v === "reorder" ? reorderList.length : v === "orderscans" ? unreviewedScanCount : 0;
+            {[["dashboard","🏠 แดชบอร์ด"],["inventory","📦 คลังสินค้า"],["reorder","🛒 ต้องสั่งซื้อ"],["transactions","🔄 เคลื่อนไหว"],["returns","📮 พัสดุตีกลับ"],["dispose","🗑️ จำหน่ายออก"],["stockcheck","🔍 เช็คสต็อก"]].map(([v,l]) => {
+              const badgeCount = v === "reorder" ? reorderList.length : v === "stockcheck" ? unreviewedScanCount : 0;
               return (
               <button key={v} onClick={() => setTab(v)}
                 style={{ background: tab === v ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : badgeCount > 0 ? "#FEF2F2" : "transparent", color: tab === v ? "#fff" : badgeCount > 0 ? "#DC2626" : "#6B7280", border: "none", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: tab === v || badgeCount > 0 ? 700 : 400, cursor: "pointer", transition: "all 0.2s" }}>
@@ -3332,15 +3360,16 @@ export default function WarehouseApp() {
         )}
 
         {/* ─── INVENTORY ─── */}
-        {tab === "inventory" && (
+        {(tab === "inventory" || (tab === "stockcheck" && (stockSub === "adjust" || stockSub === "dispose"))) && (
           <div>
+            {stockSubTabs}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
               <div>
-                <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📦 คลังสินค้า</h2>
+                <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>{tab === "stockcheck" ? (stockSub === "adjust" ? "🔍 ปรับสต็อก" : "🗑️ จำหน่ายสินค้า") : "📦 คลังสินค้า"}</h2>
                 <p style={{ fontSize: 13, color: "#6B7280" }}>{filteredProducts.length} รายการ · มูลค่ารวม ฿{totalValue.toLocaleString("th-TH")}</p>
               </div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {!disposeMode && (
+                {!disposeMode && tab === "inventory" && (
                   <>
                     <button onClick={handleExportInventory} disabled={exportingInventory}
                       style={{ background: "#EDE9FE", color: "#7C3AED", border: "1px solid #DDD6FE", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
@@ -3350,18 +3379,6 @@ export default function WarehouseApp() {
                       title="ของที่สั่งแล้วรอเข้า ดึงจากระบบใบสั่ง แล้วจับคู่ชื่อกับสินค้าในคลังให้อัตโนมัติ"
                       style={{ background: incomingUnmatched.length > 0 ? "#FEF3C7" : "#F5F3FF", color: incomingUnmatched.length > 0 ? "#B45309" : "#7C3AED", border: `1px solid ${incomingUnmatched.length > 0 ? "#FDE68A" : "#DDD6FE"}`, borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
                       🧾 ของรอเข้า{incomingUnmatched.length > 0 ? ` · ${incomingUnmatched.length} ยังไม่จับคู่` : ""}
-                    </button>
-                    <button onClick={() => { setStockCheckMode(!stockCheckMode); setStockCounts({}); }}
-                      style={{ background: stockCheckMode ? "#D97706" : "#FFFBEB", color: stockCheckMode ? "#fff" : "#B45309", border: "1px solid #FDE68A", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                      {stockCheckMode ? "✕ ปิดเช็คสต็อก" : "🔍 เช็ค/ปรับสต็อก"}
-                    </button>
-                    <button onClick={handlePrintStockSheet} title="พิมพ์ใบเช็คสต็อกแบบไม่โชว์ยอดคงเหลือ ให้นับจริงแล้วกรอกเอง"
-                      style={{ background: "#F0F9FF", color: "#0369A1", border: "1px solid #BAE6FD", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                      🖨️ พิมพ์ใบเช็คสต็อก
-                    </button>
-                    <button onClick={() => { setDisposeMode(true); setSelectedForDispose(new Set()); setStockCheckMode(false); }}
-                      style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-                      🗑️ โหมดจำหน่ายออก
                     </button>
                     <button onClick={() => { setForm({}); setShowModal("add"); }}
                       style={{ background: "linear-gradient(135deg,#7C3AED,#3B82F6)", color: "#fff", border: "none", borderRadius: 10, padding: "9px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
@@ -3380,7 +3397,7 @@ export default function WarehouseApp() {
                       style={{ background: "#DC2626", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: selectedForDispose.size === 0 ? "not-allowed" : "pointer", opacity: selectedForDispose.size === 0 ? 0.5 : 1 }}>
                       ✅ ยืนยันจำหน่ายออก
                     </button>
-                    <button onClick={() => { setDisposeMode(false); setSelectedForDispose(new Set()); }}
+                    <button onClick={() => { setSelectedForDispose(new Set()); setTab("inventory"); }}
                       style={{ background: "#F9FAFB", color: "#6B7280", border: "1px solid #E5E7EB", borderRadius: 10, padding: "9px 16px", fontSize: 13, cursor: "pointer" }}>
                       ยกเลิก
                     </button>
@@ -3748,9 +3765,11 @@ export default function WarehouseApp() {
           </div>
         )}
 
-        {/* ─── ยอดออเดอร์ (จาก MyOrder extension) — เฉพาะผู้จัดการ ─── */}
-        {tab === "orderscans" && !scansUnlocked && (
-          <div style={{ display: "flex", justifyContent: "center", padding: "60px 20px" }}>
+        {/* ─── เช็คออเดอร์ (จาก MyOrder extension) — เฉพาะผู้จัดการ ─── */}
+        {tab === "stockcheck" && stockSub === "orders" && !scansUnlocked && (
+          <div>
+            {stockSubTabs}
+            <div style={{ display: "flex", justifyContent: "center", padding: "60px 20px" }}>
             <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 32, width: "100%", maxWidth: 340, textAlign: "center" }}>
               <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
               <div style={{ fontWeight: 700, fontSize: 15, color: "#111827", marginBottom: 4 }}>หน้านี้เฉพาะผู้จัดการ</div>
@@ -3766,13 +3785,15 @@ export default function WarehouseApp() {
                 ปลดล็อก
               </button>
             </div>
+            </div>
           </div>
         )}
-        {tab === "orderscans" && scansUnlocked && (
+        {tab === "stockcheck" && stockSub === "orders" && scansUnlocked && (
           <div>
+            {stockSubTabs}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
               <div>
-                <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🧾 ยอดออเดอร์ (จาก MyOrder)</h2>
+                <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🧾 เช็คออเดอร์ (จาก MyOrder)</h2>
                 <p style={{ fontSize: 13, color: "#6B7280" }}>ยอดสรุปสินค้าที่พนักงานติ๊กไว้บน myorder.ai ก่อนแพ็ก — ใช้เทียบกับรายการ "เบิกออก" จริงในระบบ เพื่อตรวจว่าตัดสต็อกตรงกันหรือไม่ · ค้างตรวจ {unreviewedScanCount} รายการ</p>
               </div>
             </div>
