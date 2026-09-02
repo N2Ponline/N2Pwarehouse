@@ -3231,7 +3231,7 @@ export default function WarehouseApp() {
   };
   const stockSubTabs = tab === "stockcheck" ? (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
-      {[["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"], ["dispose", "🗑️ จำหน่ายสินค้า"]].map(([v, l]) => {
+      {[["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"], ["dispose", "🗑️ จำหน่ายออก"]].map(([v, l]) => {
         const on = v !== "print" && stockSub === v;
         return (
           <button key={v} onClick={() => goStockSub(v)}
@@ -3365,7 +3365,7 @@ export default function WarehouseApp() {
             {stockSubTabs}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
               <div>
-                <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>{tab === "stockcheck" ? (stockSub === "adjust" ? "🔍 ปรับสต็อก" : "🗑️ จำหน่ายสินค้า") : "📦 คลังสินค้า"}</h2>
+                <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>{tab === "stockcheck" ? (stockSub === "adjust" ? "🔍 ปรับสต็อก" : "🗑️ จำหน่ายออก") : "📦 คลังสินค้า"}</h2>
                 <p style={{ fontSize: 13, color: "#6B7280" }}>{filteredProducts.length} รายการ · มูลค่ารวม ฿{totalValue.toLocaleString("th-TH")}</p>
               </div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
