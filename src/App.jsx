@@ -2447,10 +2447,11 @@ export default function WarehouseApp() {
   const incoming = useMemo(() => {
     const rows = backlog.map(b => {
       const inTransit = backlogInTransit(b);
+      const total = Number(b.total) || 0; // ยอด "ค้างส่ง" ที่แอดมินอัปเดตไว้ในระบบใบสั่ง
       const key = String(b.name || "").trim();
       if (Object.prototype.hasOwnProperty.call(incomingAlias, key)) {
         const pid = incomingAlias[key];
-        return { id: b.id, name: key, inTransit, productId: pid == null ? null : pid,
+        return { id: b.id, name: key, inTransit, total, productId: pid == null ? null : pid,
                  how: pid == null ? "ตั้งเองว่าไม่จับคู่" : "จับคู่เอง", score: 1, manual: true };
       }
       let best = null, second = 0;
@@ -2461,17 +2462,18 @@ export default function WarehouseApp() {
         else if (r.score > second) second = r.score;
       });
       if (best && (best.score >= 0.99 || best.score - second >= 0.03))
-        return { id: b.id, name: key, inTransit, productId: best.p.id, how: best.how, score: best.score, manual: false };
-      return { id: b.id, name: key, inTransit, productId: null,
+        return { id: b.id, name: key, inTransit, total, productId: best.p.id, how: best.how, score: best.score, manual: false };
+      return { id: b.id, name: key, inTransit, total, productId: null,
                how: best ? "ใกล้เคียงหลายตัว เลือกเองก่อน" : "ไม่พบสินค้าที่ตรงกัน", score: 0, manual: false };
     }).sort((a, b) => b.inTransit - a.inTransit);
 
     const byProduct = new Map();
     rows.forEach(r => {
       if (r.productId == null) return;
-      const cur = byProduct.get(r.productId) || { qty: 0, sources: [] };
+      const cur = byProduct.get(r.productId) || { qty: 0, backlogTotal: 0, sources: [] };
       cur.qty += r.inTransit;
-      cur.sources.push({ name: r.name, qty: r.inTransit });
+      cur.backlogTotal += r.total;
+      cur.sources.push({ name: r.name, qty: r.inTransit, total: r.total });
       byProduct.set(r.productId, cur);
     });
     return { rows, byProduct };
@@ -2481,7 +2483,7 @@ export default function WarehouseApp() {
   // ที่จับคู่ไม่ได้ ใช้ค่าที่กรอกมือไว้ในคลังเหมือนเดิม
   const products = useMemo(() => rawProducts.map(p => {
     const inc = incoming.byProduct.get(p.id);
-    return { ...p, qtyOnOrder: inc ? inc.qty : (p.qtyOnOrder || 0), incomingSources: inc ? inc.sources : null };
+    return { ...p, qtyOnOrder: inc ? inc.qty : (p.qtyOnOrder || 0), backlogTotal: inc ? inc.backlogTotal : 0, incomingSources: inc ? inc.sources : null };
   }), [rawProducts, incoming]);
 
   const incomingUnmatched = incoming.rows.filter(r => r.productId == null && r.inTransit > 0);
@@ -3451,6 +3453,7 @@ export default function WarehouseApp() {
                     <SortTh col="name" label="ชื่อสินค้า" />
                     <SortTh col="quantity" label="คงเหลือ" />
                     <SortTh col="qtyOnOrder" label="รอเข้า" />
+                    <SortTh col="backlogTotal" label="ค้างส่ง" />
                     {stockCheckMode && <th style={{ color: "#FDE68A" }}>นับจริง</th>}
                     <th>หน่วย</th>
                     <SortTh col="minStock" label="ขั้นต่ำ" />
@@ -3495,6 +3498,11 @@ export default function WarehouseApp() {
                                 {p.qtyOnOrder > 0 ? `+${p.qtyOnOrder}` : "-"}
                                 {p.incomingSources && <span style={{ marginLeft: 3, fontSize: 10, opacity: 0.65 }}>🧾</span>}
                               </td>
+                        <td style={{ color: p.backlogTotal > 0 ? "#B45309" : "#D1D5DB", fontWeight: p.backlogTotal > 0 ? 700 : 400, whiteSpace: "nowrap" }}
+                          title={p.incomingSources ? "ค้างส่งจากระบบใบสั่ง:\n" + p.incomingSources.map(x => "• " + x.name + " — " + x.total).join("\n") : undefined}>
+                          {p.backlogTotal > 0 ? p.backlogTotal : "-"}
+                          {p.backlogTotal > 0 && <span style={{ marginLeft: 3, fontSize: 10, opacity: 0.65 }}>🧾</span>}
+                        </td>
                         {stockCheckMode && (() => {
                           const raw = stockCounts[p.id] ?? "";
                           const counted = parseInt(raw);
