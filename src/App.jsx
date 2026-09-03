@@ -2486,7 +2486,7 @@ export default function WarehouseApp() {
     return { ...p, qtyOnOrder: inc ? inc.qty : (p.qtyOnOrder || 0), backlogTotal: inc ? inc.backlogTotal : 0, incomingSources: inc ? inc.sources : null };
   }), [rawProducts, incoming]);
 
-  const incomingUnmatched = incoming.rows.filter(r => r.productId == null && r.inTransit > 0);
+  const incomingUnmatched = incoming.rows.filter(r => r.productId == null && (r.inTransit > 0 || r.total > 0));
   const setAlias = (name, productId) => {
     const next = { ...incomingAlias };
     if (productId === "auto") delete next[name]; else next[name] = productId;
@@ -4377,7 +4377,9 @@ export default function WarehouseApp() {
         const rows = incoming.rows.filter(r => !q || r.name.toLowerCase().includes(q));
         const matched = incoming.rows.filter(r => r.productId != null);
         const totalIn = incoming.rows.reduce((t, r) => t + (r.productId != null ? r.inTransit : 0), 0);
+        const totalBacklog = incoming.rows.reduce((t, r) => t + (r.productId != null ? r.total : 0), 0);
         const lostIn = incomingUnmatched.reduce((t, r) => t + r.inTransit, 0);
+        const lostBacklog = incomingUnmatched.reduce((t, r) => t + r.total, 0);
         const nameOf = (id) => rawProducts.find(p => p.id === id)?.name || "-";
         return (
           <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(8px)" }}
@@ -4399,7 +4401,8 @@ export default function WarehouseApp() {
                   {[
                     { label: "จับคู่แล้ว", value: `${matched.length} รายการ`, bg: "#ECFDF5", color: "#065F46" },
                     { label: "รวมของรอเข้า", value: `${totalIn.toLocaleString("th-TH")} ชิ้น`, bg: "#F5F3FF", color: "#6D28D9" },
-                    { label: "ยังไม่จับคู่", value: `${incomingUnmatched.length} รายการ · ${lostIn.toLocaleString("th-TH")} ชิ้น`, bg: incomingUnmatched.length ? "#FEF3C7" : "#F3F4F6", color: incomingUnmatched.length ? "#B45309" : "#6B7280" },
+                    { label: "รวมค้างส่ง", value: `${totalBacklog.toLocaleString("th-TH")} ชิ้น`, bg: "#FFFBEB", color: "#B45309" },
+                    { label: "ยังไม่จับคู่", value: `${incomingUnmatched.length} รายการ · รอเข้า ${lostIn.toLocaleString("th-TH")} · ค้างส่ง ${lostBacklog.toLocaleString("th-TH")}`, bg: incomingUnmatched.length ? "#FEF3C7" : "#F3F4F6", color: incomingUnmatched.length ? "#B45309" : "#6B7280" },
                   ].map(c => (
                     <div key={c.label} style={{ background: c.bg, borderRadius: 10, padding: "8px 14px" }}>
                       <div style={{ fontSize: 11, color: c.color, opacity: 0.8 }}>{c.label}</div>
@@ -4417,16 +4420,20 @@ export default function WarehouseApp() {
                     <tr>
                       <th>ชื่อในใบสั่ง</th>
                       <th style={{ whiteSpace: "nowrap" }}>รอเข้า</th>
+                      <th style={{ whiteSpace: "nowrap" }}>ค้างส่ง</th>
                       <th>สินค้าในคลัง</th>
                       <th style={{ whiteSpace: "nowrap" }}>วิธีจับคู่</th>
                     </tr>
                   </thead>
                   <tbody>
                     {rows.map(r => (
-                      <tr key={r.id} style={{ background: r.productId == null && r.inTransit > 0 ? "#FFFBEB" : "transparent" }}>
+                      <tr key={r.id} style={{ background: r.productId == null && (r.inTransit > 0 || r.total > 0) ? "#FFFBEB" : "transparent" }}>
                         <td style={{ fontSize: 13 }}>{r.name}</td>
                         <td style={{ fontFamily: "monospace", fontWeight: r.inTransit > 0 ? 700 : 400, color: r.inTransit > 0 ? "#7C3AED" : "#D1D5DB" }}>
                           {r.inTransit > 0 ? r.inTransit.toLocaleString("th-TH") : "-"}
+                        </td>
+                        <td style={{ fontFamily: "monospace", fontWeight: r.total > 0 ? 700 : 400, color: r.total > 0 ? "#B45309" : "#D1D5DB" }}>
+                          {r.total > 0 ? r.total.toLocaleString("th-TH") : "-"}
                         </td>
                         <td>
                           <ProductPicker
@@ -4443,7 +4450,7 @@ export default function WarehouseApp() {
                 </table>
                 {rows.length === 0 && <div style={{ textAlign: "center", padding: 36, color: "#9CA3AF", fontSize: 13 }}>ไม่พบรายการ</div>}
                 <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 10 }}>
-                  * ยอดรอเข้าอ่านจากระบบใบสั่งอย่างเดียว ไม่เขียนกลับ — แก้จำนวนต้องไปแก้ที่ระบบใบสั่ง
+                  * ยอดรอเข้า/ค้างส่งอ่านจากระบบใบสั่งอย่างเดียว ไม่เขียนกลับ — แก้จำนวนต้องไปแก้ที่ระบบใบสั่ง
                   <br />* การจับคู่ที่เลือกเองเก็บไว้ในเบราว์เซอร์เครื่องนี้ (เครื่องอื่นจะเห็นเฉพาะที่ระบบจับคู่ให้อัตโนมัติ)
                 </p>
               </div>
