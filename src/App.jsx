@@ -62,7 +62,6 @@ const dbToProduct = (r) => ({
   id: r.id, sku: r.sku, name: r.name, category: r.category || "-",
   quantity: r.quantity, minStock: r.min_stock, price: Number(r.price),
   location: r.location || "-", unit: r.unit, imageUrl: r.image_url,
-  qtyOnOrder: r.qty_on_order || 0,
 });
 const productToDb = (p) => ({
   sku: p.sku, name: p.name, category: p.category,
@@ -71,7 +70,6 @@ const productToDb = (p) => ({
   price: parseFloat(p.price) || 0,
   location: p.location || "-", unit: p.unit || "ชิ้น",
   image_url: p.imageUrl || null,
-  qty_on_order: parseInt(p.qtyOnOrder) || 0,
 });
 const dbToTx = (r) => ({
   id: r.id, type: r.type, productId: r.product_id,
@@ -2479,11 +2477,12 @@ export default function WarehouseApp() {
     return { rows, byProduct };
   }, [backlog, rawProducts, incomingAlias]);
 
-  // ยอด "รอเข้า" ของสินค้าที่จับคู่ได้ ให้ยึดตามระบบใบสั่ง (แหล่งข้อมูลจริง)
-  // ที่จับคู่ไม่ได้ ใช้ค่าที่กรอกมือไว้ในคลังเหมือนเดิม
+  // ยอด "รอเข้า" และ "ค้างส่ง" ยึดตามระบบใบสั่งอย่างเดียว (แหล่งข้อมูลจริง)
+  // ใบไหนถูกลบทิ้ง (เช่น ล็อตสุดท้ายเข้าแล้วแต่ไม่ได้ติ๊กรับ แล้วลบใบทิ้งเลย) ยอดต้องเป็น 0 ทันที
+  // ห้ามถอยไปใช้ค่าเก่าในตาราง products เด็ดขาด ไม่งั้นยอดผีจะค้างตลอดไป
   const products = useMemo(() => rawProducts.map(p => {
     const inc = incoming.byProduct.get(p.id);
-    return { ...p, qtyOnOrder: inc ? inc.qty : (p.qtyOnOrder || 0), backlogTotal: inc ? inc.backlogTotal : 0, incomingSources: inc ? inc.sources : null };
+    return { ...p, qtyOnOrder: inc ? inc.qty : 0, backlogTotal: inc ? inc.backlogTotal : 0, incomingSources: inc ? inc.sources : null };
   }), [rawProducts, incoming]);
 
   const incomingUnmatched = incoming.rows.filter(r => r.productId == null && (r.inTransit > 0 || r.total > 0));
@@ -2854,12 +2853,10 @@ export default function WarehouseApp() {
     setSaving(true);
     try {
       const newQty = txType === "in" ? product.quantity + qty : product.quantity - qty;
-      // รับเข้าจริง = ตัดยอด "สั่งซื้อรอเข้า" ลงตามจำนวนที่รับ (ไม่ให้ติดลบ)
-      const newQtyOnOrder = txType === "in" ? Math.max(0, (product.qtyOnOrder || 0) - qty) : (product.qtyOnOrder || 0);
-      const updatePayload = txType === "in" ? { quantity: newQty, qty_on_order: newQtyOnOrder } : { quantity: newQty };
-      await api.updateProduct(pid, updatePayload);
+      // ไม่แตะยอด "รอเข้า" ที่นี่ — ยอดจริงอยู่ที่ระบบใบสั่ง จะลดลงเมื่อพนักงานติ๊กรับในหน้าสินค้ารอสั่ง
+      await api.updateProduct(pid, { quantity: newQty });
       const [newTx] = await api.addTransaction({ type: txType, product_id: pid, quantity: qty, date: new Date().toISOString().split("T")[0], note: txForm.note || null, by: txForm.by });
-      setRawProducts(prev => prev.map(p => p.id === pid ? { ...p, quantity: newQty, qtyOnOrder: newQtyOnOrder } : p));
+      setRawProducts(prev => prev.map(p => p.id === pid ? { ...p, quantity: newQty } : p));
       setTransactions(prev => [dbToTx(newTx), ...prev]);
       setTxForm({ productId: "", quantity: "", note: "", by: "" });
       setShowModal(null);
@@ -3021,7 +3018,7 @@ export default function WarehouseApp() {
 
   const openEdit = (product) => {
     setSelectedProduct(product);
-    setForm({ ...product, quantity: String(product.quantity), minStock: String(product.minStock), price: String(product.price), qtyOnOrder: String(product.qtyOnOrder || 0), editBy: "" });
+    setForm({ ...product, quantity: String(product.quantity), minStock: String(product.minStock), price: String(product.price), editBy: "" });
     setShowModal("edit");
   };
 
@@ -4112,10 +4109,6 @@ export default function WarehouseApp() {
                   <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>ตำแหน่งจัดเก็บ</label>
                   <input className="inp" style={{ marginTop: 4 }} value={form.location || ""} onChange={e => setForm(f => ({ ...f, location: e.target.value }))} placeholder="เช่น ชั้น A-1" />
                 </div>
-              </div>
-              <div>
-                <label style={{ fontSize: 12, color: "#6B7280", fontWeight: 600 }}>สั่งซื้อรอเข้า <span style={{ color: "#9CA3AF", fontWeight: 400 }}>(สั่งจากซัพพลายเออร์แล้ว ยังไม่ถึงคลัง — กด 📥รับเข้า ตอนของมาจะตัดยอดนี้ให้อัตโนมัติ)</span></label>
-                <input className="inp" style={{ marginTop: 4 }} type="number" min="0" value={form.qtyOnOrder ?? ""} onChange={e => setForm(f => ({ ...f, qtyOnOrder: e.target.value }))} placeholder="0" />
               </div>
               {showModal === "edit" && (
                 <div style={{ marginTop: 14 }}>
