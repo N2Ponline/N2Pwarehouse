@@ -2296,6 +2296,8 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   const [editingName, setEditingName] = useState(null);
   const [bulkFor, setBulkFor] = useState(null);      // { pid, qty } กำลังกรอกจำนวนปุ่ม "ครบ ✓"
   const [busy, setBusy] = useState(false);
+  const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth < 900); // จอแคบ (มือถือ/แท็บเล็ต) → คอลัมน์เดียว รูปอยู่บน
+  useEffect(() => { const onResize = () => setNarrow(window.innerWidth < 900); window.addEventListener("resize", onResize); return () => window.removeEventListener("resize", onResize); }, []);
   const inputRef = useRef(null);
   const queueRef = useRef(Promise.resolve());
   const pickRef = useRef(null);
@@ -2556,8 +2558,8 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
       )}
 
       {pick && (
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(280px, 380px)", gap: 14, alignItems: "start" }}>
-          <div>
+        <div style={{ display: "grid", gridTemplateColumns: narrow ? "minmax(0, 1fr)" : "minmax(0, 1fr) minmax(280px, 380px)", gap: 14, alignItems: "start" }}>
+          <div style={{ minWidth: 0, order: narrow ? 2 : 1 }}>
             {/* ── รายการที่ยังไม่รู้ว่าคือ SKU ไหน (ต้องจับคู่ก่อน ถึงจะโผล่ในรายการหยิบ) ── */}
             {unmapped.length > 0 && !isClosed && (
               <div style={{ background: "#fff", border: "1px solid #FDE68A", borderRadius: 16, overflow: "hidden", marginBottom: 14 }}>
@@ -2650,12 +2652,12 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
             </div>
           </div>
 
-          <div style={{ background: "#fff", border: `2px solid ${last?.product ? borderColor : "#E5E7EB"}`, borderRadius: 16, padding: 14, position: "sticky", top: 90 }}>
+          <div style={{ background: "#fff", border: `2px solid ${last?.product ? borderColor : "#E5E7EB"}`, borderRadius: 16, padding: 14, position: narrow ? "static" : "sticky", top: 90, order: narrow ? 1 : 2, minWidth: 0 }}>
             <div style={{ fontSize: 12, color: "#6B7280", fontWeight: 600, marginBottom: 8 }}>👁 เทียบของในมือกับรูปนี้ก่อนแพ็ก</div>
             {last?.product ? (
               <div>
                 {last.product.imageUrl
-                  ? <img src={last.product.imageUrl} alt="" style={{ width: "100%", maxHeight: 400, objectFit: "contain", borderRadius: 12, background: "#F9FAFB", border: "1px solid #E5E7EB" }} />
+                  ? <img src={last.product.imageUrl} alt="" style={{ width: "100%", maxHeight: narrow ? 220 : 400, objectFit: "contain", borderRadius: 12, background: "#F9FAFB", border: "1px solid #E5E7EB" }} />
                   : <div style={{ width: "100%", aspectRatio: "1 / 1", maxHeight: 320, borderRadius: 12, background: "#F3F4F6", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#9CA3AF", gap: 6, padding: 16, textAlign: "center" }}>
                       <span style={{ fontSize: 48 }}>📦</span><span style={{ fontSize: 12 }}>สินค้านี้ยังไม่มีรูปในระบบ — เพิ่มรูปได้ที่ปุ่ม ✏️ แก้ไข ในหน้าคลังสินค้า</span>
                     </div>}
