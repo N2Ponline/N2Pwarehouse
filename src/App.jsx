@@ -56,6 +56,13 @@ const api = {
   unreviewOrderScan: (id) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ reviewed: false, reviewed_by: null, reviewed_at: null }) }),
   deleteOrderScan: (id) => sb(`order_scans?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
   setOrderScanEffectiveDate: (id, date) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ effective_date: date }) }),
+  // ── ยิงตัดสต๊อกจากใบหยิบ (สลิป MyOrder extension → order_scans) ──
+  getRecentOrderScans: (sinceIso) => sbAll(`order_scans?select=*&created_at=gte.${encodeURIComponent(sinceIso)}&order=created_at.desc`),
+  getOrderScan: (id) => sb(`order_scans?id=eq.${Number(id)}&select=*`),
+  updateOrderScan: (id, patch) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  getAliases: () => sbAll("product_aliases?select=*"),
+  // components = [{product_id, qty}] — ขาย 1 หน่วยชื่อนี้ ต้องตัดสินค้าอะไรกี่ชิ้น ([] = ไม่มีในคลัง ไม่ตัด)
+  upsertAlias: (name, components) => sb("product_aliases?on_conflict=myorder_name", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ myorder_name: name, components, updated_at: new Date().toISOString() }) }),
 };
 
 const dbToProduct = (r) => ({
@@ -2153,8 +2160,664 @@ function ReturnCheckerTab() {
 }
 
 // ============================================================
+// ═══════════ ยิงตัดสต๊อกจากใบหยิบ (สลิป MyOrder extension v3.8 → order_scans) ═══════════
+// flow: extension พิมพ์สลิปพร้อมบาร์โค้ด "PK<id ของแถว order_scans>" → ฝ่ายคลังยิง PK เปิดใบใน StockMaster
+// → จับคู่ "ชื่อสินค้าตาม myorder" (รวมชื่อโปร เช่น "6 แพค ฟรี 1 แพค") เป็น SKU × จำนวนชิ้น (ตาราง product_aliases จำไว้ตลอด)
+// → รายการถูกรวมเป็นราย SKU → ยิงบาร์โค้ด SKU ทีละชิ้น หรือยิงครั้งแรกแล้วกด "ครบ ✓" ใส่จำนวน → ตัดสต็อกทันที
+// ต้องรัน scan-verify-setup.sql ใน Supabase ก่อนใช้ครั้งแรก (เพิ่มคอลัมน์ pick_* ใน order_scans + ตาราง product_aliases)
+
+// Code128 ชุด B วาดเป็น SVG เอง — ใช้แผ่นบาร์โค้ด SKU (ตารางเดียวกับที่ใช้ใน extension พิมพ์รหัส PK)
+const C128 = ["212222","222122","222221","121223","121322","131222","122213","122312","132212","221213","221312","231212","112232","122132","122231","113222","123122","123221","223211","221132","221231","213212","223112","312131","311222","321122","321221","312212","322112","322211","212123","212321","232121","111323","131123","131321","112313","132113","132311","211313","231113","231311","112133","112331","132131","113123","113321","133121","313121","211331","231131","213113","213311","213131","311123","311321","331121","312113","312311","332111","314111","221411","431111","111224","111422","121124","121421","141122","141221","112214","112412","122114","122411","142112","142211","241211","221114","413111","241112","134111","111242","121142","121241","114212","124112","124211","411212","421112","421211","212141","214121","412121","111143","111341","131141","114113","114311","411113","411311","113141","114131","311141","411131","211412","211214","211232","2331112"];
+const escHtml = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function code128Svg(text, { height = 44, module = 2, fontSize = 12 } = {}) {
+  const vals = [104]; // Start B
+  for (const ch of String(text)) { const c = ch.charCodeAt(0); if (c < 32 || c > 126) return ""; vals.push(c - 32); }
+  let sum = 104; for (let i = 1; i < vals.length; i++) sum += vals[i] * i;
+  vals.push(sum % 103, 106); // checksum + Stop
+  let x = 10 * module, rects = "";
+  for (const v of vals) { const pat = C128[v]; for (let i = 0; i < pat.length; i++) { const w = Number(pat[i]) * module; if (i % 2 === 0) rects += `<rect x="${x}" y="0" width="${w}" height="${height}"/>`; x += w; } }
+  const totalW = x + 10 * module, textH = fontSize + 4;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${totalW} ${height + textH}" width="${totalW}" height="${height + textH}" shape-rendering="crispEdges"><g fill="#000">${rects}</g><text x="${totalW / 2}" y="${height + fontSize}" text-anchor="middle" font-family="monospace" font-size="${fontSize}" fill="#000">${escHtml(text)}</text></svg>`;
+}
+
+const pickName = (s) => String(s || "").replace(/\s+/g, " ").trim();
+const PICK_SETUP_HINT = "ยังไม่ได้ตั้งค่าฐานข้อมูล — รันไฟล์ scan-verify-setup.sql ใน Supabase SQL Editor ก่อน (เพิ่มคอลัมน์ pick_* ใน order_scans และตาราง product_aliases)";
+const isSetupError = (e) => /pick_|product_aliases|schema cache|PGRST20/i.test(String(e?.message || e));
+
+// แปลงแถว product_aliases → Map(ชื่อ myorder → components [{product_id, qty}])  ([] = ไม่มีในคลัง ไม่ตัดสต็อก)
+const aliasRowsToMap = (rows) => {
+  const m = new Map();
+  (rows || []).forEach(r => {
+    const comps = Array.isArray(r.components) ? r.components.map(c => ({ product_id: Number(c.product_id), qty: Math.max(1, Number(c.qty) || 1) })).filter(c => Number.isFinite(c.product_id)) : [];
+    m.set(pickName(r.myorder_name), comps);
+  });
+  return m;
+};
+
+// เดาจำนวนชิ้นต่อ 1 หน่วยที่ขาย จากชื่อโปรของ myorder — เป็นแค่ค่าเริ่มต้นในฟอร์ม ต้องกดบันทึกยืนยันเสมอ
+//   "แปรงหินภูเขาไฟ RingX(6 แพค ฟรี 1 แพค)" → 7 · "จารบี 1 แถม 1 ( 2 กระปุก )" → 2 · "(โปร 3 กล่อง)" → 3 · "(2 แพค)" → 2
+const UNIT_WORDS = "แพค|แพ็ค|แพ็ก|กล่อง|ชิ้น|กระปุก|ขวด|ซอง|คู่|อัน|ห่อ|ชุด|แผ่น|แท่ง|ม้วน|ใบ|ตัว|ถุง|หลอด|ก้อน|ด้าม";
+const guessMultiplier = (name) => {
+  const s = pickName(name);
+  let m = s.match(/(\d+)\s*(?:[^\d()]{0,12}?)\s*(?:ฟรี|แถม)\s*(\d+)/);
+  if (m) return Number(m[1]) + Number(m[2]);
+  m = s.match(new RegExp(`\\(\\s*(?:โปร\\s*)?(\\d+)\\s*(?:${UNIT_WORDS})\\s*\\)`));
+  if (m) return Number(m[1]);
+  m = s.match(new RegExp(`(?:โปร|เซ็ต|ชุด)\\s*(\\d+)\\s*(?:${UNIT_WORDS})`));
+  if (m) return Number(m[1]);
+  return 1;
+};
+// ตัดส่วนโปร/วงเล็บออก เพื่อเดาว่าคือสินค้าตัวไหนในคลัง — เดาเฉพาะตอนได้คำตอบเดียวชัดๆ
+const stripPromo = (name) => pickName(String(name || "").replace(/\([^)]*\)/g, " ").replace(/\[[^\]]*\]/g, " ").replace(/\d+\s*(?:ฟรี|แถม)\s*\d+/g, " "));
+const guessProduct = (name, products) => {
+  const full = pickName(name).toLowerCase();
+  const exactFull = products.find(p => pickName(p.name).toLowerCase() === full);
+  if (exactFull) return exactFull;
+  const base = stripPromo(name).toLowerCase();
+  if (!base) return null;
+  const exact = products.find(p => pickName(p.name).toLowerCase() === base);
+  if (exact) return exact;
+  const cands = products.filter(p => { const pn = pickName(p.name).toLowerCase(); return pn.length >= 3 && (base.includes(pn) || pn.includes(base)); });
+  return cands.length === 1 ? cands[0] : null;
+};
+
+// เสียงตอบรับ: ok = ติ๊งสั้น, warn = กลาง, bad = ต่ำสองครั้ง (ให้แยกได้ด้วยหูโดยไม่ต้องมองจอ)
+const playScanTone = (kind) => {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const tone = (freq, start, dur) => {
+      const o = ctx.createOscillator(); const g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination); o.type = "sine"; o.frequency.value = freq;
+      g.gain.setValueAtTime(0.3, ctx.currentTime + start); g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
+      o.start(ctx.currentTime + start); o.stop(ctx.currentTime + start + dur);
+    };
+    if (kind === "ok") tone(880, 0, 0.18);
+    else if (kind === "warn") tone(520, 0, 0.3);
+    else { tone(260, 0, 0.25); tone(260, 0.3, 0.35); }
+  } catch {}
+};
+
+const pickStatusLabel = (s) => s === "closed" ? "ปิดใบแล้ว" : s === "picking" ? "กำลังยิง" : "ยังไม่เริ่ม";
+const fmtDT = (iso) => iso ? new Date(iso).toLocaleString("th-TH", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "-";
+const btnStyle = (bg, fg, extra = {}) => ({ background: bg, color: fg, border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer", ...extra });
+
+// ── ฟอร์มจับคู่ "ชื่อ myorder" → SKU × จำนวน (หลายบรรทัดได้สำหรับเซ็ตที่มีหลาย SKU) ──
+function AliasEditor({ name, products, initial, onSave, onCancel, onAddProduct }) {
+  const [rows, setRows] = useState(() => {
+    if (Array.isArray(initial) && initial.length) return initial.map(c => ({ pid: String(c.product_id), qty: c.qty }));
+    const g = guessProduct(name, products);
+    return [{ pid: g ? String(g.id) : "auto", qty: guessMultiplier(name) }];
+  });
+  const [saving, setSaving] = useState(false);
+  const guessed = useMemo(() => guessProduct(name, products), [name, products]);
+  const valid = rows.filter(r => r.pid !== "auto" && r.pid !== "none" && Number(r.qty) >= 1);
+  const setRow = (i, patch) => setRows(prev => prev.map((r, j) => j === i ? { ...r, ...patch } : r));
+  const save = async (comps) => { setSaving(true); try { await onSave(comps); } finally { setSaving(false); } };
+  return (
+    <div style={{ marginTop: 8, background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 12, padding: "10px 12px" }} data-nofocus>
+      <div style={{ fontSize: 12, color: "#92400E", fontWeight: 700, marginBottom: 6 }}>
+        "{name}" ขาย 1 หน่วย = ต้องหยิบสินค้าอะไร กี่ชิ้น?
+        {guessed && rows.length === 1 && rows[0].pid === String(guessed.id) && <span style={{ color: "#B45309", fontWeight: 400 }}> (ระบบเดาให้ — เช็คให้ตรงก่อนบันทึก)</span>}
+      </div>
+      {rows.map((r, i) => (
+        <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
+          <ProductPicker products={products} value={r.pid} autoLabel="— เลือกสินค้าในคลัง —" onPick={v => setRow(i, { pid: v })} />
+          <span style={{ fontSize: 13, color: "#374151" }}>×</span>
+          <input className="inp" type="number" min={1} max={999} value={r.qty} onChange={e => setRow(i, { qty: Math.max(1, parseInt(e.target.value) || 1) })} style={{ width: 70, padding: "6px 8px", fontSize: 13, textAlign: "center" }} />
+          <span style={{ fontSize: 12, color: "#6B7280" }}>ชิ้น</span>
+          {rows.length > 1 && <button onClick={() => setRows(prev => prev.filter((_, j) => j !== i))} style={btnStyle("none", "#9CA3AF", { padding: "4px 6px" })}>✕</button>}
+        </div>
+      ))}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        <button onClick={() => setRows(prev => [...prev, { pid: "auto", qty: 1 }])} style={btnStyle("#fff", "#7C3AED", { border: "1px solid #DDD6FE" })}>＋ เพิ่ม SKU อีกตัว (เซ็ต)</button>
+        <button onClick={() => onAddProduct(name)} style={btnStyle("#EDE9FE", "#7C3AED")}>สินค้ายังไม่มีในคลัง → เพิ่มสินค้าใหม่</button>
+        <button onClick={() => save([])} disabled={saving} style={btnStyle("#F3F4F6", "#6B7280")}>ไม่ตัดสต็อกตัวนี้</button>
+        <div style={{ flex: 1 }} />
+        <button onClick={onCancel} style={btnStyle("none", "#6B7280")}>ยกเลิก</button>
+        <button onClick={() => save(valid.map(r => ({ product_id: Number(r.pid), qty: Number(r.qty) })))} disabled={saving || valid.length === 0}
+          style={btnStyle(valid.length ? "#7C3AED" : "#E5E7EB", "#fff", { padding: "7px 14px", cursor: valid.length ? "pointer" : "not-allowed" })}>{saving ? "⏳" : "💾 บันทึกการจับคู่"}</button>
+      </div>
+    </div>
+  );
+}
+
+function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockCut, onAddProduct }) {
+  const [staffName, setStaffName] = useState(() => { try { return localStorage.getItem("staffName") || ""; } catch { return ""; } });
+  const [pick, setPick] = useState(null);           // แถว order_scans ที่กำลังหยิบ
+  const [progress, setProgress] = useState({});      // { [product_id]: { scanned, short } }
+  const [setupError, setSetupError] = useState(null);
+  const [recent, setRecent] = useState([]);
+  const [loadingRecent, setLoadingRecent] = useState(false);
+  const [loadingPick, setLoadingPick] = useState(false);
+  const [scanInput, setScanInput] = useState("");
+  const [last, setLast] = useState(null);            // { status: ok|warn|bad|info, msg, product, line }
+  const [showSummary, setShowSummary] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [editingName, setEditingName] = useState(null);
+  const [bulkFor, setBulkFor] = useState(null);      // { pid, qty } กำลังกรอกจำนวนปุ่ม "ครบ ✓"
+  const [busy, setBusy] = useState(false);
+  const inputRef = useRef(null);
+  const queueRef = useRef(Promise.resolve());
+  const pickRef = useRef(null);
+  const progressRef = useRef({});
+  const staffRef = useRef(staffName); staffRef.current = staffName;
+  const localQty = useRef({});      // จำนวนคงเหลือหลังตัดในรอบนี้ (กัน props ยังไม่ทัน re-render ตอนยิงรัวๆ)
+  const summaryShownRef = useRef(false);
+  const setupToastRef = useRef(false);
+
+  const productById = useMemo(() => new Map(products.map(p => [p.id, p])), [products]);
+  const productBySku = useMemo(() => { const m = new Map(); products.forEach(p => { if (p.sku) m.set(String(p.sku).trim().toUpperCase(), p); }); return m; }, [products]);
+  const productByName = useMemo(() => { const m = new Map(); products.forEach(p => m.set(pickName(p.name), p)); return m; }, [products]);
+
+  // 1) รายการตามชื่อ myorder → components  2) รวมเป็นราย SKU (line) = สิ่งที่พนักงานต้องหยิบจริง
+  const { items, lines, unmapped } = useMemo(() => {
+    const list = Array.isArray(pick?.products) ? pick.products : [];
+    const lineMap = new Map();
+    const items = list.map(raw => {
+      const name = pickName(raw.name); const orderQty = Number(raw.qty) || 0;
+      let comps = aliases.has(name) ? aliases.get(name) : undefined;
+      let auto = false;
+      if (comps === undefined) { const p = productByName.get(name); if (p) { comps = [{ product_id: p.id, qty: 1 }]; auto = true; } }
+      const missing = Array.isArray(comps) && comps.some(c => !productById.has(c.product_id));
+      const it = { name, orderQty, comps, auto, skip: Array.isArray(comps) && comps.length === 0, unmapped: comps === undefined || missing, missing };
+      if (Array.isArray(comps) && !missing) comps.forEach(c => {
+        const key = String(c.product_id);
+        const line = lineMap.get(key) || { pid: c.product_id, product: productById.get(c.product_id), required: 0, sources: [] };
+        line.required += orderQty * c.qty;
+        line.sources.push({ name, orderQty, per: c.qty });
+        lineMap.set(key, line);
+      });
+      return it;
+    });
+    const lines = [...lineMap.values()].map(l => { const pr = progress[String(l.pid)] || {}; return { ...l, scanned: Number(pr.scanned) || 0, short: Number(pr.short) || 0 }; })
+      .sort((a, b) => a.product.name.localeCompare(b.product.name, "th"));
+    return { items, lines, unmapped: items.filter(it => it.unmapped) };
+  }, [pick, progress, aliases, productById, productByName]);
+  const linesRef = useRef(lines); linesRef.current = lines;
+  const allDone = lines.length > 0 && unmapped.length === 0 && lines.every(l => l.scanned + l.short >= l.required);
+  const isClosed = pick?.pick_status === "closed";
+  const totalScanned = lines.reduce((s, l) => s + l.scanned, 0);
+  const totalRequired = lines.reduce((s, l) => s + l.required, 0);
+
+  const handleSetupError = (e) => {
+    if (isSetupError(e)) { setSetupError(PICK_SETUP_HINT); if (!setupToastRef.current) { setupToastRef.current = true; showToast(PICK_SETUP_HINT, "error"); } return true; }
+    return false;
+  };
+
+  const loadRecent = async () => {
+    setLoadingRecent(true);
+    try {
+      const since = new Date(); since.setDate(since.getDate() - 3);
+      const rows = await api.getRecentOrderScans(since.toISOString());
+      setRecent((rows || []).filter(r => r.pick_status !== "closed"));
+    } catch (e) { showToast(e.message, "error"); }
+    setLoadingRecent(false);
+  };
+  useEffect(() => { loadRecent(); }, []);
+
+  // โฟกัสช่องยิงค้างไว้เสมอ — ยกเว้นตอนผู้ใช้กำลังพิมพ์ในช่องอื่น หรืออยู่ในฟอร์มจับคู่ (data-nofocus)
+  useEffect(() => {
+    const focus = () => { const el = inputRef.current; if (el && document.activeElement !== el) el.focus(); };
+    focus();
+    const onClick = (e) => { const t = e.target; if (!t || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName)) return; if (t.closest && t.closest("[data-nofocus]")) return; setTimeout(focus, 60); };
+    const onKey = () => { const a = document.activeElement; if (!a || a === document.body) focus(); };
+    document.addEventListener("click", onClick); document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("click", onClick); document.removeEventListener("keydown", onKey); };
+  }, []);
+
+  const setStaff = (v) => { setStaffName(v); try { localStorage.setItem("staffName", v); } catch {} };
+
+  const applyPick = (row) => {
+    pickRef.current = row; setPick(row);
+    const prog = row?.pick_progress && typeof row.pick_progress === "object" ? row.pick_progress : {};
+    progressRef.current = prog; setProgress(prog);
+    localQty.current = {}; summaryShownRef.current = false; setShowSummary(false); setEditingName(null); setBulkFor(null);
+  };
+
+  const loadPick = async (id) => {
+    setLoadingPick(true);
+    try {
+      const rows = await api.getOrderScan(id);
+      const row = rows && rows[0];
+      if (!row) { playScanTone("bad"); setLast({ status: "bad", msg: `ไม่พบใบหยิบ PK${id} ในระบบ` }); setLoadingPick(false); return; }
+      applyPick(row);
+      const n = Array.isArray(row.products) ? row.products.length : 0;
+      if (row.pick_status === "closed") { playScanTone("warn"); setLast({ status: "warn", msg: `ใบหยิบ PK${id} ปิดไปแล้ว (${fmtDT(row.pick_closed_at)}) — ดูได้อย่างเดียว` }); }
+      else { playScanTone("ok"); setLast({ status: "info", msg: `เปิดใบหยิบ PK${id} · ${row.page_name || "ไม่ระบุเพจ"} · ${n} รายการ ${row.total_items || 0} หน่วยขาย` }); }
+    } catch (e) { playScanTone("bad"); setLast({ status: "bad", msg: e.message }); }
+    setLoadingPick(false);
+  };
+
+  const saveProgress = async (next, extra = {}) => {
+    progressRef.current = next; setProgress(next);
+    const p = pickRef.current; if (!p) return;
+    try {
+      await api.updateOrderScan(p.id, { pick_progress: next, pick_status: extra.pick_status || (p.pick_status === "closed" ? "closed" : "picking"), picked_by: staffRef.current || p.picked_by || null, ...extra });
+    } catch (e) { if (!handleSetupError(e)) showToast("บันทึกความคืบหน้าไม่สำเร็จ: " + e.message, "error"); }
+  };
+
+  const qtyOf = (p) => (localQty.current[p.id] != null ? localQty.current[p.id] : p.quantity);
+
+  // ตัดสต็อก n ชิ้นของ line หนึ่ง (ใช้ทั้งยิงทีละชิ้น n=1 และปุ่ม "ครบ ✓")
+  const cutLine = async (line, n, viaBulk) => {
+    const p = pickRef.current; const product = productById.get(line.pid) || line.product;
+    const cur = qtyOf(product);
+    const newQty = cur - n;
+    await api.updateProduct(product.id, { quantity: newQty });
+    localQty.current[product.id] = newQty;
+    const [tx] = await api.addTransaction({ type: "out", product_id: product.id, quantity: n, date: localDateStr(), note: `ใบหยิบ PK${p.id}${viaBulk ? " (ยืนยันจำนวนรวม)" : ""}`, by: staffRef.current.trim() });
+    onStockCut(product.id, newQty, tx);
+    const key = String(line.pid); const prev = progressRef.current[key] || {};
+    const next = { ...progressRef.current, [key]: { scanned: (Number(prev.scanned) || 0) + n, short: Number(prev.short) || 0 } };
+    playScanTone("ok");
+    setLast({ status: "ok", msg: `✓ ${product.name} — ${next[key].scanned}/${line.required}${viaBulk ? ` (ยืนยัน ${n} ชิ้น)` : ""} · เหลือในคลัง ${newQty}`, product, line: { ...line, scanned: next[key].scanned } });
+    await saveProgress(next);
+  };
+
+  const processScan = async (raw) => {
+    const code = raw.trim(); if (!code) return;
+    const pk = code.match(/^PK[-\s]?(\d+)$/i);
+    if (pk) { await loadPick(Number(pk[1])); return; }
+    const p = pickRef.current;
+    if (!p) { playScanTone("bad"); setLast({ status: "bad", msg: `ยังไม่ได้เปิดใบหยิบ — ยิงบาร์โค้ด PK... บนสลิปก่อน (ยิงมา: ${code})` }); return; }
+    if (p.pick_status === "closed") { playScanTone("bad"); setLast({ status: "bad", msg: "ใบนี้ปิดไปแล้ว ตัดสต็อกเพิ่มไม่ได้" }); return; }
+    const product = productBySku.get(code.toUpperCase());
+    if (!product) { playScanTone("bad"); setLast({ status: "bad", msg: `ไม่รู้จักบาร์โค้ด "${code}" — ไม่ตรงกับ SKU ใดในคลัง` }); return; }
+    const line = linesRef.current.find(l => l.pid === product.id);
+    if (!line) { playScanTone("bad"); setLast({ status: "bad", msg: `"${product.name}" ไม่ได้อยู่ในใบหยิบนี้ — ไม่ตัดสต็อก เช็คว่าหยิบผิดตัวไหม${unmapped.length ? " (หรือยังไม่ได้จับคู่ชื่อโปร)" : ""}`, product }); return; }
+    if (line.scanned + line.short >= line.required) { playScanTone("warn"); setLast({ status: "warn", msg: `"${product.name}" ยิงครบแล้ว (${line.required} ชิ้น) — ไม่ตัดซ้ำ`, product, line }); return; }
+    if (qtyOf(product) <= 0) { playScanTone("warn"); setLast({ status: "warn", msg: `สต็อกในระบบของ "${product.name}" เป็น 0 ตัดไม่ได้ — ปรับสต็อกให้ถูกก่อน หรือกด "ของขาด"`, product, line }); return; }
+    if (!staffRef.current.trim()) { playScanTone("warn"); setLast({ status: "warn", msg: "กรอกชื่อพนักงานก่อนยิงตัดสต็อก (ช่องมุมขวาบน)", product, line }); return; }
+    try { await cutLine(line, 1, false); }
+    catch (e) { playScanTone("bad"); setLast({ status: "bad", msg: "ตัดสต็อกไม่สำเร็จ: " + e.message, product }); }
+  };
+  const enqueue = (fn) => { setBusy(true); queueRef.current = queueRef.current.then(fn).catch(() => {}).then(() => setBusy(false)); };
+  const handleKey = (e) => { if (e.key !== "Enter") return; const v = scanInput; setScanInput(""); enqueue(() => processScan(v)); };
+
+  // ปุ่ม "ครบ ✓": ต้องยิงติดอย่างน้อย 1 ชิ้นก่อน (ยืนยันว่าหยิบถูกตัว) แล้วค่อยยืนยันจำนวนที่เหลือทีเดียว
+  const confirmBulk = () => {
+    const b = bulkFor; if (!b) return;
+    const line = linesRef.current.find(l => l.pid === b.pid); if (!line) return;
+    const remaining = line.required - line.scanned - line.short;
+    const product = productById.get(line.pid);
+    const n = Math.max(1, Math.min(Number(b.qty) || 0, remaining));
+    if (n <= 0) { setBulkFor(null); return; }
+    if (!staffRef.current.trim()) { playScanTone("warn"); setLast({ status: "warn", msg: "กรอกชื่อพนักงานก่อน", product, line }); return; }
+    if (qtyOf(product) < n) { playScanTone("warn"); setLast({ status: "warn", msg: `สต็อกในระบบมี ${qtyOf(product)} ไม่พอตัด ${n} ชิ้น — ปรับสต็อกก่อน หรือใส่จำนวนน้อยลง/กดของขาด`, product, line }); return; }
+    setBulkFor(null);
+    enqueue(async () => { try { await cutLine(line, n, true); } catch (e) { playScanTone("bad"); setLast({ status: "bad", msg: "ตัดสต็อกไม่สำเร็จ: " + e.message, product }); } });
+  };
+
+  // ครบทุกรายการ → เปิดสรุปปิดใบให้อัตโนมัติ (ครั้งเดียวต่อใบ) — ปิดใบต้องกดยืนยันเองเสมอ
+  useEffect(() => {
+    if (pick && !isClosed && allDone && !summaryShownRef.current) { summaryShownRef.current = true; setShowSummary(true); }
+  }, [allDone, pick, isClosed]);
+
+  const markShort = (pid, delta) => {
+    const l = linesRef.current.find(x => x.pid === pid); if (!l) return;
+    const key = String(pid); const prev = progressRef.current[key] || {};
+    const short = Math.max(0, Math.min(l.required - l.scanned, (Number(prev.short) || 0) + delta));
+    saveProgress({ ...progressRef.current, [key]: { scanned: l.scanned, short } });
+  };
+
+  const saveAlias = async (name, comps) => {
+    try {
+      await api.upsertAlias(name, comps);
+      const m = new Map(aliases); m.set(name, comps); onAliasesChange(m);
+      setEditingName(null);
+      showToast(comps.length === 0 ? `บันทึก "${name}" = ไม่ตัดสต็อก` : `จับคู่ "${name}" แล้ว — ครั้งหน้าระบบจำให้เอง`);
+    } catch (e) { if (!handleSetupError(e)) showToast(e.message, "error"); }
+  };
+
+  const closePick = async () => {
+    const p = pickRef.current; if (!p) return;
+    setClosing(true);
+    try {
+      await api.updateOrderScan(p.id, { pick_progress: progressRef.current, pick_status: "closed", pick_closed_at: new Date().toISOString(), picked_by: staffRef.current || p.picked_by || null });
+      showToast(`ปิดใบหยิบ PK${p.id} แล้ว`);
+      applyPick(null); setLast(null); loadRecent();
+    } catch (e) { if (!handleSetupError(e)) showToast(e.message, "error"); }
+    setClosing(false);
+  };
+  const leavePick = () => { applyPick(null); setLast(null); loadRecent(); };
+
+  const borderColor = last?.status === "ok" ? "#10B981" : last?.status === "bad" ? "#EF4444" : last?.status === "warn" ? "#F59E0B" : "#7C3AED";
+  const bannerBg = { ok: "#F0FDF4", bad: "#FEF2F2", warn: "#FFFBEB", info: "#F5F3FF" }[last?.status] || "#F9FAFB";
+  const bannerFg = { ok: "#065F46", bad: "#991B1B", warn: "#92400E", info: "#5B21B6" }[last?.status] || "#374151";
+  const Thumb = ({ product, size = 46 }) => product?.imageUrl
+    ? <img src={product.imageUrl} alt="" style={{ width: size, height: size, objectFit: "cover", borderRadius: 8, border: "1px solid #E5E7EB", background: "#fff", flexShrink: 0 }} />
+    : <div style={{ width: size, height: size, borderRadius: 8, background: "#F3F4F6", color: "#9CA3AF", display: "flex", alignItems: "center", justifyContent: "center", fontSize: size * 0.45, flexShrink: 0 }}>📦</div>;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📦 ยิงตัดสต็อกจากใบหยิบ</h2>
+          <p style={{ fontSize: 13, color: "#6B7280" }}>1) ยิงบาร์โค้ด <b>PK…</b> บนสลิป MyOrder เพื่อเปิดใบ · 2) หยิบของพร้อมแผ่นบาร์โค้ดจากช่องเก็บ · 3) ยิงบาร์โค้ด SKU ทีละชิ้น หรือยิงชิ้นแรกแล้วกด "ครบ ✓" ใส่จำนวนที่เหลือ — ตัดสต็อกทันที โชว์รูปให้เทียบก่อนแพ็ก</p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 12, color: "#6B7280" }}>พนักงาน</span>
+          <input className="inp" value={staffName} onChange={e => setStaff(e.target.value)} placeholder="ชื่อผู้ยิง" style={{ width: 150, padding: "7px 10px", fontSize: 13 }} />
+        </div>
+      </div>
+
+      {setupError && (
+        <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", color: "#991B1B", borderRadius: 12, padding: "10px 14px", fontSize: 13, marginBottom: 12 }}>⚠️ {setupError}</div>
+      )}
+
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16, marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <input ref={inputRef} value={scanInput} onChange={e => setScanInput(e.target.value)} onKeyDown={handleKey} autoFocus
+            placeholder={pick ? `ใบ PK${pick.id} เปิดอยู่ — ยิงบาร์โค้ด SKU สินค้า...` : "ยิงบาร์โค้ดใบหยิบ (PK...) ที่นี่..."}
+            style={{ flex: 1, minWidth: 260, background: "#F9FAFB", border: `2.5px solid ${borderColor}`, borderRadius: 12, padding: "14px 16px", color: "#111827", fontSize: 18, outline: "none", fontFamily: "monospace", transition: "border-color 0.15s" }} />
+          {pick && (
+            <div style={{ display: "flex", gap: 6 }}>
+              <button onClick={() => setShowSummary(true)} style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 10, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>{isClosed ? "📋 ดูสรุป" : "✅ ปิดใบ / สรุป"}</button>
+              <button onClick={leavePick} style={{ background: "#F3F4F6", color: "#6B7280", border: "none", borderRadius: 10, padding: "10px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>✕ ออกจากใบ</button>
+            </div>
+          )}
+        </div>
+        {last && (
+          <div style={{ marginTop: 10, padding: "9px 14px", borderRadius: 10, background: bannerBg, color: bannerFg, fontSize: 14, fontWeight: 600, display: "flex", gap: 10, alignItems: "center" }}>
+            <span style={{ fontSize: 18 }}>{last.status === "ok" ? "✅" : last.status === "bad" ? "⛔" : last.status === "warn" ? "⚠️" : "ℹ️"}</span>
+            <span>{last.msg}</span>
+          </div>
+        )}
+        {(loadingPick || busy) && <div style={{ marginTop: 8, fontSize: 12, color: "#6B7280" }}>⏳ {loadingPick ? "กำลังโหลดใบหยิบ..." : "กำลังบันทึก..."}</div>}
+      </div>
+
+      {!pick && (
+        <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <div style={{ fontWeight: 700, color: "#111827", fontSize: 14 }}>🧾 ใบหยิบที่ยังไม่ปิด (3 วันล่าสุด)</div>
+            <button onClick={loadRecent} style={btnStyle("#F3F4F6", "#6B7280")}>🔄 รีเฟรช</button>
+          </div>
+          {loadingRecent && <div style={{ color: "#9CA3AF", fontSize: 13, padding: 12 }}>กำลังโหลด...</div>}
+          {!loadingRecent && recent.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13, padding: 20, textAlign: "center" }}>ไม่มีใบหยิบค้าง — ยิงบาร์โค้ด PK บนสลิป หรือรอ extension ส่งเข้ามา</div>}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
+            {recent.map(r => {
+              const n = Array.isArray(r.products) ? r.products.length : 0;
+              const prog = r.pick_progress && typeof r.pick_progress === "object" ? Object.values(r.pick_progress).reduce((s, v) => s + (Number(v.scanned) || 0), 0) : 0;
+              return (
+                <div key={r.id} onClick={() => loadPick(r.id)}
+                  style={{ border: "1px solid #E5E7EB", borderRadius: 12, padding: "12px 14px", cursor: "pointer", background: r.pick_status === "picking" ? "#FFFBEB" : "#FAFAFE" }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = "#7C3AED"} onMouseLeave={e => e.currentTarget.style.borderColor = "#E5E7EB"}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                    <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#7C3AED", fontSize: 15 }}>PK{r.id}</span>
+                    <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: r.pick_status === "picking" ? "#FEF3C7" : "#EDE9FE", color: r.pick_status === "picking" ? "#92400E" : "#5B21B6", fontWeight: 600 }}>{pickStatusLabel(r.pick_status)}</span>
+                  </div>
+                  <div style={{ fontSize: 13, color: "#111827", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.page_name || "ไม่ระบุเพจ"}</div>
+                  <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>{fmtDT(r.created_at)} · {r.total_orders || 0} ออเดอร์ · {n} รายการ {r.total_items || 0} หน่วยขาย{prog ? ` · ยิงแล้ว ${prog} ชิ้น` : ""}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {pick && (
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(280px, 380px)", gap: 14, alignItems: "start" }}>
+          <div>
+            {/* ── รายการที่ยังไม่รู้ว่าคือ SKU ไหน (ต้องจับคู่ก่อน ถึงจะโผล่ในรายการหยิบ) ── */}
+            {unmapped.length > 0 && !isClosed && (
+              <div style={{ background: "#fff", border: "1px solid #FDE68A", borderRadius: 16, overflow: "hidden", marginBottom: 14 }}>
+                <div style={{ padding: "10px 16px", background: "#FFFBEB", borderBottom: "1px solid #FDE68A", fontSize: 13, fontWeight: 700, color: "#92400E" }}>⚠ {unmapped.length} ชื่อจาก myorder ยังไม่รู้ว่าคือสินค้าไหนในคลัง — จับคู่ครั้งเดียว ระบบจำตลอด</div>
+                {unmapped.map(it => (
+                  <div key={it.name} style={{ padding: "10px 16px", borderBottom: "1px solid #F3F4F6" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: "#111827" }}>{it.name}</div>
+                        <div style={{ fontSize: 12, color: "#6B7280" }}>สั่ง {it.orderQty} หน่วย{it.missing ? " · สินค้าที่เคยจับคู่ไว้ถูกลบออกจากคลังแล้ว" : ""}</div>
+                      </div>
+                      {editingName !== it.name && <button onClick={() => setEditingName(it.name)} style={btnStyle("#7C3AED", "#fff", { padding: "7px 14px" })}>🔗 จับคู่</button>}
+                    </div>
+                    {editingName === it.name && <AliasEditor name={it.name} products={products} initial={null} onSave={comps => saveAlias(it.name, comps)} onCancel={() => setEditingName(null)} onAddProduct={onAddProduct} />}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden" }}>
+              <div style={{ padding: "14px 16px", borderBottom: "1px solid #F3F4F6", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#7C3AED", fontSize: 18 }}>PK{pick.id}</span>
+                    <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: isClosed ? "#F3F4F6" : "#EDE9FE", color: isClosed ? "#6B7280" : "#5B21B6", fontWeight: 600 }}>{pickStatusLabel(pick.pick_status)}</span>
+                  </div>
+                  <div style={{ fontSize: 13, color: "#111827", fontWeight: 600, marginTop: 2 }}>{pick.page_name || "ไม่ระบุเพจ"}</div>
+                  <div style={{ fontSize: 12, color: "#6B7280" }}>{fmtDT(pick.created_at)} · {pick.total_orders || 0} ออเดอร์ · {items.length} ชื่อสินค้า{pick.note ? ` · 📝 ${pick.note}` : ""}</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontSize: 26, fontWeight: 800, color: "#111827", fontFamily: "monospace" }}>{totalScanned}<span style={{ color: "#9CA3AF", fontSize: 16 }}>/{totalRequired}</span></div>
+                  <div style={{ fontSize: 11, color: "#6B7280" }}>ชิ้นที่ยิงแล้ว / ต้องหยิบ ({lines.length} SKU)</div>
+                </div>
+              </div>
+              <div>
+                {lines.map(l => {
+                  const remaining = l.required - l.scanned - l.short;
+                  const done = l.scanned >= l.required;
+                  const partial = remaining <= 0 && l.short > 0;
+                  const rowBg = done ? "#F0FDF4" : partial ? "#FEF3C7" : "#fff";
+                  const isBulk = bulkFor?.pid === l.pid;
+                  const srcText = l.sources.map(s => `${s.name} ×${s.orderQty}${s.per > 1 ? ` (=${s.per} ชิ้น/หน่วย)` : ""}`).join(" · ");
+                  return (
+                    <div key={l.pid} style={{ display: "flex", gap: 12, alignItems: "center", padding: "10px 16px", borderBottom: "1px solid #F3F4F6", background: rowBg }}>
+                      <Thumb product={l.product} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: "#111827" }}>{l.product.name} <span style={{ fontFamily: "monospace", fontWeight: 400, color: "#6B7280", fontSize: 12 }}>{l.product.sku}</span></div>
+                        <div style={{ fontSize: 11.5, color: "#6B7280", marginTop: 2 }} title={srcText}>จาก: {srcText}</div>
+                        <div style={{ fontSize: 11.5, color: "#6B7280" }}>คงเหลือในคลัง {qtyOf(l.product)} {l.product.unit || ""}{l.product.location && l.product.location !== "-" ? ` · ช่อง ${l.product.location}` : ""}
+                          {!isClosed && <button onClick={() => setEditingName(l.sources[0].name)} style={{ marginLeft: 6, background: "none", border: "none", color: "#7C3AED", fontSize: 11, cursor: "pointer", textDecoration: "underline" }}>แก้การจับคู่</button>}
+                        </div>
+                        {editingName && l.sources.some(s => s.name === editingName) && !isClosed && (
+                          <AliasEditor name={editingName} products={products} initial={aliases.get(editingName) || items.find(it => it.name === editingName)?.comps || null}
+                            onSave={comps => saveAlias(editingName, comps)} onCancel={() => setEditingName(null)} onAddProduct={onAddProduct} />
+                        )}
+                        {isBulk && (
+                          <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", background: "#F5F3FF", border: "1px solid #DDD6FE", borderRadius: 10, padding: "8px 10px" }} data-nofocus>
+                            <span style={{ fontSize: 12, color: "#5B21B6", fontWeight: 600 }}>ยืนยันตัดเพิ่มอีก</span>
+                            <input className="inp" type="number" min={1} max={remaining} value={bulkFor.qty} autoFocus
+                              onChange={e => setBulkFor({ pid: l.pid, qty: e.target.value })} onKeyDown={e => { if (e.key === "Enter") confirmBulk(); if (e.key === "Escape") setBulkFor(null); }}
+                              style={{ width: 80, padding: "6px 8px", fontSize: 15, textAlign: "center", fontFamily: "monospace" }} />
+                            <span style={{ fontSize: 12, color: "#5B21B6" }}>ชิ้น (เหลือ {remaining})</span>
+                            <button onClick={confirmBulk} style={btnStyle("#7C3AED", "#fff", { padding: "7px 14px" })}>✓ ตัดสต็อก</button>
+                            <button onClick={() => setBulkFor(null)} style={btnStyle("none", "#6B7280")}>ยกเลิก</button>
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ textAlign: "right", flexShrink: 0 }}>
+                        <div style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 800, color: done ? "#059669" : partial ? "#B45309" : "#111827" }}>{l.scanned}<span style={{ color: "#9CA3AF", fontSize: 14 }}>/{l.required}</span></div>
+                        {l.short > 0 && <div style={{ fontSize: 11, color: "#B45309", fontWeight: 700 }}>ของขาด {l.short}</div>}
+                        {!isClosed && (
+                          <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", marginTop: 4 }}>
+                            {remaining > 0 && (
+                              <button disabled={l.scanned === 0 || busy} onClick={() => setBulkFor({ pid: l.pid, qty: remaining })}
+                                title={l.scanned === 0 ? "ยิงชิ้นแรกก่อน เพื่อยืนยันว่าหยิบถูกตัว แล้วค่อยกดครบ" : "ตัดจำนวนที่เหลือทีเดียว"}
+                                style={btnStyle(l.scanned === 0 ? "#F3F4F6" : "#D1FAE5", l.scanned === 0 ? "#9CA3AF" : "#065F46", { fontSize: 11, padding: "3px 8px", cursor: l.scanned === 0 ? "not-allowed" : "pointer" })}>ครบ ✓</button>
+                            )}
+                            <button disabled={remaining <= 0} onClick={() => markShort(l.pid, 1)} title="ของขาดสต็อกจริง หยิบไม่ได้ 1 ชิ้น"
+                              style={btnStyle("#FEF3C7", "#92400E", { fontSize: 11, padding: "3px 8px", border: "1px solid #FDE68A", opacity: remaining <= 0 ? 0.4 : 1 })}>ของขาด +1</button>
+                            {l.short > 0 && <button onClick={() => markShort(l.pid, -1)} style={btnStyle("#F3F4F6", "#6B7280", { fontSize: 11, padding: "3px 8px" })}>↺</button>}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                {lines.length === 0 && <div style={{ padding: 24, textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>{unmapped.length ? "จับคู่ชื่อสินค้าด้านบนก่อน รายการที่ต้องหยิบจะโผล่ตรงนี้" : "ใบนี้ไม่มีรายการที่ต้องตัดสต็อก"}</div>}
+                {items.some(it => it.skip) && <div style={{ padding: "8px 16px", fontSize: 11.5, color: "#9CA3AF" }}>ไม่ตัดสต็อก: {items.filter(it => it.skip).map(it => `${it.name} ×${it.orderQty}`).join(" · ")}</div>}
+              </div>
+            </div>
+          </div>
+
+          <div style={{ background: "#fff", border: `2px solid ${last?.product ? borderColor : "#E5E7EB"}`, borderRadius: 16, padding: 14, position: "sticky", top: 90 }}>
+            <div style={{ fontSize: 12, color: "#6B7280", fontWeight: 600, marginBottom: 8 }}>👁 เทียบของในมือกับรูปนี้ก่อนแพ็ก</div>
+            {last?.product ? (
+              <div>
+                {last.product.imageUrl
+                  ? <img src={last.product.imageUrl} alt="" style={{ width: "100%", maxHeight: 400, objectFit: "contain", borderRadius: 12, background: "#F9FAFB", border: "1px solid #E5E7EB" }} />
+                  : <div style={{ width: "100%", aspectRatio: "1 / 1", maxHeight: 320, borderRadius: 12, background: "#F3F4F6", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#9CA3AF", gap: 6, padding: 16, textAlign: "center" }}>
+                      <span style={{ fontSize: 48 }}>📦</span><span style={{ fontSize: 12 }}>สินค้านี้ยังไม่มีรูปในระบบ — เพิ่มรูปได้ที่ปุ่ม ✏️ แก้ไข ในหน้าคลังสินค้า</span>
+                    </div>}
+                <div style={{ marginTop: 10, fontSize: 17, fontWeight: 800, color: "#111827", lineHeight: 1.3 }}>{last.product.name}</div>
+                <div style={{ fontSize: 13, color: "#6B7280", fontFamily: "monospace", marginTop: 2 }}>{last.product.sku}{last.product.location && last.product.location !== "-" ? ` · ช่อง ${last.product.location}` : ""}</div>
+                {last.line && <div style={{ marginTop: 8, fontSize: 22, fontWeight: 800, fontFamily: "monospace", color: last.status === "ok" ? "#059669" : bannerFg }}>{last.line.scanned}<span style={{ color: "#9CA3AF", fontSize: 14 }}>/{last.line.required} ชิ้น</span></div>}
+                <div style={{ marginTop: 6, fontSize: 12, color: bannerFg, fontWeight: 600 }}>{last.msg}</div>
+              </div>
+            ) : (
+              <div style={{ padding: "40px 10px", textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>ยิงบาร์โค้ด SKU แล้วรูปสินค้าจะขึ้นตรงนี้ทันที</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {showSummary && pick && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(6px)" }} onClick={() => setShowSummary(false)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 20, width: "100%", maxWidth: 560, maxHeight: "90vh", overflow: "auto", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
+            <div style={{ padding: "18px 22px 12px", borderBottom: "1px solid #F3F4F6" }}>
+              <div style={{ fontWeight: 700, fontSize: 17, color: "#111827" }}>{isClosed ? "📋 สรุปใบหยิบ" : allDone ? "🎉 ยิงครบทุกรายการแล้ว" : "📋 สรุปก่อนปิดใบ"} <span style={{ fontFamily: "monospace", color: "#7C3AED" }}>PK{pick.id}</span></div>
+              <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>{pick.page_name || ""} · ผู้ยิง {staffName || pick.picked_by || "-"} · รวม {totalScanned}/{totalRequired} ชิ้น</div>
+            </div>
+            <div style={{ padding: "8px 22px" }}>
+              {lines.map(l => {
+                const rem = l.required - l.scanned - l.short;
+                const st = l.scanned >= l.required ? ["ครบ", "#059669"] : rem <= 0 ? [`ของขาด ${l.short}`, "#B45309"] : [`ขาดอีก ${rem}`, "#DC2626"];
+                return (
+                  <div key={l.pid} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #F3F4F6", gap: 10 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#111827" }}>{l.product.name}</div>
+                      <div style={{ fontSize: 11, color: "#6B7280" }}>{l.product.sku} · {l.sources.map(s => `${s.name} ×${s.orderQty}`).join(", ")}</div>
+                    </div>
+                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 14 }}>{l.scanned}/{l.required}</div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: st[1] }}>{st[0]}</div>
+                    </div>
+                  </div>
+                );
+              })}
+              {unmapped.map(it => (
+                <div key={it.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #F3F4F6", gap: 10 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#111827" }}>{it.name} <span style={{ color: "#6B7280", fontWeight: 400 }}>×{it.orderQty}</span></div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#B45309" }}>ยังไม่จับคู่ — ไม่ถูกตัด</div>
+                </div>
+              ))}
+              {items.filter(it => it.skip).map(it => (
+                <div key={it.name} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #F3F4F6", gap: 10, opacity: 0.6 }}>
+                  <div style={{ fontSize: 13, color: "#111827" }}>{it.name} <span style={{ color: "#6B7280" }}>×{it.orderQty}</span></div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#6B7280" }}>ไม่ตัดสต็อก</div>
+                </div>
+              ))}
+              {!isClosed && unmapped.length > 0 && <div style={{ marginTop: 10, fontSize: 12, color: "#B45309", background: "#FFFBEB", borderRadius: 8, padding: "8px 10px" }}>⚠ มี {unmapped.length} ชื่อยังไม่จับคู่ SKU — ปิดใบได้ แต่รายการเหล่านั้นจะไม่ถูกตัดสต็อก</div>}
+              {!isClosed && !allDone && unmapped.length === 0 && <div style={{ marginTop: 10, fontSize: 12, color: "#92400E", background: "#FFFBEB", borderRadius: 8, padding: "8px 10px" }}>ยังยิงไม่ครบ — ถ้าของขาดจริงให้กด "ของขาด +1" ที่รายการก่อน เพื่อให้สรุปตรงกับความจริง</div>}
+            </div>
+            <div style={{ padding: "12px 22px 18px", display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setShowSummary(false)} style={{ background: "#F3F4F6", color: "#374151", border: "none", borderRadius: 10, padding: "10px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>{isClosed ? "ปิด" : "ยิงต่อ"}</button>
+              {!isClosed && <button onClick={closePick} disabled={closing} style={{ background: "linear-gradient(135deg,#7C3AED,#3B82F6)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer", opacity: closing ? 0.6 : 1 }}>{closing ? "⏳ กำลังปิด..." : "✅ ยืนยันปิดใบหยิบ"}</button>}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════ พิมพ์แผ่นบาร์โค้ด SKU (รูปใหญ่ + ชื่อ + Code128) ไว้ติดที่ช่องเก็บสินค้า ═══════════
+function LabelSheetPanel({ products }) {
+  const [q, setQ] = useState("");
+  const [sel, setSel] = useState(new Set());
+  const [layout, setLayout] = useState("a4-8");
+  const [copies, setCopies] = useState(1);
+  const kw = q.trim().toLowerCase();
+  const list = useMemo(() => products.filter(p => !kw || p.name.toLowerCase().includes(kw) || String(p.sku || "").toLowerCase().includes(kw) || String(p.location || "").toLowerCase().includes(kw)), [products, kw]);
+  const toggle = (id) => setSel(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const selectFiltered = () => setSel(prev => { const n = new Set(prev); list.forEach(p => n.add(p.id)); return n; });
+  const selected = products.filter(p => sel.has(p.id));
+
+  const print = () => {
+    if (selected.length === 0) return;
+    const page = layout === "s100" ? "@page { size: 100mm 150mm; margin: 4mm; }" : "@page { size: A4; margin: 8mm; }";
+    const grid = layout === "a4-8" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 68mm;" : layout === "a4-4" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 138mm;" : "grid-template-columns: 1fr; grid-auto-rows: 140mm;";
+    const imgH = layout === "a4-8" ? "34mm" : layout === "a4-4" ? "85mm" : "82mm";
+    const nameSize = layout === "a4-8" ? "11pt" : "15pt";
+    const labels = [];
+    selected.forEach(p => { for (let i = 0; i < Math.max(1, copies); i++) labels.push(p); });
+    const cells = labels.map(p => `
+      <div class="label">
+        <div class="img">${p.imageUrl ? `<img src="${escHtml(p.imageUrl)}" alt="">` : `<div class="noimg">📦<br><span>ไม่มีรูป</span></div>`}</div>
+        <div class="name">${escHtml(p.name)}</div>
+        <div class="meta">${p.location && p.location !== "-" ? "ช่อง " + escHtml(p.location) + " · " : ""}${escHtml(p.unit || "ชิ้น")}</div>
+        <div class="bc">${code128Svg(String(p.sku), { height: 40, module: 2, fontSize: 13 })}</div>
+      </div>`).join("");
+    const html = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><title>แผ่นบาร์โค้ด ${labels.length} ใบ</title>
+<style>
+  ${page}
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Sarabun', 'Tahoma', sans-serif; color: #000; }
+  .grid { display: grid; ${grid} gap: 3mm; }
+  .label { border: 0.4mm dashed #999; border-radius: 2mm; padding: 2.5mm; display: flex; flex-direction: column; align-items: center; text-align: center; page-break-inside: avoid; break-inside: avoid; overflow: hidden; }
+  .img { height: ${imgH}; width: 100%; display: flex; align-items: center; justify-content: center; }
+  .img img { max-height: 100%; max-width: 100%; object-fit: contain; }
+  .noimg { color: #999; font-size: 22pt; line-height: 1.1; } .noimg span { font-size: 8pt; }
+  .name { font-size: ${nameSize}; font-weight: 700; line-height: 1.25; margin-top: 1.5mm; }
+  .meta { font-size: 8.5pt; color: #444; margin-top: 0.5mm; }
+  .bc { margin-top: 1.5mm; width: 100%; display: flex; justify-content: center; }
+  .bc svg { width: ${layout === "a4-8" ? "58mm" : "70mm"}; height: auto; }
+  @media print { .label { border-color: #bbb; } }
+</style></head><body><div class="grid">${cells}</div>
+<script>window.onload = () => setTimeout(() => window.print(), 400);</script></body></html>`;
+    const win = window.open("", "_blank");
+    if (!win) return;
+    win.document.open(); win.document.write(html); win.document.close();
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🏷️ พิมพ์แผ่นบาร์โค้ด SKU</h2>
+          <p style={{ fontSize: 13, color: "#6B7280" }}>เลือกสินค้า → พิมพ์แผ่นที่มีรูปใหญ่ + ชื่อ + บาร์โค้ด Code128 ของ SKU เอาไปติด<b>ที่ช่องเก็บ</b> (ไม่ใช่วางลอยๆ) เวลาเติมของต้องเช็คว่าแผ่นตรงกับของที่เติมทุกครั้ง</p>
+        </div>
+      </div>
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 14, marginBottom: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <input className="inp" value={q} onChange={e => setQ(e.target.value)} placeholder="🔍 ค้นหาชื่อ / SKU / ช่องเก็บ..." style={{ flex: 1, minWidth: 220 }} />
+        <select className="inp" value={layout} onChange={e => setLayout(e.target.value)} style={{ width: 230 }}>
+          <option value="a4-8">A4 — 8 แผ่น/หน้า (รูปกลาง)</option>
+          <option value="a4-4">A4 — 4 แผ่น/หน้า (รูปใหญ่)</option>
+          <option value="s100">สติกเกอร์ 100×150 มม. — 1 แผ่น/ใบ</option>
+        </select>
+        <label style={{ fontSize: 12, color: "#6B7280", display: "flex", alignItems: "center", gap: 6 }}>สำเนา
+          <input className="inp" type="number" min={1} max={10} value={copies} onChange={e => setCopies(Math.max(1, Math.min(10, parseInt(e.target.value) || 1)))} style={{ width: 64, padding: "7px 8px" }} />
+        </label>
+        <button onClick={selectFiltered} style={{ background: "#F3F4F6", color: "#374151", border: "none", borderRadius: 10, padding: "9px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>เลือกทั้งหมดที่แสดง ({list.length})</button>
+        <button onClick={() => setSel(new Set())} disabled={sel.size === 0} style={{ background: "#F3F4F6", color: "#6B7280", border: "none", borderRadius: 10, padding: "9px 12px", fontSize: 13, cursor: "pointer", opacity: sel.size === 0 ? 0.5 : 1 }}>ล้าง</button>
+        <button onClick={print} disabled={sel.size === 0} style={{ background: sel.size ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#E5E7EB", color: "#fff", border: "none", borderRadius: 10, padding: "9px 18px", fontSize: 13, fontWeight: 700, cursor: sel.size ? "pointer" : "not-allowed" }}>🖨️ พิมพ์ {sel.size ? `${sel.size} รายการ` : ""}</button>
+      </div>
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden", overflowX: "auto" }}>
+        <table>
+          <thead><tr><th style={{ width: 40 }}></th><th>รูป</th><th>SKU</th><th>ชื่อสินค้า</th><th>ช่องเก็บ</th><th>คงเหลือ</th><th>ตัวอย่างบาร์โค้ด</th></tr></thead>
+          <tbody>
+            {list.map(p => (
+              <tr key={p.id} onClick={() => toggle(p.id)} style={{ cursor: "pointer", background: sel.has(p.id) ? "#F5F3FF" : undefined }}>
+                <td><input type="checkbox" checked={sel.has(p.id)} onChange={() => toggle(p.id)} onClick={e => e.stopPropagation()} /></td>
+                <td>{p.imageUrl ? <img src={p.imageUrl} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 6, border: "1px solid #E5E7EB" }} /> : <span style={{ color: "#D1D5DB" }}>—</span>}</td>
+                <td style={{ fontFamily: "monospace" }}>{p.sku}</td>
+                <td style={{ fontWeight: 600 }}>{p.name}</td>
+                <td>{p.location}</td>
+                <td style={{ fontFamily: "monospace" }}>{p.quantity}</td>
+                <td><div style={{ width: 130 }} dangerouslySetInnerHTML={{ __html: code128Svg(String(p.sku), { height: 22, module: 1, fontSize: 9 }).replace("<svg ", '<svg style="width:100%;height:auto" ') }} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {list.length === 0 && <div style={{ textAlign: "center", padding: 32, color: "#9CA3AF", fontSize: 13 }}>ไม่พบสินค้า</div>}
+      </div>
+    </div>
+  );
+}
+
 export default function WarehouseApp() {
   const [rawProducts, setRawProducts] = useState([]);
+  const [aliasMap, setAliasMap] = useState(new Map()); // ชื่อสินค้าตาม myorder → [{product_id, qty}] (จากตาราง product_aliases)
   const [backlog, setBacklog] = useState([]);            // n2p_backlog จากระบบใบสั่ง
   const [showIncomingModal, setShowIncomingModal] = useState(false);
   const [incomingAlias, setIncomingAlias] = useState(loadAliasMap);
@@ -2405,19 +3068,29 @@ export default function WarehouseApp() {
     setTimeout(() => setToast(null), 3000);
   };
 
+  // ── ยิงตัดสต๊อกจากใบหยิบ: panel ยิง API เอง แล้วส่งผลกลับมาให้ state หลักตรงกัน ──
+  const applyPickCut = (productId, newQty, txRow) => {
+    setRawProducts(prev => prev.map(p => p.id === productId ? { ...p, quantity: newQty } : p));
+    if (txRow) setTransactions(prev => [dbToTx(txRow), ...prev]);
+  };
+  const openAddProductNamed = (name) => { setForm({ name: stripPromo(name) || name }); setShowModal("add"); };
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     setDbError(null);
     try {
-      const [prods, txs, bl] = await Promise.all([
+      const [prods, txs, bl, al] = await Promise.all([
         api.getProducts(),
         api.getTransactions(),
         // ของระบบใบสั่ง — ถ้าดึงไม่ได้ก็ให้คลังทำงานต่อได้ตามปกติ แค่ไม่มียอดรอเข้า
         api.getBacklog().catch(() => []),
+        // การจับคู่ชื่อ myorder → SKU — ตารางยังไม่ถูกสร้าง (ยังไม่รัน scan-verify-setup.sql) ก็ไม่ให้แอปพัง
+        api.getAliases().catch(() => []),
       ]);
       setRawProducts((prods || []).map(dbToProduct));
       setTransactions((txs || []).map(dbToTx));
       setBacklog(bl || []);
+      setAliasMap(aliasRowsToMap(al));
     } catch (e) {
       setDbError(e.message);
     } finally {
@@ -3164,10 +3837,15 @@ export default function WarehouseApp() {
       if (!date) return;
       if (!map[date]) map[date] = { totalOrders: 0, totalItems: 0, scanCount: 0, byProduct: {}, notes: [] };
       map[date].totalOrders += s.total_orders || 0;
-      map[date].totalItems += s.total_items || 0;
       map[date].scanCount += 1;
-      (Array.isArray(s.products) ? s.products : []).forEach(p => {
-        map[date].byProduct[p.name] = (map[date].byProduct[p.name] || 0) + (Number(p.qty) || 0);
+      const prods = Array.isArray(s.products) ? s.products : [];
+      if (prods.length === 0) map[date].totalItems += s.total_items || 0;
+      prods.forEach(p => {
+        const q = Number(p.qty) || 0;
+        // จับคู่ชื่อโปร (เช่น "6 แพค ฟรี 1 แพค") → SKU × ชิ้น ด้วยตารางเดียวกับหน้ายิงตัดสต๊อก; ไม่มี alias → นับตามชื่อเดิม 1 หน่วย = 1 ชิ้น
+        const comps = aliasMap.get(pickName(p.name));
+        if (comps === undefined) { map[date].byProduct[p.name] = (map[date].byProduct[p.name] || 0) + q; map[date].totalItems += q; return; }
+        comps.forEach(c => { const nm = productName(c.product_id); const pieces = q * c.qty; map[date].byProduct[nm] = (map[date].byProduct[nm] || 0) + pieces; map[date].totalItems += pieces; });
       });
       if (s.note && s.note.trim()) {
         map[date].notes.push({
@@ -3178,7 +3856,7 @@ export default function WarehouseApp() {
       }
     });
     return map;
-  }, [orderScans]);
+  }, [orderScans, aliasMap, products]);
 
   const comparisonDates = useMemo(() => {
     const inRange = (d) => (!scanDateFrom || d >= scanDateFrom) && (!scanDateTo || d <= scanDateTo);
@@ -3230,7 +3908,7 @@ export default function WarehouseApp() {
   };
   const stockSubTabs = tab === "stockcheck" ? (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
-      {[["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"], ["dispose", "🗑️ จำหน่ายออก"]].map(([v, l]) => {
+      {[["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"], ["labels", "🏷️ แผ่นบาร์โค้ด"], ["dispose", "🗑️ จำหน่ายออก"]].map(([v, l]) => {
         const on = v !== "print" && stockSub === v;
         return (
           <button key={v} onClick={() => goStockSub(v)}
@@ -3257,7 +3935,7 @@ export default function WarehouseApp() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {[["dashboard","🏠 แดชบอร์ด"],["inventory","📦 คลังสินค้า"],["reorder","🛒 ต้องสั่งซื้อ"],["transactions","🔄 เคลื่อนไหว"],["returns","📮 พัสดุตีกลับ"],["dispose","🗑️ จำหน่ายออก"],["stockcheck","🔍 เช็คสต็อก"]].map(([v,l]) => {
+            {[["dashboard","🏠 แดชบอร์ด"],["pick","🎯 ยิงตัดสต๊อก"],["inventory","📦 คลังสินค้า"],["reorder","🛒 ต้องสั่งซื้อ"],["transactions","🔄 เคลื่อนไหว"],["returns","📮 พัสดุตีกลับ"],["dispose","🗑️ จำหน่ายออก"],["stockcheck","🔍 เช็คสต็อก"]].map(([v,l]) => {
               const badgeCount = v === "reorder" ? reorderList.length : v === "stockcheck" ? unreviewedScanCount : 0;
               return (
               <button key={v} onClick={() => setTab(v)}
@@ -3271,6 +3949,11 @@ export default function WarehouseApp() {
       </div>
 
       <div style={{ maxWidth: 1200, margin: "0 auto", padding: "24px 20px" }}>
+
+        {/* ─── ยิงตัดสต๊อกจากใบหยิบ ─── */}
+        {tab === "pick" && (
+          <PickScanPanel products={products} aliases={aliasMap} onAliasesChange={setAliasMap} showToast={showToast} onStockCut={applyPickCut} onAddProduct={openAddProductNamed} />
+        )}
 
         {/* ─── DASHBOARD ─── */}
         {tab === "dashboard" && (
@@ -3771,6 +4454,12 @@ export default function WarehouseApp() {
         )}
 
         {/* ─── เช็คออเดอร์ (จาก MyOrder extension) — เฉพาะผู้จัดการ ─── */}
+        {tab === "stockcheck" && stockSub === "labels" && (
+          <div>
+            {stockSubTabs}
+            <LabelSheetPanel products={products} />
+          </div>
+        )}
         {tab === "stockcheck" && stockSub === "orders" && !scansUnlocked && (
           <div>
             {stockSubTabs}
@@ -3929,7 +4618,7 @@ export default function WarehouseApp() {
                                           </tbody>
                                         </table>
                                       )}
-                                      <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 8 }}>* เทียบตามชื่อสินค้าตรงตัว ชื่อที่สะกดต่างกันระหว่างหน้าออเดอร์กับคลังจะไม่จับคู่กันอัตโนมัติ ต้องดูด้วยตาอีกที</p>
+                                      <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 8 }}>* ชื่อที่จับคู่ไว้ในหน้า "ยิงตัดสต๊อก" (รวมชื่อโปร เช่น 6 ฟรี 1 = 7 ชิ้น) จะถูกแปลงเป็นชื่อสินค้าในคลังและจำนวนชิ้นจริงให้แล้ว ชื่อที่ยังไม่จับคู่จะแสดงตามชื่อเดิม 1 หน่วย = 1 ชิ้น</p>
                                     </div>
                                   </td>
                                 </tr>
