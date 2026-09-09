@@ -2727,7 +2727,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
 function LabelSheetPanel({ products }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(new Set());
-  const [layout, setLayout] = useState("a4-8");
+  const [layout, setLayout] = useState("a4-21"); // ค่าเริ่มต้น = ชื่อ + บาร์โค้ด ไม่มีรูป (สินค้าส่วนใหญ่ยังไม่มีรูป)
   const [copies, setCopies] = useState(1);
   const kw = q.trim().toLowerCase();
   const list = useMemo(() => products.filter(p => !kw || p.name.toLowerCase().includes(kw) || String(p.sku || "").toLowerCase().includes(kw) || String(p.location || "").toLowerCase().includes(kw)), [products, kw]);
@@ -2738,17 +2738,18 @@ function LabelSheetPanel({ products }) {
   const print = () => {
     if (selected.length === 0) return;
     const page = layout === "s100" ? "@page { size: 100mm 150mm; margin: 4mm; }" : "@page { size: A4; margin: 8mm; }";
-    const grid = layout === "a4-8" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 68mm;" : layout === "a4-4" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 138mm;" : "grid-template-columns: 1fr; grid-auto-rows: 140mm;";
+    const compact = layout === "a4-21"; // ชื่อ + บาร์โค้ด อย่างเดียว 3 คอลัมน์ × 7 แถว
+    const grid = compact ? "grid-template-columns: repeat(3, 1fr); grid-auto-rows: 38mm;" : layout === "a4-8" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 68mm;" : layout === "a4-4" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 138mm;" : "grid-template-columns: 1fr; grid-auto-rows: 140mm;";
     const imgH = layout === "a4-8" ? "34mm" : layout === "a4-4" ? "85mm" : "82mm";
-    const nameSize = layout === "a4-8" ? "11pt" : "15pt";
+    const nameSize = compact ? "9.5pt" : layout === "a4-8" ? "11pt" : "15pt";
     const labels = [];
     selected.forEach(p => { for (let i = 0; i < Math.max(1, copies); i++) labels.push(p); });
     const cells = labels.map(p => `
       <div class="label">
-        <div class="img">${p.imageUrl ? `<img src="${escHtml(p.imageUrl)}" alt="">` : `<div class="noimg">📦<br><span>ไม่มีรูป</span></div>`}</div>
+        ${compact ? "" : `<div class="img">${p.imageUrl ? `<img src="${escHtml(p.imageUrl)}" alt="">` : `<div class="noimg">📦<br><span>ไม่มีรูป</span></div>`}</div>`}
         <div class="name">${escHtml(p.name)}</div>
         <div class="meta">${p.location && p.location !== "-" ? "ช่อง " + escHtml(p.location) + " · " : ""}${escHtml(p.unit || "ชิ้น")}</div>
-        <div class="bc">${code128Svg(String(p.sku), { height: 40, module: 2, fontSize: 13 })}</div>
+        <div class="bc">${code128Svg(String(p.sku), { height: compact ? 34 : 40, module: 2, fontSize: 13 })}</div>
       </div>`).join("");
     const html = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><title>แผ่นบาร์โค้ด ${labels.length} ใบ</title>
 <style>
@@ -2763,7 +2764,8 @@ function LabelSheetPanel({ products }) {
   .name { font-size: ${nameSize}; font-weight: 700; line-height: 1.25; margin-top: 1.5mm; }
   .meta { font-size: 8.5pt; color: #444; margin-top: 0.5mm; }
   .bc { margin-top: 1.5mm; width: 100%; display: flex; justify-content: center; }
-  .bc svg { width: ${layout === "a4-8" ? "58mm" : "70mm"}; height: auto; }
+  .bc svg { width: ${compact ? "52mm" : layout === "a4-8" ? "58mm" : "70mm"}; height: auto; }
+  ${compact ? ".label { padding: 2mm 1.5mm; justify-content: center; } .name { margin-top: 0; min-height: 2.5em; display: flex; align-items: center; } .meta { font-size: 7.5pt; }" : ""}
   @media print { .label { border-color: #bbb; } }
 </style></head><body><div class="grid">${cells}</div>
 <script>window.onload = () => setTimeout(() => window.print(), 400);</script></body></html>`;
@@ -2783,6 +2785,7 @@ function LabelSheetPanel({ products }) {
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 14, marginBottom: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <input className="inp" value={q} onChange={e => setQ(e.target.value)} placeholder="🔍 ค้นหาชื่อ / SKU / ช่องเก็บ..." style={{ flex: 1, minWidth: 220 }} />
         <select className="inp" value={layout} onChange={e => setLayout(e.target.value)} style={{ width: 230 }}>
+          <option value="a4-21">A4 — 21 แผ่น/หน้า (ชื่อ + บาร์โค้ด ไม่มีรูป)</option>
           <option value="a4-8">A4 — 8 แผ่น/หน้า (รูปกลาง)</option>
           <option value="a4-4">A4 — 4 แผ่น/หน้า (รูปใหญ่)</option>
           <option value="s100">สติกเกอร์ 100×150 มม. — 1 แผ่น/ใบ</option>
