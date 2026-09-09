@@ -2761,22 +2761,63 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   );
 }
 
-// ═══════════ บันทึกสินค้าค้างส่ง — วางรายการจาก MyOrder เทียบกับสต็อก แล้วบันทึกเฉพาะ "ค้างส่ง (สต็อกไม่มีของ)" + ที่จับคู่กับคลังไม่ได้ ไว้เป็นโน้ตกันตกหล่น ═══════════
+// ═══════════ วางรายการจาก MyOrder — parser เดียวกับเครื่องมือ backlog-check (แยกเก็บ scanDate + วันที่สั่งซื้อจริงต่อรายการ) ═══════════
+function parseBacklogPaste(text) {
+  const pad2n = (n) => String(n).padStart(2, "0");
+  const lines = String(text || "").split(/\r?\n/).map(s => s.replace(/^[\s•\-–·📦🚚💳💵📄🗓️*]+/, "").trim()).filter(Boolean);
+  const map = new Map(); // name -> { qty, orderDate:'YYYY-MM-DD'|null }
+  let pending = null, scanDate = null;
+  const isNoise = (l) => /ออเดอร์|บาท|รวม\s*\d|ทั้งหมด|COD|Bank|โอนเงิน|การชำระ|ขนส่ง|นับจาก|วันที่สแกน/i.test(l);
+  const add = (name, qty, orderDate) => {
+    name = name.replace(/\s+/g, " ").trim(); if (!name || !(qty > 0)) return;
+    const cur = map.get(name) || { qty: 0, orderDate: null };
+    cur.qty += qty;
+    if (orderDate && (!cur.orderDate || orderDate < cur.orderDate)) cur.orderDate = orderDate;
+    map.set(name, cur);
+  };
+  for (const l of lines) {
+    let m;
+    if ((m = l.match(/วันที่สแกน\s*[:：]?\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/))) {
+      const [, dd, mm, yyyy] = m; scanDate = `${yyyy}-${pad2n(mm)}-${pad2n(dd)}`; pending = null; continue;
+    }
+    if ((m = l.match(/^(.+?)\t\s*([\d,]+)\s*ชิ้น\s*\t\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\s*$/))) {
+      const orderDate = `${m[5]}-${pad2n(m[4])}-${pad2n(m[3])}`; add(m[1], parseInt(m[2].replace(/,/g, ""), 10), orderDate); pending = null; continue;
+    }
+    if ((m = l.match(/^(.+?)\s*[\t ]\s*([\d,]+)\s*ชิ้น\s*$/)) && !isNoise(m[1])) { add(m[1], parseInt(m[2].replace(/,/g, ""), 10)); pending = null; continue; }
+    if ((m = l.match(/^([\d,]+)\s*ชิ้น\s*$/))) { if (pending) add(pending, parseInt(m[1].replace(/,/g, ""), 10)); pending = null; continue; }
+    if ((m = l.match(/^(.+?)\t\s*([\d,]+)\s*$/)) && !isNoise(m[1])) { add(m[1], parseInt(m[2].replace(/,/g, ""), 10)); pending = null; continue; }
+    if (isNoise(l) || /^[\d,.\s]+$/.test(l)) { pending = null; continue; }
+    pending = l;
+  }
+  return { items: [...map.entries()].map(([name, v]) => ({ name, qty: v.qty, orderDate: v.orderDate })), scanDate };
+}
+
+// การจับคู่เอง + ประวัติ "ค้างมากี่วัน" — เก็บ localStorage ของเครื่อง/เบราว์เซอร์นี้เท่านั้น (เป็นแค่ตัวช่วยเดา ไม่ใช่ข้อมูลที่ต้องแชร์กันทุกคน)
+const BACKLOG_MANUAL_KEY = "backlog_notes_manual_v1"; // { [myorderName]: productId|null }
+const BACKLOG_AGE_HISTORY_KEY = "backlog_notes_age_history_v1"; // { [productId]: {firstSeen,lastSeen,lastQty,source} }
+const backlogAgeTone = (age) => age >= 14 ? "#DC2626" : age >= 5 ? "#B45309" : "#475569";
+const backlogAgeBg = (age) => age >= 14 ? "#FEE2E2" : age >= 5 ? "#FEF3C7" : "#F1F5F9";
+
+// ═══════════ บันทึกสินค้าค้างส่ง — วางรายการจาก MyOrder เทียบกับสต็อก/รอเข้าจริงแบบเต็ม (เหมือนหน้าหลักของเครื่องมือ backlog-check) แล้วบันทึกเฉพาะ "ค้างส่ง (สต็อกไม่มีของ)" + ที่จับคู่กับคลังไม่ได้ ไว้เป็นโน้ตกันตกหล่น ═══════════
 // เก็บที่ตาราง backlog_notes แถวเดียว id=1 (jsonb) ให้ทุกคน/ทุกเครื่องเห็นตรงกัน (ต้องรัน backlog-notes-setup.sql ก่อนถึงจะใช้ได้)
 // บันทึกด้วยมือเท่านั้น (กดปุ่ม) กันคนเช็คสต็อกซ้ำแล้วข้อมูลเก่าถูกทับโดยไม่ตั้งใจ — แก้ไข/ลบ/ใส่หมายเหตุทีละรายการได้โดยไม่กระทบวันที่บันทึกล่าสุด
 function BacklogNotesPanel({ products, showToast }) {
   const [paste, setPaste] = useState("");
   const [parseInfo, setParseInfo] = useState("");
   const [aliases, setAliases] = useState(null); // Map(myorder_name -> components[]) | null ระหว่างโหลด
-  const [compareRows, setCompareRows] = useState(null); // null = ยังไม่เคยกดเทียบรอบนี้
-  const [compareUnmatched, setCompareUnmatched] = useState([]);
+  const [rows, setRows] = useState(null); // null = ยังไม่เคยกดเทียบรอบนี้ — ทุกแถวที่จับคู่ได้ (my>0) ไม่ว่าสต็อกจะเหลือหรือไม่
+  const [unmatched, setUnmatched] = useState([]);
+  const [filterMode, setFilterMode] = useState("over"); // "over" | "noStock" | "all"
+  const [sortCol, setSortCol] = useState(null);
+  const [sortDir, setSortDir] = useState("desc");
+  const [manual, setManual] = useState(() => { try { return JSON.parse(localStorage.getItem(BACKLOG_MANUAL_KEY) || "{}"); } catch { return {}; } });
   const [saved, setSaved] = useState(undefined); // undefined = กำลังโหลด, null = ยังไม่เคยบันทึก
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.getAliases().then(rows => {
+    api.getAliases().then(rows2 => {
       const m = new Map();
-      (rows || []).forEach(r => m.set(String(r.myorder_name || "").trim(), Array.isArray(r.components) ? r.components : []));
+      (rows2 || []).forEach(r => m.set(String(r.myorder_name || "").trim(), Array.isArray(r.components) ? r.components : []));
       setAliases(m);
     }).catch(() => setAliases(new Map()));
   }, []);
@@ -2788,60 +2829,105 @@ function BacklogNotesPanel({ products, showToast }) {
 
   const doCompare = () => {
     if (!aliases) return;
-    const lines = paste.split(/\r?\n/).map(s => s.replace(/^[\s•\-–·📦🚚💳💵📄🗓️*]+/, "").trim()).filter(Boolean);
-    const map = new Map();
-    let pending = null;
-    const isNoise = (l) => /ออเดอร์|บาท|รวม\s*\d|ทั้งหมด|COD|Bank|โอนเงิน|การชำระ|ขนส่ง|นับจาก|วันที่สแกน/i.test(l);
-    const add = (name, qty) => { name = name.replace(/\s+/g, " ").trim(); if (!name || !(qty > 0)) return; map.set(name, (map.get(name) || 0) + qty); };
-    for (const l of lines) {
-      let m;
-      if (/วันที่สแกน/i.test(l)) { pending = null; continue; }
-      if ((m = l.match(/^(.+?)\t\s*([\d,]+)\s*ชิ้น\s*\t\s*\d{1,2}\/\d{1,2}\/\d{4}\s*$/))) { add(m[1], parseInt(m[2].replace(/,/g, ""), 10)); pending = null; continue; }
-      if ((m = l.match(/^(.+?)\s*[\t ]\s*([\d,]+)\s*ชิ้น\s*$/)) && !isNoise(m[1])) { add(m[1], parseInt(m[2].replace(/,/g, ""), 10)); pending = null; continue; }
-      if ((m = l.match(/^([\d,]+)\s*ชิ้น\s*$/))) { if (pending) add(pending, parseInt(m[1].replace(/,/g, ""), 10)); pending = null; continue; }
-      if ((m = l.match(/^(.+?)\t\s*([\d,]+)\s*$/)) && !isNoise(m[1])) { add(m[1], parseInt(m[2].replace(/,/g, ""), 10)); pending = null; continue; }
-      if (isNoise(l) || /^[\d,.\s]+$/.test(l)) { pending = null; continue; }
-      pending = l;
-    }
-    const items = [...map.entries()].map(([name, qty]) => ({ name, qty }));
+    const { items, scanDate: pasteScanDate } = parseBacklogPaste(paste);
+    const scanDate = pasteScanDate || todayStr();
     setParseInfo(items.length ? `อ่านได้ ${items.length} ชื่อ รวม ${items.reduce((s, i) => s + i.qty, 0).toLocaleString("th-TH")} ชิ้น` : "ยังอ่านชื่อสินค้าไม่ได้ — ตรวจว่าบรรทัดลงท้ายด้วย 'ชิ้น'");
-    if (!items.length) { setCompareRows(null); setCompareUnmatched([]); return; }
+    if (!items.length) { setRows(null); setUnmatched([]); return; }
 
     const per = new Map();
-    const slot = (pid) => { const k = String(pid); if (!per.has(k)) per.set(k, { p: byId.get(k), my: 0 }); return per.get(k); };
-    const unmatched = [];
+    const slot = (pid) => { const k = String(pid); if (!per.has(k)) per.set(k, { p: byId.get(k), my: 0, mySrc: [], oldestOrderDate: null }); return per.get(k); };
+    const mergeOrderDate = (s, od) => { if (od && (!s.oldestOrderDate || od < s.oldestOrderDate)) s.oldestOrderDate = od; };
+    const um = [];
     items.forEach(it => {
-      let comps = aliases.get(it.name);
+      const key = it.name;
+      if (Object.prototype.hasOwnProperty.call(manual, key)) {
+        const pid = manual[key];
+        if (pid == null || !byId.has(String(pid))) { um.push({ ...it, how: pid == null ? "ตั้งเองว่าไม่มีในคลัง" : "สินค้าที่ตั้งไว้ถูกลบ" }); return; }
+        const s = slot(pid); s.my += it.qty; s.mySrc.push({ name: key, qty: it.qty, tag: "manual" }); mergeOrderDate(s, it.orderDate); return;
+      }
+      let comps = aliases.get(key);
       if (comps === undefined) {
-        const nk = normName(it.name);
+        const nk = normName(key);
         for (const [an, ac] of aliases) if (normName(an) === nk) { comps = ac; break; }
       }
       if (comps !== undefined) {
-        if (!comps.length) return; // ตารางจับคู่บอกว่าไม่มีในคลัง ข้าม
+        if (!comps.length) { um.push({ ...it, how: "ตารางจับคู่บอกว่าไม่มีในคลัง" }); return; }
         let anyBad = false;
-        comps.forEach(c => { if (!byId.has(String(c.product_id))) { anyBad = true; return; } const q = (Number(c.qty) || 1) * it.qty; slot(c.product_id).my += q; });
-        if (anyBad) unmatched.push(it);
+        comps.forEach(c => {
+          if (!byId.has(String(c.product_id))) { anyBad = true; return; }
+          const q = (Number(c.qty) || 1) * it.qty;
+          const s = slot(c.product_id); s.my += q; s.mySrc.push({ name: key + (Number(c.qty) > 1 ? ` ×${c.qty}` : ""), qty: q, tag: "alias" }); mergeOrderDate(s, it.orderDate);
+        });
+        if (anyBad) um.push({ ...it, how: "สินค้าในตารางจับคู่ถูกลบ" });
         return;
       }
-      const p = scoreMatchProduct(it.name, products);
-      if (p) slot(p.id).my += it.qty;
-      else unmatched.push(it);
+      const p = scoreMatchProduct(key, products);
+      if (p) { const s = slot(p.id); s.my += it.qty; s.mySrc.push({ name: key, qty: it.qty, tag: "guess" }); mergeOrderDate(s, it.orderDate); }
+      else um.push({ ...it, how: "ไม่พบสินค้าที่ตรงกัน" });
     });
 
-    // เอาเฉพาะ "ค้างส่ง (สต็อกไม่มีของ)" — ของที่มีสต็อกอยู่แล้วไปหยิบส่งได้เลย ไม่ต้องมาโน้ตไว้
-    const rows = [...per.values()].filter(r => r.p && r.my > 0 && (Number(r.p.quantity) || 0) === 0);
-    setCompareRows(rows);
-    setCompareUnmatched(unmatched);
+    let history = {}; try { history = JSON.parse(localStorage.getItem(BACKLOG_AGE_HISTORY_KEY) || "{}"); } catch {}
+    const built = [...per.values()].filter(r => r.p && r.my > 0).map(r => {
+      const stock = Number(r.p.quantity) || 0;
+      const pid = String(r.p.id);
+      let h = history[pid];
+      if (r.oldestOrderDate) {
+        if (!h || r.oldestOrderDate < h.firstSeen) h = { firstSeen: r.oldestOrderDate, lastSeen: scanDate, lastQty: r.my, source: "order" };
+        else { if (scanDate > h.lastSeen) h.lastSeen = scanDate; h.lastQty = r.my; h.source = "order"; }
+      } else {
+        if (!h) h = { firstSeen: scanDate, lastSeen: scanDate, lastQty: r.my, source: "scan" };
+        else { if (scanDate < h.firstSeen) h.firstSeen = scanDate; if (scanDate > h.lastSeen) h.lastSeen = scanDate; h.lastQty = r.my; }
+      }
+      history[pid] = h;
+      const age = Math.max(0, Math.floor((new Date(todayStr() + "T00:00:00") - new Date(h.firstSeen + "T00:00:00")) / 86400000));
+      return { ...r, stock, over: stock > 0, inc: r.p.qtyOnOrder || 0, incSrc: r.p.incomingSources || [], firstSeen: h.firstSeen, dateIsReal: h.source === "order", age };
+    });
+    try { localStorage.setItem(BACKLOG_AGE_HISTORY_KEY, JSON.stringify(history)); } catch {}
+
+    built.sort((a, b) => (b.over - a.over) || b.my - a.my);
+    setRows(built);
+    setUnmatched(um);
   };
 
+  // จับคู่เอง/แก้ไขวันครั้งไหนแล้ว เทียบใหม่อัตโนมัติให้เห็นผลทันที (ถ้าเคยกดเทียบไปแล้วรอบนี้)
+  useEffect(() => { if (rows != null) doCompare(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [manual]);
+  useEffect(() => { try { localStorage.setItem(BACKLOG_MANUAL_KEY, JSON.stringify(manual)); } catch {} }, [manual]);
+
+  const setManualMatch = (name, v) => setManual(prev => { const next = { ...prev }; if (v === "auto") delete next[name]; else next[name] = v === "none" ? null : Number(v); return next; });
+  const resetAge = (pid) => {
+    let history = {}; try { history = JSON.parse(localStorage.getItem(BACKLOG_AGE_HISTORY_KEY) || "{}"); } catch {}
+    delete history[String(pid)];
+    try { localStorage.setItem(BACKLOG_AGE_HISTORY_KEY, JSON.stringify(history)); } catch {}
+    doCompare();
+  };
+  const clearAllAge = () => {
+    if (!window.confirm('ล้างวันที่ "ค้างมา" ของสินค้าทุกตัวในเครื่องนี้ ต้องการดำเนินการต่อไหม?')) return;
+    try { localStorage.removeItem(BACKLOG_AGE_HISTORY_KEY); } catch {}
+    doCompare();
+  };
+
+  const over = useMemo(() => (rows || []).filter(r => r.over), [rows]);
+  const noStock = useMemo(() => (rows || []).filter(r => !r.over), [rows]);
+  const oldest = useMemo(() => (rows && rows.length) ? rows.reduce((a, b) => (b.age > a.age ? b : a)) : null, [rows]);
+  const shown = useMemo(() => {
+    let base = filterMode === "over" ? over : filterMode === "noStock" ? noStock : (rows || []);
+    if (sortCol) {
+      const dir = sortDir === "asc" ? 1 : -1;
+      base = [...base].sort((a, b) => sortCol === "name" ? dir * a.p.name.localeCompare(b.p.name, "th") : ((a[sortCol] - b[sortCol]) * dir || a.p.name.localeCompare(b.p.name, "th")));
+    }
+    return base;
+  }, [rows, over, noStock, filterMode, sortCol, sortDir]);
+  const toggleSort = (col) => { if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortCol(col); setSortDir(col === "name" ? "asc" : "desc"); } };
+
   const doSave = async () => {
-    if (compareRows == null) return;
+    if (rows == null) return;
     setSaving(true);
     try {
       const oldNotes = new Map((saved?.items || []).map(it => [it.id, it.note || ""]));
       const items = [
-        ...compareRows.map(r => ({ id: String(r.p.id), name: r.p.name, sku: r.p.sku, myQty: r.my, stock: Number(r.p.quantity) || 0, incQty: r.p.qtyOnOrder || 0, matched: true, note: oldNotes.get(String(r.p.id)) || "" })),
-        ...compareUnmatched.map(u => ({ id: "u:" + u.name, name: u.name, sku: null, myQty: u.qty, stock: null, incQty: null, matched: false, note: oldNotes.get("u:" + u.name) || "" })),
+        // บันทึกเฉพาะ "ค้างส่ง (สต็อกไม่มีของ)" — ของที่มีสต็อกอยู่แล้วไปหยิบส่งได้เลย ไม่ต้องมาโน้ตไว้
+        ...noStock.map(r => ({ id: String(r.p.id), name: r.p.name, sku: r.p.sku, myQty: r.my, stock: r.stock, incQty: r.inc, matched: true, note: oldNotes.get(String(r.p.id)) || "" })),
+        ...unmatched.map(u => ({ id: "u:" + u.name, name: u.name, sku: null, myQty: u.qty, stock: null, incQty: null, matched: false, note: oldNotes.get("u:" + u.name) || "" })),
       ];
       const row = await api.saveBacklogNotes(items);
       setSaved(Array.isArray(row) ? row[0] : row);
@@ -2878,11 +2964,30 @@ function BacklogNotesPanel({ products, showToast }) {
     ? <span style={{ display: "inline-block", borderRadius: 10, padding: "6px 14px", fontWeight: 800, fontSize: 15, fontFamily: "monospace", background: "#F1F5F9", color: "#94A3B8" }}>—</span>
     : <span style={{ display: "inline-block", borderRadius: 10, padding: "6px 14px", fontWeight: 800, fontSize: 15, fontFamily: "monospace", background: bg, color: fg }}>{Number(v).toLocaleString("th-TH")}</span>;
 
+  const tile = (icon, iconBg, value, label, sub) => (
+    <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, padding: "12px 14px", display: "flex", gap: 10, alignItems: "flex-start", boxShadow: "0 1px 2px rgba(15,23,42,.04)" }}>
+      <div style={{ width: 34, height: 34, borderRadius: 10, background: iconBg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>{icon}</div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 18, fontWeight: 800, fontFamily: "monospace" }}>{value}</div>
+        <div style={{ fontSize: 11, color: "#6B7280" }}>{label}</div>
+        {sub && <div style={{ fontSize: 10.5, color: "#9CA3AF", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sub}</div>}
+      </div>
+    </div>
+  );
+  const arrow = (col) => sortCol === col ? (sortDir === "asc" ? " ▲" : " ▼") : "";
+  const srcList = (arr) => (arr && arr.length) ? arr.map((x, i) => (
+    <div key={i} style={{ fontSize: 10.5, color: "#6B7280", background: "#F8FAF9", borderRadius: 6, padding: "2px 6px", marginBottom: 2 }}>
+      {x.name} — {Number(x.qty ?? x.total ?? 0).toLocaleString("th-TH")}
+      {x.tag === "guess" && <span style={{ marginLeft: 3, color: "#B45309" }}>(เดา)</span>}
+      {x.tag === "manual" && <span style={{ marginLeft: 3, color: "#7C3AED" }}>(ตั้งเอง)</span>}
+    </div>
+  )) : <span style={{ color: "#D1D5DB", fontSize: 11 }}>—</span>;
+
   return (
     <div>
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16, marginBottom: 14 }}>
         <h2 style={{ fontSize: 18, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📋 บันทึกสินค้าค้างส่ง</h2>
-        <p style={{ fontSize: 12.5, color: "#6B7280", marginBottom: 10 }}>วางรายการจาก MyOrder (ปุ่ม "คัดลอกรายการสินค้า" ใน extension) เทียบกับสต็อก แล้วกด "บันทึก" เพื่อเก็บเฉพาะของที่<b>ไม่มีสต็อกเลย</b> + ที่จับคู่กับคลังไม่ได้ ไว้เป็นโน้ตกันตกหล่น — บันทึกด้วยมือเท่านั้น เช็คสต็อกซ้ำไม่ทับของเดิม ทุกคนที่เข้าเว็บนี้เห็นบันทึกเดียวกัน</p>
+        <p style={{ fontSize: 12.5, color: "#6B7280", marginBottom: 10 }}>วางรายการจาก MyOrder (ปุ่ม "คัดลอกรายการสินค้า" ใน extension) เทียบกับสต็อก/รอเข้าจริง แล้วกด "บันทึก" เพื่อเก็บเฉพาะของที่<b>ไม่มีสต็อกเลย</b> + ที่จับคู่กับคลังไม่ได้ ไว้เป็นโน้ตกันตกหล่น — บันทึกด้วยมือเท่านั้น เช็คสต็อกซ้ำไม่ทับของเดิม ทุกคนที่เข้าเว็บนี้เห็นบันทึกเดียวกัน</p>
         <textarea value={paste} onChange={e => setPaste(e.target.value)}
           placeholder={"เช่น\nที่เกี่ยวขาแว่นกันหล่น\t480 ชิ้น\nชั้นเสียบครีมติดผนัง\t204 ชิ้น"}
           style={{ width: "100%", minHeight: 130, border: "1px solid #E5E7EB", borderRadius: 10, padding: 10, fontSize: 13, fontFamily: "inherit", resize: "vertical" }} />
@@ -2891,20 +2996,106 @@ function BacklogNotesPanel({ products, showToast }) {
             style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: aliases ? "pointer" : "default", opacity: aliases ? 1 : 0.5 }}>
             🔍 เทียบข้อมูลสินค้า
           </button>
-          {compareRows != null && (
+          {rows != null && (
             <button onClick={doSave} disabled={saving}
               style={{ background: "#16A34A", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.6 : 1 }}>
-              {saving ? "กำลังบันทึก..." : `💾 บันทึกลงบันทึกค้างส่ง (${compareRows.length + compareUnmatched.length} รายการ)`}
+              {saving ? "กำลังบันทึก..." : `💾 บันทึก "ค้างส่ง (สต็อกไม่มีของ)" ลงบันทึก (${noStock.length + unmatched.length} รายการ)`}
             </button>
           )}
           <span style={{ fontSize: 12, color: "#6B7280" }}>{parseInfo}</span>
         </div>
-        {compareRows != null && (
-          <div style={{ fontSize: 12, color: "#6B7280", marginTop: 6 }}>
-            พบ "ค้างส่ง (สต็อกไม่มีของ)" {compareRows.length} รายการ · จับคู่กับคลังไม่ได้ {compareUnmatched.length} รายการ — กด "บันทึก" เพื่อเก็บไว้ด้านล่าง
-          </div>
-        )}
       </div>
+
+      {rows != null && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 10 }}>
+            {tile("📦", "#F1F5F9", rows.reduce((s, r) => s + r.my, 0).toLocaleString("th-TH") + " ชิ้น", "ค้างส่งจริง (MyOrder)", `${rows.length} สินค้า`)}
+            {tile("🏬", "#F1F5F9", rows.reduce((s, r) => s + r.stock, 0).toLocaleString("th-TH") + " ชิ้น", "สต็อกคงเหลือ")}
+            {tile("🚚", "#F1F5F9", rows.reduce((s, r) => s + r.inc, 0).toLocaleString("th-TH") + " ชิ้น", "สินค้ารอเข้า")}
+            {tile(over.length ? "⚠️" : "✅", over.length ? "#FEE2E2" : "#DCFCE7", over.length, "ของมีแต่ยังไม่ส่ง")}
+            {tile("📭", "#F1F5F9", noStock.length, "ค้างส่ง (สต็อกไม่มีของ)")}
+            {tile(unmatched.length ? "🔗" : "✅", unmatched.length ? "#FEF3C7" : "#DCFCE7", unmatched.length, "จับคู่ไม่ได้")}
+            {oldest && tile("⏳", backlogAgeBg(oldest.age), oldest.age + " วัน", "ค้างนานสุด", `${oldest.p.name} — สั่ง ${oldest.firstSeen}${oldest.dateIsReal ? "" : " (ประมาณ)"}`)}
+          </div>
+
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+            <div style={{ display: "flex", gap: 4, background: "#EAEFED", borderRadius: 12, padding: 4 }}>
+              {[["over", `🔴 ของมีแต่ยังไม่ส่ง (${over.length})`], ["noStock", `📭 ค้างส่ง (สต็อกไม่มีของ) (${noStock.length})`], ["all", `ทั้งหมด (${rows.length})`]].map(([v, l]) => (
+                <button key={v} onClick={() => setFilterMode(v)}
+                  style={{ background: filterMode === v ? "#7C3AED" : "transparent", color: filterMode === v ? "#fff" : "#6B7280", border: "none", borderRadius: 9, padding: "8px 12px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>{l}</button>
+              ))}
+            </div>
+            <button onClick={clearAllAge} style={{ marginLeft: "auto", background: "transparent", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "8px 12px", fontSize: 11.5, cursor: "pointer" }}>🗑️ ล้างประวัติ "ค้างมา" ทั้งหมด</button>
+          </div>
+
+          <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden", overflowX: "auto" }}>
+            <table>
+              <thead>
+                <tr>
+                  {[["name", "ชื่อสินค้า"], ["my", "ค้างส่งจาก MyOrder"], ["stock", "สต็อกคงเหลือ"], ["inc", "สินค้ารอเข้า"], ["age", "ค้างมา (วัน)"]].map(([col, label]) => (
+                    <th key={col} onClick={() => toggleSort(col)} style={{ cursor: "pointer", userSelect: "none", whiteSpace: "nowrap" }}>{label}{arrow(col)}</th>
+                  ))}
+                  <th>ที่มาฝั่ง MyOrder</th><th>ที่มารอเข้า</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.length === 0 && <tr><td colSpan={7} style={{ textAlign: "center", padding: 24, color: "#9CA3AF" }}>{rows.length ? "✅ ไม่มีรายการในกลุ่มนี้" : "ไม่มีสินค้าที่จับคู่ได้เลย"}</td></tr>}
+                {shown.map(r => (
+                  <tr key={r.p.id} style={{ background: r.over ? "#FFF6F6" : undefined }}>
+                    <td style={{ borderLeft: r.over ? "3px solid #DC2626" : "3px solid transparent" }}>
+                      <b>{r.p.name}</b><br /><span style={{ fontFamily: "monospace", color: "#9CA3AF", fontSize: 11 }}>{r.p.sku}</span>
+                    </td>
+                    <td style={{ fontFamily: "monospace" }}>{r.my.toLocaleString("th-TH")}</td>
+                    <td style={{ fontFamily: "monospace", color: r.over ? "#DC2626" : undefined, fontWeight: r.over ? 700 : 400 }}>{r.stock.toLocaleString("th-TH")}</td>
+                    <td style={{ fontFamily: "monospace" }}>{r.inc ? r.inc.toLocaleString("th-TH") : "—"}</td>
+                    <td title={`สั่งซื้อวันที่ ${r.firstSeen}${r.dateIsReal ? " (วันที่สั่งซื้อจริง)" : " (ประมาณจากวันที่สแกน)"}`}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 3, background: backlogAgeBg(r.age), color: backlogAgeTone(r.age), borderRadius: 99, padding: "3px 9px", fontWeight: 800, fontSize: 12, fontFamily: "monospace" }}>
+                        {r.age} วัน{r.dateIsReal ? " 📅" : ""}
+                      </span>
+                      {r.age > 0 && <button onClick={() => resetAge(r.p.id)} title="เริ่มนับใหม่ตั้งแต่วันนี้" style={{ marginLeft: 4, padding: "1px 6px", fontSize: 10, background: "#F3F4F6", border: "none", borderRadius: 6, cursor: "pointer" }}>↺</button>}
+                    </td>
+                    <td>{srcList(r.mySrc)}</td>
+                    <td>{srcList(r.incSrc)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {unmatched.length > 0 && (
+            <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16, marginTop: 14 }}>
+              <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>❓ ชื่อจาก MyOrder ที่จับคู่กับสินค้าในคลังไม่ได้ ({unmatched.length}) — ยอดพวกนี้ไม่รวมในตารางด้านบน</h3>
+              <table>
+                <thead><tr><th>ชื่อใน MyOrder</th><th>ชิ้น</th><th>สาเหตุ</th><th>จับคู่เอง</th></tr></thead>
+                <tbody>
+                  {unmatched.map((u, i) => (
+                    <tr key={i}>
+                      <td>{u.name}</td><td style={{ fontFamily: "monospace" }}>{u.qty}</td><td style={{ fontSize: 11.5, color: "#9CA3AF" }}>{u.how}</td>
+                      <td>
+                        <ProductPicker products={products}
+                          value={Object.prototype.hasOwnProperty.call(manual, u.name) ? (manual[u.name] == null ? "none" : String(manual[u.name])) : "auto"}
+                          autoLabel="— เลือกสินค้าในคลัง —" onPick={v => setManualMatch(u.name, v)} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {Object.keys(manual).length > 0 && (
+            <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16, marginTop: 14 }}>
+              <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>🔧 การจับคู่ที่ตั้งเองในเครื่องนี้ ({Object.keys(manual).length})</h3>
+              {Object.entries(manual).map(([k, v]) => (
+                <div key={k} style={{ fontSize: 12, color: "#6B7280", margin: "3px 0" }}>
+                  {k} → <b>{v == null ? "ไม่จับคู่ / ไม่มีในคลัง" : (byId.get(String(v))?.name || "(ถูกลบ)")}</b>
+                  <button onClick={() => setManualMatch(k, "auto")} style={{ marginLeft: 8, padding: "2px 8px", fontSize: 11, background: "#F3F4F6", border: "none", borderRadius: 6, cursor: "pointer" }}>ยกเลิก</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {saved === undefined ? (
         <div style={{ textAlign: "center", padding: 30, color: "#9CA3AF", fontSize: 13 }}>⏳ กำลังโหลดบันทึก...</div>
