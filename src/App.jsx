@@ -3145,7 +3145,7 @@ function BacklogNotesPanel({ products, showToast }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 11, fontWeight: 800, color: saved?.note ? "#92400E" : "#9CA3AF", marginBottom: 4 }}>📌 โน้ตถึงฝ่ายอื่น</div>
                 {saved?.note
-                  ? <div style={{ fontSize: 13, color: "#78350F", whiteSpace: "pre-wrap" }}>{saved.note}</div>
+                  ? <div className="backlog-note-cols" style={{ fontSize: 13, color: "#78350F" }}>{saved.note.split(/\r?\n/).map((line, i) => <div key={i}>{line || " "}</div>)}</div>
                   : <div style={{ fontSize: 12.5, color: "#9CA3AF" }}>ยังไม่มีโน้ต — กด "แก้ไข" เพื่อฝากข้อความถึงฝ่ายอื่น</div>}
               </div>
               <button onClick={openEditNote} style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 9, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>✏️ แก้ไข</button>
@@ -4384,6 +4384,9 @@ export default function WarehouseApp() {
     tbody td { padding: 9px 12px; border-bottom: 1px solid #F3F4F6; font-size: 13px; color: #374151; vertical-align: middle; }
     tbody tr:hover { background: #FAFAFE; }
     button { font-family: 'Sarabun', sans-serif; }
+    .backlog-note-cols { column-count: 2; column-gap: 24px; }
+    .backlog-note-cols > div { break-inside: avoid; }
+    @media (max-width: 700px) { .backlog-note-cols { column-count: 1; } }
   `;
 
   if (loading) return (
