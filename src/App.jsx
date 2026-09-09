@@ -63,6 +63,11 @@ const api = {
   getAliases: () => sbAll("product_aliases?select=*"),
   // components = [{product_id, qty}] — ขาย 1 หน่วยชื่อนี้ ต้องตัดสินค้าอะไรกี่ชิ้น ([] = ไม่มีในคลัง ไม่ตัด)
   upsertAlias: (name, components) => sb("product_aliases?on_conflict=myorder_name", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ myorder_name: name, components, updated_at: new Date().toISOString() }) }),
+  // ── บันทึกสินค้าค้างส่ง (เมนูย่อยใต้เช็คสต็อก) — แถวเดียวคงที่ id=1 เก็บเป็น jsonb ให้ทุกเครื่อง/ทุกคนเห็นตรงกัน ต้องรัน backlog-notes-setup.sql ก่อน ──
+  getBacklogNotes: () => sb("backlog_notes?id=eq.1&select=*").then(rows => (rows && rows[0]) || null),
+  saveBacklogNotes: (items) => sb("backlog_notes?on_conflict=id", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ id: 1, items, saved_at: new Date().toISOString() }) }),
+  // แก้ไข/ลบ/ใส่หมายเหตุทีละรายการ — ไม่แตะ saved_at (ไม่ใช่การบันทึกใหม่ แค่แก้ของเดิม)
+  patchBacklogNoteItems: (items) => sb("backlog_notes?id=eq.1", { method: "PATCH", body: JSON.stringify({ items }) }),
 };
 
 const dbToProduct = (r) => ({
@@ -156,6 +161,18 @@ const nameScore = (bName, pName) => {
 
   const best = cands.reduce((a, c) => (c.score > a.score ? c : a));
   return best.score >= MATCH_CUTOFF ? best : { score: 0, how: "ไม่ใกล้พอ" };
+};
+
+// เดาสินค้าจากชื่อด้วย nameScore — ต้อง "ชนะขาด" ตัวรองเท่านั้น (ใช้เฉพาะฟีเจอร์ "บันทึกค้างส่ง" แยกจาก guessProduct ของ AliasEditor)
+const scoreMatchProduct = (name, products) => {
+  let best = null, second = 0;
+  products.forEach(p => {
+    const r = nameScore(name, p.name); if (r.score <= 0) return;
+    if (!best || r.score > best.score) { if (best) second = Math.max(second, best.score); best = { ...r, p }; }
+    else if (r.score > second) second = r.score;
+  });
+  if (best && (best.score >= 0.99 || best.score - second >= 0.03)) return best.p;
+  return null;
 };
 
 // ของรอเข้าของรายการหนึ่ง = ผลรวมของรอบที่ยังเข้าไม่ครบ (สูตรเดียวกับหน้ารอสั่งของระบบใบสั่ง)
@@ -2744,6 +2761,223 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   );
 }
 
+// ═══════════ บันทึกสินค้าค้างส่ง — วางรายการจาก MyOrder เทียบกับสต็อก แล้วบันทึกเฉพาะ "ค้างส่ง (สต็อกไม่มีของ)" + ที่จับคู่กับคลังไม่ได้ ไว้เป็นโน้ตกันตกหล่น ═══════════
+// เก็บที่ตาราง backlog_notes แถวเดียว id=1 (jsonb) ให้ทุกคน/ทุกเครื่องเห็นตรงกัน (ต้องรัน backlog-notes-setup.sql ก่อนถึงจะใช้ได้)
+// บันทึกด้วยมือเท่านั้น (กดปุ่ม) กันคนเช็คสต็อกซ้ำแล้วข้อมูลเก่าถูกทับโดยไม่ตั้งใจ — แก้ไข/ลบ/ใส่หมายเหตุทีละรายการได้โดยไม่กระทบวันที่บันทึกล่าสุด
+function BacklogNotesPanel({ products, showToast }) {
+  const [paste, setPaste] = useState("");
+  const [parseInfo, setParseInfo] = useState("");
+  const [aliases, setAliases] = useState(null); // Map(myorder_name -> components[]) | null ระหว่างโหลด
+  const [compareRows, setCompareRows] = useState(null); // null = ยังไม่เคยกดเทียบรอบนี้
+  const [compareUnmatched, setCompareUnmatched] = useState([]);
+  const [saved, setSaved] = useState(undefined); // undefined = กำลังโหลด, null = ยังไม่เคยบันทึก
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.getAliases().then(rows => {
+      const m = new Map();
+      (rows || []).forEach(r => m.set(String(r.myorder_name || "").trim(), Array.isArray(r.components) ? r.components : []));
+      setAliases(m);
+    }).catch(() => setAliases(new Map()));
+  }, []);
+
+  const loadSaved = () => { api.getBacklogNotes().then(row => setSaved(row)).catch(() => setSaved(null)); };
+  useEffect(() => { loadSaved(); }, []);
+
+  const byId = useMemo(() => new Map(products.map(p => [String(p.id), p])), [products]);
+
+  const doCompare = () => {
+    if (!aliases) return;
+    const lines = paste.split(/\r?\n/).map(s => s.replace(/^[\s•\-–·📦🚚💳💵📄🗓️*]+/, "").trim()).filter(Boolean);
+    const map = new Map();
+    let pending = null;
+    const isNoise = (l) => /ออเดอร์|บาท|รวม\s*\d|ทั้งหมด|COD|Bank|โอนเงิน|การชำระ|ขนส่ง|นับจาก|วันที่สแกน/i.test(l);
+    const add = (name, qty) => { name = name.replace(/\s+/g, " ").trim(); if (!name || !(qty > 0)) return; map.set(name, (map.get(name) || 0) + qty); };
+    for (const l of lines) {
+      let m;
+      if (/วันที่สแกน/i.test(l)) { pending = null; continue; }
+      if ((m = l.match(/^(.+?)\t\s*([\d,]+)\s*ชิ้น\s*\t\s*\d{1,2}\/\d{1,2}\/\d{4}\s*$/))) { add(m[1], parseInt(m[2].replace(/,/g, ""), 10)); pending = null; continue; }
+      if ((m = l.match(/^(.+?)\s*[\t ]\s*([\d,]+)\s*ชิ้น\s*$/)) && !isNoise(m[1])) { add(m[1], parseInt(m[2].replace(/,/g, ""), 10)); pending = null; continue; }
+      if ((m = l.match(/^([\d,]+)\s*ชิ้น\s*$/))) { if (pending) add(pending, parseInt(m[1].replace(/,/g, ""), 10)); pending = null; continue; }
+      if ((m = l.match(/^(.+?)\t\s*([\d,]+)\s*$/)) && !isNoise(m[1])) { add(m[1], parseInt(m[2].replace(/,/g, ""), 10)); pending = null; continue; }
+      if (isNoise(l) || /^[\d,.\s]+$/.test(l)) { pending = null; continue; }
+      pending = l;
+    }
+    const items = [...map.entries()].map(([name, qty]) => ({ name, qty }));
+    setParseInfo(items.length ? `อ่านได้ ${items.length} ชื่อ รวม ${items.reduce((s, i) => s + i.qty, 0).toLocaleString("th-TH")} ชิ้น` : "ยังอ่านชื่อสินค้าไม่ได้ — ตรวจว่าบรรทัดลงท้ายด้วย 'ชิ้น'");
+    if (!items.length) { setCompareRows(null); setCompareUnmatched([]); return; }
+
+    const per = new Map();
+    const slot = (pid) => { const k = String(pid); if (!per.has(k)) per.set(k, { p: byId.get(k), my: 0 }); return per.get(k); };
+    const unmatched = [];
+    items.forEach(it => {
+      let comps = aliases.get(it.name);
+      if (comps === undefined) {
+        const nk = normName(it.name);
+        for (const [an, ac] of aliases) if (normName(an) === nk) { comps = ac; break; }
+      }
+      if (comps !== undefined) {
+        if (!comps.length) return; // ตารางจับคู่บอกว่าไม่มีในคลัง ข้าม
+        let anyBad = false;
+        comps.forEach(c => { if (!byId.has(String(c.product_id))) { anyBad = true; return; } const q = (Number(c.qty) || 1) * it.qty; slot(c.product_id).my += q; });
+        if (anyBad) unmatched.push(it);
+        return;
+      }
+      const p = scoreMatchProduct(it.name, products);
+      if (p) slot(p.id).my += it.qty;
+      else unmatched.push(it);
+    });
+
+    // เอาเฉพาะ "ค้างส่ง (สต็อกไม่มีของ)" — ของที่มีสต็อกอยู่แล้วไปหยิบส่งได้เลย ไม่ต้องมาโน้ตไว้
+    const rows = [...per.values()].filter(r => r.p && r.my > 0 && (Number(r.p.quantity) || 0) === 0);
+    setCompareRows(rows);
+    setCompareUnmatched(unmatched);
+  };
+
+  const doSave = async () => {
+    if (compareRows == null) return;
+    setSaving(true);
+    try {
+      const oldNotes = new Map((saved?.items || []).map(it => [it.id, it.note || ""]));
+      const items = [
+        ...compareRows.map(r => ({ id: String(r.p.id), name: r.p.name, sku: r.p.sku, myQty: r.my, stock: Number(r.p.quantity) || 0, incQty: r.p.qtyOnOrder || 0, matched: true, note: oldNotes.get(String(r.p.id)) || "" })),
+        ...compareUnmatched.map(u => ({ id: "u:" + u.name, name: u.name, sku: null, myQty: u.qty, stock: null, incQty: null, matched: false, note: oldNotes.get("u:" + u.name) || "" })),
+      ];
+      const row = await api.saveBacklogNotes(items);
+      setSaved(Array.isArray(row) ? row[0] : row);
+      showToast(`บันทึกแล้ว ${items.length} รายการ`);
+    } catch (e) {
+      showToast("บันทึกไม่สำเร็จ: " + e.message, "error");
+    } finally { setSaving(false); }
+  };
+
+  const updateSavedItems = async (nextItems) => {
+    const prevSaved = saved;
+    setSaved(prev => ({ ...prev, items: nextItems }));
+    try { await api.patchBacklogNoteItems(nextItems); }
+    catch (e) { showToast("อัปเดตไม่สำเร็จ: " + e.message, "error"); setSaved(prevSaved); }
+  };
+  const editQty = (it) => {
+    const v = window.prompt(`แก้ไขจำนวนค้างส่งจาก MyOrder ของ "${it.name}"`, it.myQty);
+    if (v == null) return;
+    const num = parseInt(String(v).replace(/[^\d]/g, ""), 10);
+    if (!Number.isFinite(num) || num < 0) { window.alert("กรุณาใส่ตัวเลขจำนวนเต็มที่ถูกต้อง"); return; }
+    updateSavedItems(saved.items.map(x => x.id === it.id ? { ...x, myQty: num } : x));
+  };
+  const editNote = (it) => {
+    const v = window.prompt(`หมายเหตุสำหรับ "${it.name}"`, it.note || "");
+    if (v == null) return;
+    updateSavedItems(saved.items.map(x => x.id === it.id ? { ...x, note: v.trim() } : x));
+  };
+  const deleteItem = (it) => {
+    if (!window.confirm(`ลบ "${it.name}" ออกจากบันทึกนี้ใช่ไหม?`)) return;
+    updateSavedItems(saved.items.filter(x => x.id !== it.id));
+  };
+
+  const numChip = (v, bg, fg) => v == null
+    ? <span style={{ display: "inline-block", borderRadius: 10, padding: "6px 14px", fontWeight: 800, fontSize: 15, fontFamily: "monospace", background: "#F1F5F9", color: "#94A3B8" }}>—</span>
+    : <span style={{ display: "inline-block", borderRadius: 10, padding: "6px 14px", fontWeight: 800, fontSize: 15, fontFamily: "monospace", background: bg, color: fg }}>{Number(v).toLocaleString("th-TH")}</span>;
+
+  return (
+    <div>
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16, marginBottom: 14 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📋 บันทึกสินค้าค้างส่ง</h2>
+        <p style={{ fontSize: 12.5, color: "#6B7280", marginBottom: 10 }}>วางรายการจาก MyOrder (ปุ่ม "คัดลอกรายการสินค้า" ใน extension) เทียบกับสต็อก แล้วกด "บันทึก" เพื่อเก็บเฉพาะของที่<b>ไม่มีสต็อกเลย</b> + ที่จับคู่กับคลังไม่ได้ ไว้เป็นโน้ตกันตกหล่น — บันทึกด้วยมือเท่านั้น เช็คสต็อกซ้ำไม่ทับของเดิม ทุกคนที่เข้าเว็บนี้เห็นบันทึกเดียวกัน</p>
+        <textarea value={paste} onChange={e => setPaste(e.target.value)}
+          placeholder={"เช่น\nที่เกี่ยวขาแว่นกันหล่น\t480 ชิ้น\nชั้นเสียบครีมติดผนัง\t204 ชิ้น"}
+          style={{ width: "100%", minHeight: 130, border: "1px solid #E5E7EB", borderRadius: 10, padding: 10, fontSize: 13, fontFamily: "inherit", resize: "vertical" }} />
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 8 }}>
+          <button onClick={doCompare} disabled={!aliases}
+            style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: aliases ? "pointer" : "default", opacity: aliases ? 1 : 0.5 }}>
+            🔍 เทียบข้อมูลสินค้า
+          </button>
+          {compareRows != null && (
+            <button onClick={doSave} disabled={saving}
+              style={{ background: "#16A34A", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.6 : 1 }}>
+              {saving ? "กำลังบันทึก..." : `💾 บันทึกลงบันทึกค้างส่ง (${compareRows.length + compareUnmatched.length} รายการ)`}
+            </button>
+          )}
+          <span style={{ fontSize: 12, color: "#6B7280" }}>{parseInfo}</span>
+        </div>
+        {compareRows != null && (
+          <div style={{ fontSize: 12, color: "#6B7280", marginTop: 6 }}>
+            พบ "ค้างส่ง (สต็อกไม่มีของ)" {compareRows.length} รายการ · จับคู่กับคลังไม่ได้ {compareUnmatched.length} รายการ — กด "บันทึก" เพื่อเก็บไว้ด้านล่าง
+          </div>
+        )}
+      </div>
+
+      {saved === undefined ? (
+        <div style={{ textAlign: "center", padding: 30, color: "#9CA3AF", fontSize: 13 }}>⏳ กำลังโหลดบันทึก...</div>
+      ) : !saved || !Array.isArray(saved.items) || saved.items.length === 0 ? (
+        <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 32, color: "#9CA3AF", fontSize: 13 }}>
+          ยังไม่มีบันทึก — วางข้อมูลด้านบน กด "เทียบข้อมูลสินค้า" แล้วกด "บันทึก"
+        </div>
+      ) : (
+        <>
+          <div style={{ background: "linear-gradient(135deg,#4F46E5,#9333EA)", borderRadius: 20, padding: "20px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap", marginBottom: 16, boxShadow: "0 8px 24px rgba(79,70,229,.25)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <div style={{ width: 52, height: 52, borderRadius: 16, background: "rgba(255,255,255,.22)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📋📦</div>
+              <div>
+                <div style={{ color: "#fff", fontSize: 20, fontWeight: 800 }}>บันทึกสินค้าค้างส่ง</div>
+                <div style={{ color: "rgba(255,255,255,.85)", fontSize: 12, marginTop: 2 }}>แก้ไข/ลบ/ใส่หมายเหตุทีละรายการได้ — ทุกคนเห็นบันทึกเดียวกัน</div>
+              </div>
+            </div>
+            <div style={{ background: "#FDE68A", borderRadius: 14, padding: "8px 16px", textAlign: "center" }}>
+              <div style={{ color: "#92400E", fontSize: 11, fontWeight: 800 }}>📅 บันทึกล่าสุด</div>
+              <div style={{ background: "#fff", borderRadius: 10, padding: "4px 12px", marginTop: 4, fontWeight: 800, color: "#111827", fontSize: 13, whiteSpace: "nowrap" }}>{fmtDT(saved.saved_at)}</div>
+            </div>
+          </div>
+
+          <div style={{ borderRadius: 18, overflow: "hidden", boxShadow: "0 1px 2px rgba(15,23,42,.04), 0 8px 20px rgba(15,23,42,.05)", border: "1px solid #E5E7EB", background: "#fff", overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 6px", padding: "0 10px 10px" }}>
+              <thead>
+                <tr>
+                  {["ลำดับ", "📦 ชื่อสินค้า", "✅ ค้างส่งจาก MyOrder", "📦 สต็อกคงเหลือ", "🚚 สินค้ารอเข้า", "📝 หมายเหตุ", "จัดการ"].map((h, i) => (
+                    <th key={h} style={{
+                      padding: "12px 10px", fontSize: 12, fontWeight: 800, color: "#fff", textAlign: i === 1 || i === 5 ? "left" : "center",
+                      background: ["#3B82F6", "#3B82F6", "#F43F5E", "#F59E0B", "#10B981", "#8B5CF6", "#64748B"][i],
+                      borderRadius: i === 0 ? "12px 0 0 12px" : i === 6 ? "0 12px 12px 0" : 0,
+                    }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {saved.items.map((it, i) => (
+                  <tr key={it.id}>
+                    <td style={{ padding: 10, textAlign: "center", background: "#FAFBFC", borderRadius: "12px 0 0 12px" }}>
+                      <div style={{ width: 30, height: 30, borderRadius: "50%", background: "#3B82F6", color: "#fff", fontWeight: 800, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto" }}>{i + 1}</div>
+                    </td>
+                    <td style={{ padding: 10, background: "#FAFBFC", textAlign: "left" }}>
+                      <b style={{ fontSize: 13.5 }}>{it.name}</b>
+                      {it.matched
+                        ? <span style={{ display: "block", fontFamily: "monospace", color: "#6B7280", fontSize: 11.5 }}>{it.sku || ""}</span>
+                        : <span style={{ display: "inline-block", marginTop: 2, fontSize: 10.5, padding: "2px 8px", borderRadius: 99, background: "#FFFBEB", color: "#B45309", fontWeight: 700 }}>ไม่พบใน StockMaster</span>}
+                    </td>
+                    <td style={{ padding: 10, textAlign: "center", background: "#FAFBFC" }}>{numChip(it.myQty, "#FEE2E2", "#DC2626")}</td>
+                    <td style={{ padding: 10, textAlign: "center", background: "#FAFBFC" }}>{numChip(it.stock, "#FEF3C7", "#B45309")}</td>
+                    <td style={{ padding: 10, textAlign: "center", background: "#FAFBFC" }}>{numChip(it.incQty, "#D1FAE5", "#047857")}</td>
+                    <td style={{ padding: 10, textAlign: "left", background: "#FAFBFC", fontSize: 12, color: "#111827", maxWidth: 180 }}>{it.note ? it.note : <span style={{ color: "#9CA3AF" }}>—</span>}</td>
+                    <td style={{ padding: 10, textAlign: "center", background: "#FAFBFC", borderRadius: "0 12px 12px 0" }}>
+                      <div style={{ display: "flex", gap: 4, justifyContent: "center" }}>
+                        <button onClick={() => editQty(it)} title="แก้ไขจำนวนค้างส่ง" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>✏️</button>
+                        <button onClick={() => editNote(it)} title="แก้ไขหมายเหตุ" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>📝</button>
+                        <button onClick={() => deleteItem(it)} title="ลบรายการนี้" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>🗑️</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ marginTop: 14, background: "#DBEAFE", borderRadius: 14, padding: "12px 18px", textAlign: "center", fontSize: 12, color: "#1E3A8A", fontWeight: 700 }}>
+            🔒 บันทึกนี้ค้างอยู่จนกว่าจะกด "บันทึก" ใหม่จากด้านบน การเช็คสต็อกซ้ำไม่ทับข้อมูลนี้อัตโนมัติ
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ═══════════ พิมพ์แผ่นบาร์โค้ด SKU (รูปใหญ่ + ชื่อ + Code128) ไว้ติดที่ช่องเก็บสินค้า ═══════════
 function LabelSheetPanel({ products }) {
   const [q, setQ] = useState("");
@@ -3932,7 +4166,7 @@ export default function WarehouseApp() {
   };
   const stockSubTabs = tab === "stockcheck" ? (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
-      {[["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"], ["labels", "🏷️ แผ่นบาร์โค้ด"], ["dispose", "🗑️ จำหน่ายออก"]].map(([v, l]) => {
+      {[["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"], ["labels", "🏷️ แผ่นบาร์โค้ด"], ["backlog", "📋 บันทึกค้างส่ง"], ["dispose", "🗑️ จำหน่ายออก"]].map(([v, l]) => {
         const on = v !== "print" && stockSub === v;
         return (
           <button key={v} onClick={() => goStockSub(v)}
@@ -4482,6 +4716,12 @@ export default function WarehouseApp() {
           <div>
             {stockSubTabs}
             <LabelSheetPanel products={products} />
+          </div>
+        )}
+        {tab === "stockcheck" && stockSub === "backlog" && (
+          <div>
+            {stockSubTabs}
+            <BacklogNotesPanel products={products} showToast={showToast} />
           </div>
         )}
         {tab === "stockcheck" && stockSub === "orders" && !scansUnlocked && (
