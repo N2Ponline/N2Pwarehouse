@@ -2181,6 +2181,27 @@ function code128Svg(text, { height = 44, module = 2, fontSize = 12 } = {}) {
 }
 
 const pickName = (s) => String(s || "").replace(/\s+/g, " ").trim();
+
+// พิมพ์ HTML ผ่าน iframe ที่ซ่อนอยู่ในหน้าเดิม แทน window.open("", "_blank")
+// เพราะ window.open มักถูกเบราว์เซอร์บล็อกแบบเงียบๆ (คืนค่า null โดยไม่มี error/แจ้งเตือนใดๆ)
+// ทำให้กดพิมพ์แล้วไม่มีอะไรเกิดขึ้นเลย — iframe ในหน้าเดิมไม่ต้องขอสิทธิ์ popup จึงพิมพ์ได้เสมอ
+function printHtmlInPlace(html) {
+  const iframe = document.createElement("iframe");
+  iframe.setAttribute("aria-hidden", "true");
+  iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden;";
+  document.body.appendChild(iframe);
+  const remove = () => { try { document.body.removeChild(iframe); } catch {} };
+  iframe.onload = () => {
+    try {
+      iframe.contentWindow.focus();
+      iframe.contentWindow.onafterprint = remove;
+      iframe.contentWindow.print();
+    } catch (e) { remove(); return; }
+    setTimeout(remove, 20000); // กันไว้เผื่อ afterprint ไม่ยิงในบางเบราว์เซอร์
+  };
+  const doc = iframe.contentDocument || iframe.contentWindow.document;
+  doc.open(); doc.write(html); doc.close();
+}
 const PICK_SETUP_HINT = "ยังไม่ได้ตั้งค่าฐานข้อมูล — รันไฟล์ scan-verify-setup.sql ใน Supabase SQL Editor ก่อน (เพิ่มคอลัมน์ pick_* ใน order_scans และตาราง product_aliases)";
 const isSetupError = (e) => /pick_|product_aliases|schema cache|PGRST20/i.test(String(e?.message || e));
 
@@ -2768,10 +2789,8 @@ function LabelSheetPanel({ products }) {
   ${compact ? ".label { padding: 2mm 1.5mm; justify-content: center; } .name { margin-top: 0; min-height: 2.5em; display: flex; align-items: center; } .meta { font-size: 7.5pt; }" : ""}
   @media print { .label { border-color: #bbb; } }
 </style></head><body><div class="grid">${cells}</div>
-<script>window.onload = () => setTimeout(() => window.print(), 400);</script></body></html>`;
-    const win = window.open("", "_blank");
-    if (!win) return;
-    win.document.open(); win.document.write(html); win.document.close();
+</body></html>`;
+    printHtmlInPlace(html);
   };
 
   return (
