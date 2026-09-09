@@ -2755,7 +2755,7 @@ function LabelSheetPanel({ products }) {
 <style>
   ${page}
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Sarabun', 'Tahoma', sans-serif; color: #000; }
+  body { font-family: 'Sarabun', 'Tahoma', sans-serif; color: #000; background: #fff; color-scheme: light; }
   .grid { display: grid; ${grid} gap: 3mm; }
   .label { border: 0.4mm dashed #999; border-radius: 2mm; padding: 2.5mm; display: flex; flex-direction: column; align-items: center; text-align: center; page-break-inside: avoid; break-inside: avoid; overflow: hidden; }
   .img { height: ${imgH}; width: 100%; display: flex; align-items: center; justify-content: center; }
