@@ -68,6 +68,8 @@ const api = {
   saveBacklogNotes: (items) => sb("backlog_notes?on_conflict=id", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ id: 1, items, saved_at: new Date().toISOString() }) }),
   // แก้ไข/ลบ/ใส่หมายเหตุทีละรายการ — ไม่แตะ saved_at (ไม่ใช่การบันทึกใหม่ แค่แก้ของเดิม)
   patchBacklogNoteItems: (items) => sb("backlog_notes?id=eq.1", { method: "PATCH", body: JSON.stringify({ items }) }),
+  // โน้ตข้อความเดียวอยู่บนสุดของหน้า (ฝากถึงฝ่ายอื่น) แยกจากรายการสินค้า — ต้องรัน sql/backlog-notes-add-note-column.sql ก่อน
+  updateBacklogNote: (note) => sb("backlog_notes?id=eq.1", { method: "PATCH", body: JSON.stringify({ note }) }),
 };
 
 const dbToProduct = (r) => ({
@@ -2814,6 +2816,9 @@ function BacklogNotesPanel({ products, showToast }) {
   const [saved, setSaved] = useState(undefined); // undefined = กำลังโหลด, null = ยังไม่เคยบันทึก
   const [saving, setSaving] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set()); // ติ๊กเลือกหลายรายการในตารางบันทึก เพื่อลบพร้อมกัน
+  const [editingNote, setEditingNote] = useState(false);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
 
   useEffect(() => {
     api.getAliases().then(rows2 => {
@@ -2924,11 +2929,10 @@ function BacklogNotesPanel({ products, showToast }) {
     if (rows == null) return;
     setSaving(true);
     try {
-      const oldNotes = new Map((saved?.items || []).map(it => [it.id, it.note || ""]));
       const items = [
         // บันทึกเฉพาะ "ค้างส่ง (สต็อกไม่มีของ)" — ของที่มีสต็อกอยู่แล้วไปหยิบส่งได้เลย ไม่ต้องมาโน้ตไว้
-        ...noStock.map(r => ({ id: String(r.p.id), name: r.p.name, sku: r.p.sku, myQty: r.my, stock: r.stock, incQty: r.inc, matched: true, note: oldNotes.get(String(r.p.id)) || "" })),
-        ...unmatched.map(u => ({ id: "u:" + u.name, name: u.name, sku: null, myQty: u.qty, stock: null, incQty: null, matched: false, note: oldNotes.get("u:" + u.name) || "" })),
+        ...noStock.map(r => ({ id: String(r.p.id), name: r.p.name, sku: r.p.sku, myQty: r.my, stock: r.stock, incQty: r.inc, matched: true })),
+        ...unmatched.map(u => ({ id: "u:" + u.name, name: u.name, sku: null, myQty: u.qty, stock: null, incQty: null, matched: false })),
       ];
       const row = await api.saveBacklogNotes(items);
       setSaved(Array.isArray(row) ? row[0] : row);
@@ -2951,11 +2955,6 @@ function BacklogNotesPanel({ products, showToast }) {
     if (!Number.isFinite(num) || num < 0) { window.alert("กรุณาใส่ตัวเลขจำนวนเต็มที่ถูกต้อง"); return; }
     updateSavedItems(saved.items.map(x => x.id === it.id ? { ...x, myQty: num } : x));
   };
-  const editNote = (it) => {
-    const v = window.prompt(`หมายเหตุสำหรับ "${it.name}"`, it.note || "");
-    if (v == null) return;
-    updateSavedItems(saved.items.map(x => x.id === it.id ? { ...x, note: v.trim() } : x));
-  };
   const deleteItem = (it) => {
     if (!window.confirm(`ลบ "${it.name}" ออกจากบันทึกนี้ใช่ไหม?`)) return;
     updateSavedItems(saved.items.filter(x => x.id !== it.id));
@@ -2967,6 +2966,20 @@ function BacklogNotesPanel({ products, showToast }) {
     if (!window.confirm(`ลบ ${selectedIds.size} รายการที่เลือกออกจากบันทึกนี้ใช่ไหม?`)) return;
     updateSavedItems(saved.items.filter(x => !selectedIds.has(x.id)));
     setSelectedIds(new Set());
+  };
+
+  // โน้ตข้อความเดียวฝากถึงฝ่ายอื่น (ไม่ผูกกับรายการสินค้าไหนโดยเฉพาะ) — แก้ไขได้ทันทีไม่ต้องรอ "บันทึก" จากการเทียบข้อมูล
+  const openEditNote = () => { setNoteDraft(saved?.note || ""); setEditingNote(true); };
+  const saveNote = async () => {
+    setSavingNote(true);
+    try {
+      await api.updateBacklogNote(noteDraft);
+      setSaved(prev => ({ ...(prev || {}), note: noteDraft }));
+      setEditingNote(false);
+      showToast("บันทึกโน้ตแล้ว");
+    } catch (e) {
+      showToast("บันทึกโน้ตไม่สำเร็จ: " + e.message, "error");
+    } finally { setSavingNote(false); }
   };
 
   const numChip = (v, bg, fg) => v == null
@@ -3108,10 +3121,6 @@ function BacklogNotesPanel({ products, showToast }) {
 
       {saved === undefined ? (
         <div style={{ textAlign: "center", padding: 30, color: "#9CA3AF", fontSize: 13 }}>⏳ กำลังโหลดบันทึก...</div>
-      ) : !saved || !Array.isArray(saved.items) || saved.items.length === 0 ? (
-        <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 32, color: "#9CA3AF", fontSize: 13 }}>
-          ยังไม่มีบันทึก — วางข้อมูลด้านบน กด "เทียบข้อมูลสินค้า" แล้วกด "บันทึก"
-        </div>
       ) : (
         <>
           <div style={{ background: "linear-gradient(135deg,#4F46E5,#9333EA)", borderRadius: 20, padding: "20px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, flexWrap: "wrap", marginBottom: 16, boxShadow: "0 8px 24px rgba(79,70,229,.25)" }}>
@@ -3119,15 +3128,47 @@ function BacklogNotesPanel({ products, showToast }) {
               <div style={{ width: 52, height: 52, borderRadius: 16, background: "rgba(255,255,255,.22)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24 }}>📋📦</div>
               <div>
                 <div style={{ color: "#fff", fontSize: 20, fontWeight: 800 }}>บันทึกสินค้าค้างส่ง</div>
-                <div style={{ color: "rgba(255,255,255,.85)", fontSize: 12, marginTop: 2 }}>แก้ไข/ลบ/ใส่หมายเหตุทีละรายการได้ — ทุกคนเห็นบันทึกเดียวกัน</div>
+                <div style={{ color: "rgba(255,255,255,.85)", fontSize: 12, marginTop: 2 }}>แก้ไข/ลบรายการได้ — ทุกคนเห็นบันทึกเดียวกัน</div>
               </div>
             </div>
-            <div style={{ background: "#FDE68A", borderRadius: 14, padding: "8px 16px", textAlign: "center" }}>
-              <div style={{ color: "#92400E", fontSize: 11, fontWeight: 800 }}>📅 บันทึกล่าสุด</div>
-              <div style={{ background: "#fff", borderRadius: 10, padding: "4px 12px", marginTop: 4, fontWeight: 800, color: "#111827", fontSize: 13, whiteSpace: "nowrap" }}>{fmtDT(saved.saved_at)}</div>
-            </div>
+            {saved?.saved_at && (
+              <div style={{ background: "#FDE68A", borderRadius: 14, padding: "8px 16px", textAlign: "center" }}>
+                <div style={{ color: "#92400E", fontSize: 11, fontWeight: 800 }}>📅 บันทึกล่าสุด</div>
+                <div style={{ background: "#fff", borderRadius: 10, padding: "4px 12px", marginTop: 4, fontWeight: 800, color: "#111827", fontSize: 13, whiteSpace: "nowrap" }}>{fmtDT(saved.saved_at)}</div>
+              </div>
+            )}
           </div>
 
+          {/* ── โน้ตข้อความเดียวฝากถึงฝ่ายอื่น อยู่บนสุด ไม่ผูกกับรายการไหน ── */}
+          {!editingNote ? (
+            <div style={{ background: saved?.note ? "#FFFBEB" : "#F8FAF9", border: saved?.note ? "1.5px solid #FDE68A" : "1px dashed #D1D5DB", borderRadius: 14, padding: "12px 16px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 11, fontWeight: 800, color: saved?.note ? "#92400E" : "#9CA3AF", marginBottom: 4 }}>📌 โน้ตถึงฝ่ายอื่น</div>
+                {saved?.note
+                  ? <div style={{ fontSize: 13, color: "#78350F", whiteSpace: "pre-wrap" }}>{saved.note}</div>
+                  : <div style={{ fontSize: 12.5, color: "#9CA3AF" }}>ยังไม่มีโน้ต — กด "แก้ไข" เพื่อฝากข้อความถึงฝ่ายอื่น</div>}
+              </div>
+              <button onClick={openEditNote} style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 9, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>✏️ แก้ไข</button>
+            </div>
+          ) : (
+            <div style={{ background: "#FFFBEB", border: "1.5px solid #FDE68A", borderRadius: 14, padding: "12px 16px", marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 800, color: "#92400E", marginBottom: 6 }}>📌 โน้ตถึงฝ่ายอื่น</div>
+              <textarea value={noteDraft} onChange={e => setNoteDraft(e.target.value)} rows={3} autoFocus
+                placeholder="พิมพ์ข้อความฝากไว้ให้ฝ่ายอื่นอ่าน..."
+                style={{ width: "100%", border: "1px solid #FDE68A", borderRadius: 8, padding: 8, fontSize: 13, fontFamily: "inherit", resize: "vertical", boxSizing: "border-box" }} />
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button onClick={saveNote} disabled={savingNote} style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 9, padding: "7px 14px", fontSize: 12.5, fontWeight: 700, cursor: savingNote ? "default" : "pointer", opacity: savingNote ? 0.6 : 1 }}>{savingNote ? "กำลังบันทึก..." : "บันทึกโน้ต"}</button>
+                <button onClick={() => setEditingNote(false)} style={{ background: "#F3F4F6", border: "none", borderRadius: 9, padding: "7px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>ยกเลิก</button>
+              </div>
+            </div>
+          )}
+
+          {!saved || !Array.isArray(saved.items) || saved.items.length === 0 ? (
+            <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 32, color: "#9CA3AF", fontSize: 13 }}>
+              ยังไม่มีบันทึกรายการ — วางข้อมูลด้านบน กด "เทียบข้อมูลสินค้า" แล้วกด "บันทึก"
+            </div>
+          ) : (
+          <>
           {selectedIds.size > 0 && (
             <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 12, padding: "8px 14px", marginBottom: 10 }}>
               <span style={{ fontSize: 12.5, color: "#991B1B", fontWeight: 700 }}>เลือกแล้ว {selectedIds.size} รายการ</span>
@@ -3158,11 +3199,6 @@ function BacklogNotesPanel({ products, showToast }) {
                       <div style={{ width: 30, height: 30, borderRadius: "50%", background: "#3B82F6", color: "#fff", fontWeight: 800, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto" }}>{i + 1}</div>
                     </td>
                     <td style={{ padding: 10, background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC", textAlign: "left" }}>
-                      {it.note && (
-                        <div style={{ background: "#FFFBEB", border: "1.5px solid #FDE68A", borderRadius: 8, padding: "4px 8px", color: "#92400E", fontWeight: 700, fontSize: 11, marginBottom: 4 }}>
-                          📝 {it.note}
-                        </div>
-                      )}
                       <b style={{ fontSize: 13.5 }}>{it.name}</b>
                       {it.matched
                         ? <span style={{ display: "block", fontFamily: "monospace", color: "#6B7280", fontSize: 11.5 }}>{it.sku || ""}</span>
@@ -3174,7 +3210,6 @@ function BacklogNotesPanel({ products, showToast }) {
                     <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC", borderRadius: "0 12px 12px 0" }}>
                       <div style={{ display: "flex", gap: 4, justifyContent: "center" }}>
                         <button onClick={() => editQty(it)} title="แก้ไขจำนวนค้างส่ง" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>✏️</button>
-                        <button onClick={() => editNote(it)} title="แก้ไขหมายเหตุ" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>📝</button>
                         <button onClick={() => deleteItem(it)} title="ลบรายการนี้" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>🗑️</button>
                       </div>
                     </td>
@@ -3186,6 +3221,8 @@ function BacklogNotesPanel({ products, showToast }) {
           <div style={{ marginTop: 14, background: "#DBEAFE", borderRadius: 14, padding: "12px 18px", textAlign: "center", fontSize: 12, color: "#1E3A8A", fontWeight: 700 }}>
             🔒 บันทึกนี้ค้างอยู่จนกว่าจะกด "บันทึก" ใหม่จากด้านบน การเช็คสต็อกซ้ำไม่ทับข้อมูลนี้อัตโนมัติ
           </div>
+          </>
+          )}
         </>
       )}
     </div>
