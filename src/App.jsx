@@ -2813,6 +2813,7 @@ function BacklogNotesPanel({ products, showToast }) {
   const [manual, setManual] = useState(() => { try { return JSON.parse(localStorage.getItem(BACKLOG_MANUAL_KEY) || "{}"); } catch { return {}; } });
   const [saved, setSaved] = useState(undefined); // undefined = กำลังโหลด, null = ยังไม่เคยบันทึก
   const [saving, setSaving] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set()); // ติ๊กเลือกหลายรายการในตารางบันทึก เพื่อลบพร้อมกัน
 
   useEffect(() => {
     api.getAliases().then(rows2 => {
@@ -2958,6 +2959,14 @@ function BacklogNotesPanel({ products, showToast }) {
   const deleteItem = (it) => {
     if (!window.confirm(`ลบ "${it.name}" ออกจากบันทึกนี้ใช่ไหม?`)) return;
     updateSavedItems(saved.items.filter(x => x.id !== it.id));
+  };
+  const toggleSelect = (id) => setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleSelectAll = () => setSelectedIds(prev => (saved && prev.size === saved.items.length) ? new Set() : new Set((saved?.items || []).map(it => it.id)));
+  const deleteSelected = () => {
+    if (!selectedIds.size) return;
+    if (!window.confirm(`ลบ ${selectedIds.size} รายการที่เลือกออกจากบันทึกนี้ใช่ไหม?`)) return;
+    updateSavedItems(saved.items.filter(x => !selectedIds.has(x.id)));
+    setSelectedIds(new Set());
   };
 
   const numChip = (v, bg, fg) => v == null
@@ -3119,36 +3128,50 @@ function BacklogNotesPanel({ products, showToast }) {
             </div>
           </div>
 
+          {selectedIds.size > 0 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 12, padding: "8px 14px", marginBottom: 10 }}>
+              <span style={{ fontSize: 12.5, color: "#991B1B", fontWeight: 700 }}>เลือกแล้ว {selectedIds.size} รายการ</span>
+              <button onClick={deleteSelected} style={{ background: "#DC2626", color: "#fff", border: "none", borderRadius: 9, padding: "7px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>🗑️ ลบที่เลือก</button>
+              <button onClick={() => setSelectedIds(new Set())} style={{ background: "transparent", border: "none", color: "#991B1B", fontSize: 12.5, cursor: "pointer" }}>ยกเลิก</button>
+            </div>
+          )}
           <div style={{ borderRadius: 18, overflow: "hidden", boxShadow: "0 1px 2px rgba(15,23,42,.04), 0 8px 20px rgba(15,23,42,.05)", border: "1px solid #E5E7EB", background: "#fff", overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 6px", padding: "0 10px 10px" }}>
               <thead>
                 <tr>
-                  {["ลำดับ", "📦 ชื่อสินค้า", "✅ ค้างส่งจาก MyOrder", "📦 สต็อกคงเหลือ", "🚚 สินค้ารอเข้า", "📝 หมายเหตุ", "จัดการ"].map((h, i) => (
-                    <th key={h} style={{
-                      padding: "12px 10px", fontSize: 12, fontWeight: 800, color: "#fff", textAlign: i === 1 || i === 5 ? "left" : "center",
-                      background: ["#3B82F6", "#3B82F6", "#F43F5E", "#F59E0B", "#10B981", "#8B5CF6", "#64748B"][i],
+                  {["", "ลำดับ", "📦 ชื่อสินค้า", "✅ ค้างส่งจาก MyOrder", "📦 สต็อกคงเหลือ", "🚚 สินค้ารอเข้า", "จัดการ"].map((h, i) => (
+                    <th key={i} style={{
+                      padding: "12px 10px", fontSize: 12, fontWeight: 800, color: "#fff", textAlign: i === 2 ? "left" : "center",
+                      background: ["#3B82F6", "#3B82F6", "#3B82F6", "#F43F5E", "#F59E0B", "#10B981", "#64748B"][i],
                       borderRadius: i === 0 ? "12px 0 0 12px" : i === 6 ? "0 12px 12px 0" : 0,
-                    }}>{h}</th>
+                    }}>{i === 0 ? <input type="checkbox" checked={saved.items.length > 0 && selectedIds.size === saved.items.length} onChange={toggleSelectAll} style={{ cursor: "pointer" }} /> : h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {saved.items.map((it, i) => (
-                  <tr key={it.id}>
-                    <td style={{ padding: 10, textAlign: "center", background: "#FAFBFC", borderRadius: "12px 0 0 12px" }}>
+                  <tr key={it.id} style={{ background: selectedIds.has(it.id) ? "#FEF2F2" : undefined }}>
+                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC", borderRadius: "12px 0 0 12px" }}>
+                      <input type="checkbox" checked={selectedIds.has(it.id)} onChange={() => toggleSelect(it.id)} style={{ cursor: "pointer" }} />
+                    </td>
+                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC" }}>
                       <div style={{ width: 30, height: 30, borderRadius: "50%", background: "#3B82F6", color: "#fff", fontWeight: 800, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto" }}>{i + 1}</div>
                     </td>
-                    <td style={{ padding: 10, background: "#FAFBFC", textAlign: "left" }}>
+                    <td style={{ padding: 10, background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC", textAlign: "left" }}>
+                      {it.note && (
+                        <div style={{ background: "#FFFBEB", border: "1.5px solid #FDE68A", borderRadius: 8, padding: "4px 8px", color: "#92400E", fontWeight: 700, fontSize: 11, marginBottom: 4 }}>
+                          📝 {it.note}
+                        </div>
+                      )}
                       <b style={{ fontSize: 13.5 }}>{it.name}</b>
                       {it.matched
                         ? <span style={{ display: "block", fontFamily: "monospace", color: "#6B7280", fontSize: 11.5 }}>{it.sku || ""}</span>
                         : <span style={{ display: "inline-block", marginTop: 2, fontSize: 10.5, padding: "2px 8px", borderRadius: 99, background: "#FFFBEB", color: "#B45309", fontWeight: 700 }}>ไม่พบใน StockMaster</span>}
                     </td>
-                    <td style={{ padding: 10, textAlign: "center", background: "#FAFBFC" }}>{numChip(it.myQty, "#FEE2E2", "#DC2626")}</td>
-                    <td style={{ padding: 10, textAlign: "center", background: "#FAFBFC" }}>{numChip(it.stock, "#FEF3C7", "#B45309")}</td>
-                    <td style={{ padding: 10, textAlign: "center", background: "#FAFBFC" }}>{numChip(it.incQty, "#D1FAE5", "#047857")}</td>
-                    <td style={{ padding: 10, textAlign: "left", background: "#FAFBFC", fontSize: 12, color: "#111827", maxWidth: 180 }}>{it.note ? it.note : <span style={{ color: "#9CA3AF" }}>—</span>}</td>
-                    <td style={{ padding: 10, textAlign: "center", background: "#FAFBFC", borderRadius: "0 12px 12px 0" }}>
+                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC" }}>{numChip(it.myQty, "#FEE2E2", "#DC2626")}</td>
+                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC" }}>{numChip(it.stock, "#FEF3C7", "#B45309")}</td>
+                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC" }}>{numChip(it.incQty, "#D1FAE5", "#047857")}</td>
+                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC", borderRadius: "0 12px 12px 0" }}>
                       <div style={{ display: "flex", gap: 4, justifyContent: "center" }}>
                         <button onClick={() => editQty(it)} title="แก้ไขจำนวนค้างส่ง" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>✏️</button>
                         <button onClick={() => editNote(it)} title="แก้ไขหมายเหตุ" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>📝</button>
