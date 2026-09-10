@@ -2929,10 +2929,12 @@ function BacklogNotesPanel({ products, showToast }) {
     if (rows == null) return;
     setSaving(true);
     try {
+      // รักษาหมายเหตุต่อรายการ + จำนวนรอเข้าที่กรอกเองไว้ (เฉพาะรายการจับคู่ไม่ได้) ถ้ารายการเดิมยังอยู่ในการบันทึกครั้งนี้
+      const oldById = new Map((saved?.items || []).map(it => [it.id, it]));
       const items = [
         // บันทึกเฉพาะ "ค้างส่ง (สต็อกไม่มีของ)" — ของที่มีสต็อกอยู่แล้วไปหยิบส่งได้เลย ไม่ต้องมาโน้ตไว้
-        ...noStock.map(r => ({ id: String(r.p.id), name: r.p.name, sku: r.p.sku, myQty: r.my, stock: r.stock, incQty: r.inc, matched: true })),
-        ...unmatched.map(u => ({ id: "u:" + u.name, name: u.name, sku: null, myQty: u.qty, stock: null, incQty: null, matched: false })),
+        ...noStock.map(r => ({ id: String(r.p.id), name: r.p.name, sku: r.p.sku, myQty: r.my, stock: r.stock, incQty: r.inc, matched: true, itemNote: oldById.get(String(r.p.id))?.itemNote || "" })),
+        ...unmatched.map(u => ({ id: "u:" + u.name, name: u.name, sku: null, myQty: u.qty, stock: null, incQty: oldById.get("u:" + u.name)?.incQty ?? null, matched: false, itemNote: oldById.get("u:" + u.name)?.itemNote || "" })),
       ];
       const row = await api.saveBacklogNotes(items);
       setSaved(Array.isArray(row) ? row[0] : row);
