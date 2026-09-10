@@ -2955,6 +2955,21 @@ function BacklogNotesPanel({ products, showToast }) {
     if (!Number.isFinite(num) || num < 0) { window.alert("กรุณาใส่ตัวเลขจำนวนเต็มที่ถูกต้อง"); return; }
     updateSavedItems(saved.items.map(x => x.id === it.id ? { ...x, myQty: num } : x));
   };
+  // กรอกจำนวน "สินค้ารอเข้า" เองได้ — เฉพาะรายการที่จับคู่กับ StockMaster ไม่ได้ (ไม่มี SKU ให้ดึงยอดจริงมาอัตโนมัติ)
+  const editIncQty = (it) => {
+    const v = window.prompt(`กรอกจำนวนสินค้ารอเข้าของ "${it.name}" (เว้นว่างไว้ถ้าไม่ทราบ)`, it.incQty ?? "");
+    if (v == null) return;
+    const trimmed = String(v).trim();
+    if (trimmed === "") { updateSavedItems(saved.items.map(x => x.id === it.id ? { ...x, incQty: null } : x)); return; }
+    const num = parseInt(trimmed.replace(/[^\d]/g, ""), 10);
+    if (!Number.isFinite(num) || num < 0) { window.alert("กรุณาใส่ตัวเลขจำนวนเต็มที่ถูกต้อง"); return; }
+    updateSavedItems(saved.items.map(x => x.id === it.id ? { ...x, incQty: num } : x));
+  };
+  const editItemNote = (it) => {
+    const v = window.prompt(`หมายเหตุสำหรับ "${it.name}"`, it.itemNote || "");
+    if (v == null) return;
+    updateSavedItems(saved.items.map(x => x.id === it.id ? { ...x, itemNote: v.trim() } : x));
+  };
   const deleteItem = (it) => {
     if (!window.confirm(`ลบ "${it.name}" ออกจากบันทึกนี้ใช่ไหม?`)) return;
     updateSavedItems(saved.items.filter(x => x.id !== it.id));
@@ -3180,11 +3195,11 @@ function BacklogNotesPanel({ products, showToast }) {
             <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 6px", padding: "0 10px 10px" }}>
               <thead>
                 <tr>
-                  {["", "ลำดับ", "📦 ชื่อสินค้า", "✅ ค้างส่งจาก MyOrder", "📦 สต็อกคงเหลือ", "🚚 สินค้ารอเข้า", "จัดการ"].map((h, i) => (
+                  {["", "ลำดับ", "📦 ชื่อสินค้า", "✅ ค้างส่งจาก MyOrder", "📦 สต็อกคงเหลือ", "🚚 สินค้ารอเข้า", "📝 หมายเหตุ", "จัดการ"].map((h, i) => (
                     <th key={i} style={{
-                      padding: "12px 10px", fontSize: 12, fontWeight: 800, color: "#fff", textAlign: i === 2 ? "left" : "center",
-                      background: ["#3B82F6", "#3B82F6", "#3B82F6", "#F43F5E", "#F59E0B", "#10B981", "#64748B"][i],
-                      borderRadius: i === 0 ? "12px 0 0 12px" : i === 6 ? "0 12px 12px 0" : 0,
+                      padding: "12px 10px", fontSize: 12, fontWeight: 800, color: "#fff", textAlign: i === 2 || i === 6 ? "left" : "center",
+                      background: ["#3B82F6", "#3B82F6", "#3B82F6", "#F43F5E", "#F59E0B", "#10B981", "#8B5CF6", "#64748B"][i],
+                      borderRadius: i === 0 ? "12px 0 0 12px" : i === 7 ? "0 12px 12px 0" : 0,
                     }}>{i === 0 ? <input type="checkbox" checked={saved.items.length > 0 && selectedIds.size === saved.items.length} onChange={toggleSelectAll} style={{ cursor: "pointer" }} /> : h}</th>
                   ))}
                 </tr>
@@ -3206,10 +3221,21 @@ function BacklogNotesPanel({ products, showToast }) {
                     </td>
                     <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC" }}>{numChip(it.myQty, "#FEE2E2", "#DC2626")}</td>
                     <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC" }}>{numChip(it.stock, "#FEF3C7", "#B45309")}</td>
-                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC" }}>{numChip(it.incQty, "#D1FAE5", "#047857")}</td>
+                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC" }}>
+                      {it.matched ? numChip(it.incQty, "#D1FAE5", "#047857") : (
+                        <button onClick={() => editIncQty(it)} title="กรอกจำนวนรอเข้าเอง (ไม่มี SKU ให้ดึงยอดจริงอัตโนมัติ)"
+                          style={{ display: "inline-block", borderRadius: 10, padding: "6px 14px", fontWeight: 800, fontSize: 15, fontFamily: "monospace", cursor: "pointer", background: it.incQty != null ? "#D1FAE5" : "#F1F5F9", color: it.incQty != null ? "#047857" : "#94A3B8", border: "1.5px dashed " + (it.incQty != null ? "#6EE7B7" : "#CBD5E1") }}>
+                          {it.incQty != null ? Number(it.incQty).toLocaleString("th-TH") : "+ กรอก"}
+                        </button>
+                      )}
+                    </td>
+                    <td style={{ padding: 10, textAlign: "left", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC", fontSize: 12, color: "#111827", maxWidth: 160 }}>
+                      {it.itemNote ? it.itemNote : <span style={{ color: "#9CA3AF" }}>—</span>}
+                    </td>
                     <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC", borderRadius: "0 12px 12px 0" }}>
                       <div style={{ display: "flex", gap: 4, justifyContent: "center" }}>
                         <button onClick={() => editQty(it)} title="แก้ไขจำนวนค้างส่ง" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>✏️</button>
+                        <button onClick={() => editItemNote(it)} title="แก้ไขหมายเหตุ" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>📝</button>
                         <button onClick={() => deleteItem(it)} title="ลบรายการนี้" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>🗑️</button>
                       </div>
                     </td>
