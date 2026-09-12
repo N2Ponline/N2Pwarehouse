@@ -2878,8 +2878,9 @@ function BacklogNotesPanel({ products, showToast }) {
       const pid = String(r.p.id);
       let h = history[pid];
       if (r.oldestOrderDate) {
-        if (!h || r.oldestOrderDate < h.firstSeen) h = { firstSeen: r.oldestOrderDate, lastSeen: scanDate, lastQty: r.my, source: "order" };
-        else { if (scanDate > h.lastSeen) h.lastSeen = scanDate; h.lastQty = r.my; h.source = "order"; }
+        // เชื่อวันที่สั่งซื้อจากรายการล่าสุดที่วางเสมอ (ไม่จำวันเก่าที่สุดไว้ตลอดแบบเดิม) — ถ้าของค้างรอบก่อนถูกส่งไปแล้ว
+        // แล้ววันนี้วางรายการใหม่ อายุจะเริ่มนับจากวันที่สั่งซื้อของรอบล่าสุดทันที ไม่ต้องกด ↺ เอง
+        h = { firstSeen: r.oldestOrderDate, lastSeen: scanDate, lastQty: r.my, source: "order" };
       } else {
         if (!h) h = { firstSeen: scanDate, lastSeen: scanDate, lastQty: r.my, source: "scan" };
         else { if (scanDate < h.firstSeen) h.firstSeen = scanDate; if (scanDate > h.lastSeen) h.lastSeen = scanDate; h.lastQty = r.my; }
