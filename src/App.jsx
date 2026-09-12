@@ -2802,7 +2802,8 @@ const backlogAgeBg = (age) => age >= 14 ? "#FEE2E2" : age >= 5 ? "#FEF3C7" : "#F
 
 // ═══════════ บันทึกสินค้าค้างส่ง — วางรายการจาก MyOrder เทียบกับสต็อก/รอเข้าจริงแบบเต็ม (เหมือนหน้าหลักของเครื่องมือ backlog-check) แล้วบันทึกเฉพาะ "ค้างส่ง (สต็อกไม่มีของ)" + ที่จับคู่กับคลังไม่ได้ ไว้เป็นโน้ตกันตกหล่น ═══════════
 // เก็บที่ตาราง backlog_notes แถวเดียว id=1 (jsonb) ให้ทุกคน/ทุกเครื่องเห็นตรงกัน (ต้องรัน backlog-notes-setup.sql ก่อนถึงจะใช้ได้)
-// บันทึกด้วยมือเท่านั้น (กดปุ่ม) กันคนเช็คสต็อกซ้ำแล้วข้อมูลเก่าถูกทับโดยไม่ตั้งใจ — แก้ไข/ลบ/ใส่หมายเหตุทีละรายการได้โดยไม่กระทบวันที่บันทึกล่าสุด
+// บันทึกอัตโนมัติทุกครั้งที่กด "เทียบข้อมูลสินค้า" สำเร็จ (ไม่ต้องกดปุ่ม "บันทึก" แยกอีกต่อไป — ปุ่มยังอยู่ไว้กดบันทึกซ้ำเองได้เผื่อบันทึกอัตโนมัติล้มเหลว)
+// แก้ไข/ลบ/ใส่หมายเหตุทีละรายการได้โดยไม่กระทบวันที่บันทึกล่าสุด, การบันทึกซ้ำ (อัตโนมัติหรือกดเอง) จะไม่ทับหมายเหตุ/จำนวนรอเข้าที่กรอกเองไว้ (merge จาก saved.items เดิมเสมอ)
 function BacklogNotesPanel({ products, showToast }) {
   const [paste, setPaste] = useState("");
   const [parseInfo, setParseInfo] = useState("");
@@ -2873,27 +2874,30 @@ function BacklogNotesPanel({ products, showToast }) {
     });
 
     let history = {}; try { history = JSON.parse(localStorage.getItem(BACKLOG_AGE_HISTORY_KEY) || "{}"); } catch {}
+    // ใช้ร่วมกันทั้งรายการที่จับคู่ได้ (คีย์ = product id) และจับคู่ไม่ได้ (คีย์ = "u:"+ชื่อ) เพื่อให้ "ค้างมา (วัน)"
+    // คำนวณด้วยกติกาเดียวกันทั้งคู่ — เชื่อวันที่สั่งซื้อจากรายการล่าสุดที่วางเสมอ ไม่จำวันเก่าที่สุดไว้ตลอด
+    // (ของค้างรอบก่อนถูกส่งไปแล้ว วางรายการใหม่ อายุเริ่มนับจากวันที่สั่งซื้อรอบล่าสุดทันที ไม่ต้องกด ↺ เอง)
+    const mergeAge = (key, orderDate, qty) => {
+      let h = history[key];
+      if (orderDate) h = { firstSeen: orderDate, lastSeen: scanDate, lastQty: qty, source: "order" };
+      else if (!h) h = { firstSeen: scanDate, lastSeen: scanDate, lastQty: qty, source: "scan" };
+      else { if (scanDate < h.firstSeen) h.firstSeen = scanDate; if (scanDate > h.lastSeen) h.lastSeen = scanDate; h.lastQty = qty; }
+      history[key] = h;
+      const age = Math.max(0, Math.floor((new Date(todayStr() + "T00:00:00") - new Date(h.firstSeen + "T00:00:00")) / 86400000));
+      return { age, firstSeen: h.firstSeen, dateIsReal: h.source === "order" };
+    };
     const built = [...per.values()].filter(r => r.p && r.my > 0).map(r => {
       const stock = Number(r.p.quantity) || 0;
-      const pid = String(r.p.id);
-      let h = history[pid];
-      if (r.oldestOrderDate) {
-        // เชื่อวันที่สั่งซื้อจากรายการล่าสุดที่วางเสมอ (ไม่จำวันเก่าที่สุดไว้ตลอดแบบเดิม) — ถ้าของค้างรอบก่อนถูกส่งไปแล้ว
-        // แล้ววันนี้วางรายการใหม่ อายุจะเริ่มนับจากวันที่สั่งซื้อของรอบล่าสุดทันที ไม่ต้องกด ↺ เอง
-        h = { firstSeen: r.oldestOrderDate, lastSeen: scanDate, lastQty: r.my, source: "order" };
-      } else {
-        if (!h) h = { firstSeen: scanDate, lastSeen: scanDate, lastQty: r.my, source: "scan" };
-        else { if (scanDate < h.firstSeen) h.firstSeen = scanDate; if (scanDate > h.lastSeen) h.lastSeen = scanDate; h.lastQty = r.my; }
-      }
-      history[pid] = h;
-      const age = Math.max(0, Math.floor((new Date(todayStr() + "T00:00:00") - new Date(h.firstSeen + "T00:00:00")) / 86400000));
-      return { ...r, stock, over: stock > 0, inc: r.p.qtyOnOrder || 0, incSrc: r.p.incomingSources || [], firstSeen: h.firstSeen, dateIsReal: h.source === "order", age };
+      const ageInfo = mergeAge(String(r.p.id), r.oldestOrderDate, r.my);
+      return { ...r, stock, over: stock > 0, inc: r.p.qtyOnOrder || 0, incSrc: r.p.incomingSources || [], ...ageInfo };
     });
+    const umAged = um.map(u => ({ ...u, ...mergeAge("u:" + u.name, u.orderDate, u.qty) }));
     try { localStorage.setItem(BACKLOG_AGE_HISTORY_KEY, JSON.stringify(history)); } catch {}
 
     built.sort((a, b) => (b.over - a.over) || b.my - a.my);
     setRows(built);
-    setUnmatched(um);
+    setUnmatched(umAged);
+    saveItems(buildSaveItems(built, umAged), "บันทึกอัตโนมัติแล้ว");
   };
 
   // จับคู่เอง/แก้ไขวันครั้งไหนแล้ว เทียบใหม่อัตโนมัติให้เห็นผลทันที (ถ้าเคยกดเทียบไปแล้วรอบนี้)
@@ -2926,24 +2930,33 @@ function BacklogNotesPanel({ products, showToast }) {
   }, [rows, over, noStock, filterMode, sortCol, sortDir]);
   const toggleSort = (col) => { if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortCol(col); setSortDir(col === "name" ? "asc" : "desc"); } };
 
-  const doSave = async () => {
-    if (rows == null) return;
+  // รักษาหมายเหตุต่อรายการ + จำนวนรอเข้าที่กรอกเองไว้ (เฉพาะรายการจับคู่ไม่ได้) ถ้ารายการเดิมยังอยู่ในการบันทึกครั้งนี้
+  // บันทึกเฉพาะ "ค้างส่ง (สต็อกไม่มีของ)" — ของที่มีสต็อกอยู่แล้วไปหยิบส่งได้เลย ไม่ต้องมาโน้ตไว้ — พร้อมแนบ "ค้างมา (วัน)" ของแต่ละรายการไว้ด้วย
+  const buildSaveItems = (builtRows, umRows) => {
+    const oldById = new Map((saved?.items || []).map(it => [it.id, it]));
+    return [
+      ...builtRows.filter(r => !r.over).map(r => ({
+        id: String(r.p.id), name: r.p.name, sku: r.p.sku, myQty: r.my, stock: r.stock, incQty: r.inc, matched: true,
+        itemNote: oldById.get(String(r.p.id))?.itemNote || "", age: r.age, firstSeen: r.firstSeen, dateIsReal: r.dateIsReal,
+      })),
+      ...umRows.map(u => ({
+        id: "u:" + u.name, name: u.name, sku: null, myQty: u.qty, stock: null, incQty: oldById.get("u:" + u.name)?.incQty ?? null, matched: false,
+        itemNote: oldById.get("u:" + u.name)?.itemNote || "", age: u.age, firstSeen: u.firstSeen, dateIsReal: u.dateIsReal,
+      })),
+    ];
+  };
+  // บันทึกลง Supabase — เรียกอัตโนมัติทุกครั้งที่กด "เทียบข้อมูลสินค้า" สำเร็จ (ไม่ต้องกดปุ่ม "บันทึก" แยกอีกต่อไป)
+  const saveItems = async (items, toastMsg) => {
     setSaving(true);
     try {
-      // รักษาหมายเหตุต่อรายการ + จำนวนรอเข้าที่กรอกเองไว้ (เฉพาะรายการจับคู่ไม่ได้) ถ้ารายการเดิมยังอยู่ในการบันทึกครั้งนี้
-      const oldById = new Map((saved?.items || []).map(it => [it.id, it]));
-      const items = [
-        // บันทึกเฉพาะ "ค้างส่ง (สต็อกไม่มีของ)" — ของที่มีสต็อกอยู่แล้วไปหยิบส่งได้เลย ไม่ต้องมาโน้ตไว้
-        ...noStock.map(r => ({ id: String(r.p.id), name: r.p.name, sku: r.p.sku, myQty: r.my, stock: r.stock, incQty: r.inc, matched: true, itemNote: oldById.get(String(r.p.id))?.itemNote || "" })),
-        ...unmatched.map(u => ({ id: "u:" + u.name, name: u.name, sku: null, myQty: u.qty, stock: null, incQty: oldById.get("u:" + u.name)?.incQty ?? null, matched: false, itemNote: oldById.get("u:" + u.name)?.itemNote || "" })),
-      ];
       const row = await api.saveBacklogNotes(items);
       setSaved(Array.isArray(row) ? row[0] : row);
-      showToast(`บันทึกแล้ว ${items.length} รายการ`);
+      if (toastMsg) showToast(`${toastMsg} (${items.length} รายการ)`);
     } catch (e) {
       showToast("บันทึกไม่สำเร็จ: " + e.message, "error");
     } finally { setSaving(false); }
   };
+  const doSave = async () => { if (rows != null) await saveItems(buildSaveItems(rows, unmatched), "บันทึกแล้ว"); };
 
   const updateSavedItems = async (nextItems) => {
     const prevSaved = saved;
@@ -3027,7 +3040,7 @@ function BacklogNotesPanel({ products, showToast }) {
     <div>
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16, marginBottom: 14 }}>
         <h2 style={{ fontSize: 18, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📋 บันทึกสินค้าค้างส่ง</h2>
-        <p style={{ fontSize: 12.5, color: "#6B7280", marginBottom: 10 }}>วางรายการจาก MyOrder (ปุ่ม "คัดลอกรายการสินค้า" ใน extension) เทียบกับสต็อก/รอเข้าจริง แล้วกด "บันทึก" เพื่อเก็บเฉพาะของที่<b>ไม่มีสต็อกเลย</b> + ที่จับคู่กับคลังไม่ได้ ไว้เป็นโน้ตกันตกหล่น — บันทึกด้วยมือเท่านั้น เช็คสต็อกซ้ำไม่ทับของเดิม ทุกคนที่เข้าเว็บนี้เห็นบันทึกเดียวกัน</p>
+        <p style={{ fontSize: 12.5, color: "#6B7280", marginBottom: 10 }}>วางรายการจาก MyOrder (ปุ่ม "คัดลอกรายการสินค้า" ใน extension) แล้วกด "เทียบข้อมูลสินค้า" — ระบบจะบันทึกเฉพาะของที่<b>ไม่มีสต็อกเลย</b> + ที่จับคู่กับคลังไม่ได้ ไว้เป็นโน้ตกันตกหล่น<b>ให้อัตโนมัติทันที</b> พร้อมจำนวนวันที่ค้าง ทุกคนที่เข้าเว็บนี้เห็นบันทึกเดียวกัน</p>
         <textarea value={paste} onChange={e => setPaste(e.target.value)}
           placeholder={"เช่น\nที่เกี่ยวขาแว่นกันหล่น\t480 ชิ้น\nชั้นเสียบครีมติดผนัง\t204 ชิ้น"}
           style={{ width: "100%", minHeight: 130, border: "1px solid #E5E7EB", borderRadius: 10, padding: 10, fontSize: 13, fontFamily: "inherit", resize: "vertical" }} />
@@ -3183,7 +3196,7 @@ function BacklogNotesPanel({ products, showToast }) {
 
           {!saved || !Array.isArray(saved.items) || saved.items.length === 0 ? (
             <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 32, color: "#9CA3AF", fontSize: 13 }}>
-              ยังไม่มีบันทึกรายการ — วางข้อมูลด้านบน กด "เทียบข้อมูลสินค้า" แล้วกด "บันทึก"
+              ยังไม่มีบันทึกรายการ — วางข้อมูลด้านบนแล้วกด "เทียบข้อมูลสินค้า" ระบบจะบันทึกให้อัตโนมัติ
             </div>
           ) : (
           <>
@@ -3198,11 +3211,11 @@ function BacklogNotesPanel({ products, showToast }) {
             <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 6px", padding: "0 10px 10px" }}>
               <thead>
                 <tr>
-                  {["", "ลำดับ", "📦 ชื่อสินค้า", "✅ ค้างส่งจาก MyOrder", "📦 สต็อกคงเหลือ", "🚚 สินค้ารอเข้า", "📝 หมายเหตุ", "จัดการ"].map((h, i) => (
+                  {["", "ลำดับ", "📦 ชื่อสินค้า", "✅ ค้างส่งจาก MyOrder", "📦 สต็อกคงเหลือ", "🚚 สินค้ารอเข้า", "⏳ ค้างมา (วัน)", "📝 หมายเหตุ", "จัดการ"].map((h, i) => (
                     <th key={i} style={{
-                      padding: "12px 10px", fontSize: 12, fontWeight: 800, color: "#fff", textAlign: i === 2 || i === 6 ? "left" : "center",
-                      background: ["#3B82F6", "#3B82F6", "#3B82F6", "#F43F5E", "#F59E0B", "#10B981", "#8B5CF6", "#64748B"][i],
-                      borderRadius: i === 0 ? "12px 0 0 12px" : i === 7 ? "0 12px 12px 0" : 0,
+                      padding: "12px 10px", fontSize: 12, fontWeight: 800, color: "#fff", textAlign: i === 2 || i === 7 ? "left" : "center",
+                      background: ["#3B82F6", "#3B82F6", "#3B82F6", "#F43F5E", "#F59E0B", "#10B981", "#EA580C", "#8B5CF6", "#64748B"][i],
+                      borderRadius: i === 0 ? "12px 0 0 12px" : i === 8 ? "0 12px 12px 0" : 0,
                     }}>{i === 0 ? <input type="checkbox" checked={saved.items.length > 0 && selectedIds.size === saved.items.length} onChange={toggleSelectAll} style={{ cursor: "pointer" }} /> : h}</th>
                   ))}
                 </tr>
@@ -3232,6 +3245,14 @@ function BacklogNotesPanel({ products, showToast }) {
                         </button>
                       )}
                     </td>
+                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC" }}>
+                      {it.age == null ? <span style={{ color: "#9CA3AF", fontSize: 11.5 }}>— (บันทึกก่อนหน้า)</span> : (
+                        <span title={`สั่งซื้อวันที่ ${it.firstSeen}${it.dateIsReal ? " (วันที่สั่งซื้อจริง)" : " (ประมาณจากวันที่สแกน)"}`}
+                          style={{ display: "inline-flex", alignItems: "center", gap: 3, background: backlogAgeBg(it.age), color: backlogAgeTone(it.age), borderRadius: 99, padding: "3px 9px", fontWeight: 800, fontSize: 12, fontFamily: "monospace" }}>
+                          {it.age} วัน{it.dateIsReal ? " 📅" : ""}
+                        </span>
+                      )}
+                    </td>
                     <td style={{ padding: 10, textAlign: "left", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC", fontSize: 12, color: "#111827", maxWidth: 160 }}>
                       {it.itemNote ? it.itemNote : <span style={{ color: "#9CA3AF" }}>—</span>}
                     </td>
@@ -3248,7 +3269,7 @@ function BacklogNotesPanel({ products, showToast }) {
             </table>
           </div>
           <div style={{ marginTop: 14, background: "#DBEAFE", borderRadius: 14, padding: "12px 18px", textAlign: "center", fontSize: 12, color: "#1E3A8A", fontWeight: 700 }}>
-            🔒 บันทึกนี้ค้างอยู่จนกว่าจะกด "บันทึก" ใหม่จากด้านบน การเช็คสต็อกซ้ำไม่ทับข้อมูลนี้อัตโนมัติ
+            🔄 บันทึกนี้อัปเดตอัตโนมัติทุกครั้งที่กด "เทียบข้อมูลสินค้า" ด้านบนสำเร็จ (หมายเหตุ/จำนวนรอเข้าที่กรอกเองไว้จะไม่หายไป)
           </div>
           </>
           )}
