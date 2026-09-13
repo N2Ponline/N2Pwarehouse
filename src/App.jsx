@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from "rea
 const SUPABASE_URL = "https://slwbzbnomsugffyzjyuv.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsd2J6Ym5vbXN1Z2ZmeXpqeXV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MjIxMDcsImV4cCI6MjA5NTI5ODEwN30.qG3CPT6J_evddK8qmpF7P3bVswn_Du43MEHo33bUnqA";
 
-// รหัสเข้าดูเมนูย่อย "เช็คออเดอร์" (ใต้แท็บเช็คสต็อก) — เฉพาะผู้จัดการ (กันคนทั่วไปกดเข้าไปโดยไม่ตั้งใจ ไม่ใช่ระบบ auth จริง)
+// รหัสเข้าดูทั้งแท็บ "เช็คสต็อก" (ทุกเมนูย่อย) — เฉพาะผู้จัดการ (กันคนทั่วไปกดเข้าไปโดยไม่ตั้งใจ ไม่ใช่ระบบ auth จริง)
 const ORDER_SCANS_PASSWORD = "168168";
 
 const sb = async (path, opts = {}) => {
@@ -3520,7 +3520,7 @@ export default function WarehouseApp() {
   const [exportingTx, setExportingTx] = useState(false);
   const [stockCheckMode, setStockCheckMode] = useState(false); // โหมดเช็ค/ปรับสต็อก
   const [stockCounts, setStockCounts] = useState({}); // { [productId]: "จำนวนนับจริง" }
-  const [stockSub, setStockSub] = useState("orders"); // เมนูย่อยของ "เช็คสต็อก": orders | adjust | dispose
+  const [stockSub, setStockSub] = useState("orders"); // เมนูย่อยของ "เช็คสต็อก": orders | adjust | print | labels | backlog | reorder | transactions | dispose
   const [checkerName, setCheckerName] = useState(""); // ผู้ตรวจนับ
   const [savingStockCheck, setSavingStockCheck] = useState(false);
   const [reorderDays, setReorderDays] = useState(7); // จำนวนวันที่ต้องการให้สต็อกพอ ในหน้า "ต้องสั่งซื้อ"
@@ -3705,6 +3705,7 @@ export default function WarehouseApp() {
       setTransactions(prev => prev.filter(tx => !selectedForDispose.has(tx.productId)));
       setSelectedForDispose(new Set());
       setDisposeMode(false);
+      loadDisposeRecords();
       showToast(`จำหน่ายออก ${items.length} รายการสำเร็จ บันทึกไว้ในระบบแล้ว`);
     } catch (e) { showToast(e.message, "error"); }
   };
@@ -3764,13 +3765,13 @@ export default function WarehouseApp() {
   }, []);
 
   useEffect(() => { loadAll(); }, [loadAll]);
-  useEffect(() => { if (tab === "dispose") loadDisposeRecords(); }, [tab]);
+  useEffect(() => { if (tab === "stockcheck" && stockSub === "dispose" && scansUnlocked) loadDisposeRecords(); }, [tab, stockSub, scansUnlocked]);
   useEffect(() => { if (tab === "stockcheck" && stockSub === "orders" && scansUnlocked) loadOrderScans(); }, [tab, stockSub, scansUnlocked]);
-  // เมนูย่อยของ "เช็คสต็อก" เป็นตัวกำหนดโหมดของตารางสินค้า — ออกจากแท็บเมื่อไหร่ โหมดดับทั้งคู่
+  // เมนูย่อยของ "เช็คสต็อก" เป็นตัวกำหนดโหมดของตารางสินค้า — ออกจากแท็บเมื่อไหร่โหมดดับ · "จำหน่ายออก" เข้ามาก่อนเห็นเป็นหน้าประวัติ ต้องกดปุ่ม "+ จำหน่ายออกเพิ่ม" เองถึงเข้าโหมดเลือกรายการ (ไม่บังคับอัตโนมัติเหมือนก่อน)
   useEffect(() => {
     const inStock = tab === "stockcheck";
     setStockCheckMode(inStock && stockSub === "adjust");
-    setDisposeMode(inStock && stockSub === "dispose");
+    if (!(inStock && stockSub === "dispose")) setDisposeMode(false);
   }, [tab, stockSub]);
 
   const handleSort = (col) => {
@@ -4576,12 +4577,13 @@ export default function WarehouseApp() {
   };
   const stockSubTabs = tab === "stockcheck" ? (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
-      {[["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"], ["labels", "🏷️ แผ่นบาร์โค้ด"], ["backlog", "📋 บันทึกค้างส่ง"], ["dispose", "🗑️ จำหน่ายออก"]].map(([v, l]) => {
+      {[["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"], ["labels", "🏷️ แผ่นบาร์โค้ด"], ["backlog", "📋 บันทึกค้างส่ง"], ["reorder", "🛒 ต้องสั่งซื้อ"], ["transactions", "🔄 เคลื่อนไหว"], ["dispose", "🗑️ จำหน่ายออก"]].map(([v, l]) => {
         const on = v !== "print" && stockSub === v;
+        const badgeCount = v === "orders" ? unreviewedScanCount : v === "reorder" ? reorderList.length : 0;
         return (
           <button key={v} onClick={() => goStockSub(v)}
             style={{ background: on ? "#7C3AED" : "#fff", color: on ? "#fff" : "#6B7280", border: "1px solid " + (on ? "#7C3AED" : "#E5E7EB"), borderRadius: 10, padding: "8px 16px", fontSize: 13, fontWeight: on ? 700 : 500, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
-            {l}{v === "orders" && unreviewedScanCount > 0 ? ` (${unreviewedScanCount})` : ""}
+            {l}{badgeCount > 0 ? ` (${badgeCount})` : ""}
           </button>
         );
       })}
@@ -4603,8 +4605,8 @@ export default function WarehouseApp() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {[["dashboard","🏠 แดชบอร์ด"],["pick","🎯 ยิงตัดสต๊อก"],["inventory","📦 คลังสินค้า"],["reorder","🛒 ต้องสั่งซื้อ"],["transactions","🔄 เคลื่อนไหว"],["returns","📮 พัสดุตีกลับ"],["dispose","🗑️ จำหน่ายออก"],["stockcheck","🔍 เช็คสต็อก"]].map(([v,l]) => {
-              const badgeCount = v === "reorder" ? reorderList.length : v === "stockcheck" ? unreviewedScanCount : 0;
+            {[["dashboard","🏠 แดชบอร์ด"],["pick","🎯 ยิงตัดสต๊อก"],["inventory","📦 คลังสินค้า"],["returns","📮 พัสดุตีกลับ"],["stockcheck","🔍 เช็คสต็อก"]].map(([v,l]) => {
+              const badgeCount = v === "stockcheck" ? unreviewedScanCount + reorderList.length : 0;
               return (
               <button key={v} onClick={() => setTab(v)}
                 style={{ background: tab === v ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : badgeCount > 0 ? "#FEF2F2" : "transparent", color: tab === v ? "#fff" : badgeCount > 0 ? "#DC2626" : "#6B7280", border: "none", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: tab === v || badgeCount > 0 ? 700 : 400, cursor: "pointer", transition: "all 0.2s" }}>
@@ -4710,7 +4712,7 @@ export default function WarehouseApp() {
         )}
 
         {/* ─── INVENTORY ─── */}
-        {(tab === "inventory" || (tab === "stockcheck" && (stockSub === "adjust" || stockSub === "dispose"))) && (
+        {(tab === "inventory" || (tab === "stockcheck" && scansUnlocked && (stockSub === "adjust" || (stockSub === "dispose" && disposeMode)))) && (
           <div>
             {stockSubTabs}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
@@ -4747,7 +4749,7 @@ export default function WarehouseApp() {
                       style={{ background: "#DC2626", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: selectedForDispose.size === 0 ? "not-allowed" : "pointer", opacity: selectedForDispose.size === 0 ? 0.5 : 1 }}>
                       ✅ ยืนยันจำหน่ายออก
                     </button>
-                    <button onClick={() => { setSelectedForDispose(new Set()); setTab("inventory"); }}
+                    <button onClick={() => { setSelectedForDispose(new Set()); setDisposeMode(false); }}
                       style={{ background: "#F9FAFB", color: "#6B7280", border: "1px solid #E5E7EB", borderRadius: 10, padding: "9px 16px", fontSize: 13, cursor: "pointer" }}>
                       ยกเลิก
                     </button>
@@ -4905,8 +4907,9 @@ export default function WarehouseApp() {
         )}
 
         {/* ─── ต้องสั่งซื้อ ─── */}
-        {tab === "reorder" && (
+        {tab === "stockcheck" && scansUnlocked && stockSub === "reorder" && (
           <div>
+            {stockSubTabs}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
               <div>
                 <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🛒 ต้องสั่งซื้อ</h2>
@@ -4984,8 +4987,9 @@ export default function WarehouseApp() {
         )}
 
         {/* ─── TRANSACTIONS ─── */}
-        {tab === "transactions" && (
+        {tab === "stockcheck" && scansUnlocked && stockSub === "transactions" && (
           <div>
+            {stockSubTabs}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
               <div>
                 <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🔄 รับเข้า - เบิกออก</h2>
@@ -5063,14 +5067,15 @@ export default function WarehouseApp() {
         {tab === "returns" && <ReturnCheckerTab />}
 
         {/* ─── DISPOSE ─── */}
-        {tab === "dispose" && (
+        {tab === "stockcheck" && scansUnlocked && stockSub === "dispose" && !disposeMode && (
           <div>
+            {stockSubTabs}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
               <div>
                 <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🗑️ ประวัติจำหน่ายออก</h2>
                 <p style={{ fontSize: 13, color: "#6B7280" }}>รายการสินค้าที่ตัดออกจากระบบ · มูลค่ารวม ฿{disposeRecords.reduce((s, r) => s + Number(r.total_value || 0), 0).toLocaleString("th-TH")}</p>
               </div>
-              <button onClick={() => { setTab("inventory"); setDisposeMode(true); setSelectedForDispose(new Set()); }}
+              <button onClick={() => { setDisposeMode(true); setSelectedForDispose(new Set()); }}
                 style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
                 ＋ จำหน่ายออกเพิ่ม
               </button>
@@ -5121,27 +5126,14 @@ export default function WarehouseApp() {
           </div>
         )}
 
-        {/* ─── เช็คออเดอร์ (จาก MyOrder extension) — เฉพาะผู้จัดการ ─── */}
-        {tab === "stockcheck" && stockSub === "labels" && (
+        {/* ─── เช็คสต็อกทั้งหมด — เฉพาะผู้จัดการ ต้องปลดล็อกก่อนถึงเห็นเมนูย่อยไหนได้เลย ─── */}
+        {tab === "stockcheck" && !scansUnlocked && (
           <div>
-            {stockSubTabs}
-            <LabelSheetPanel products={products} />
-          </div>
-        )}
-        {tab === "stockcheck" && stockSub === "backlog" && (
-          <div>
-            {stockSubTabs}
-            <BacklogNotesPanel products={products} showToast={showToast} />
-          </div>
-        )}
-        {tab === "stockcheck" && stockSub === "orders" && !scansUnlocked && (
-          <div>
-            {stockSubTabs}
             <div style={{ display: "flex", justifyContent: "center", padding: "60px 20px" }}>
             <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 32, width: "100%", maxWidth: 340, textAlign: "center" }}>
               <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
               <div style={{ fontWeight: 700, fontSize: 15, color: "#111827", marginBottom: 4 }}>หน้านี้เฉพาะผู้จัดการ</div>
-              <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 16 }}>กรุณากรอกรหัสผ่านเพื่อดูยอดตรวจสอบออเดอร์</div>
+              <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 16 }}>กรุณากรอกรหัสผ่านเพื่อดูเมนูเช็คสต็อก</div>
               <input className="inp" type="password" inputMode="numeric" placeholder="รหัสผ่าน"
                 value={scanPasswordInput}
                 onChange={e => { setScanPasswordInput(e.target.value); setScanPasswordError(""); }}
@@ -5156,7 +5148,19 @@ export default function WarehouseApp() {
             </div>
           </div>
         )}
-        {tab === "stockcheck" && stockSub === "orders" && scansUnlocked && (
+        {tab === "stockcheck" && scansUnlocked && stockSub === "labels" && (
+          <div>
+            {stockSubTabs}
+            <LabelSheetPanel products={products} />
+          </div>
+        )}
+        {tab === "stockcheck" && scansUnlocked && stockSub === "backlog" && (
+          <div>
+            {stockSubTabs}
+            <BacklogNotesPanel products={products} showToast={showToast} />
+          </div>
+        )}
+        {tab === "stockcheck" && scansUnlocked && stockSub === "orders" && (
           <div>
             {stockSubTabs}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
