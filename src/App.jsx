@@ -2281,6 +2281,14 @@ const playScanTone = (kind) => {
 
 const pickStatusLabel = (s) => s === "closed" ? "ตัดสต็อกแล้ว" : s === "picking" ? "รอตัดสต็อก" : "ยังไม่เริ่ม";
 const fmtDT = (iso) => iso ? new Date(iso).toLocaleString("th-TH", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "-";
+// ตัวกรองวันที่แบบด่วนของรายการใบหยิบ — "all" ไม่ส่งเงื่อนไขวันที่เลย ที่เหลือคืน [from, to] เป็น YYYY-MM-DD
+const pickDateRangeForPreset = (preset, customFrom, customTo) => {
+  const now = new Date();
+  if (preset === "today") { const d = localDateStr(now); return [d, d]; }
+  if (preset === "yesterday") { const y = new Date(now); y.setDate(y.getDate() - 1); const d = localDateStr(y); return [d, d]; }
+  if (preset === "month") { const from = new Date(now.getFullYear(), now.getMonth(), 1); return [localDateStr(from), localDateStr(now)]; }
+  return [customFrom, customTo]; // "custom"
+};
 const btnStyle = (bg, fg, extra = {}) => ({ background: bg, color: fg, border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer", ...extra });
 
 // ── ฟอร์มจับคู่ "ชื่อ myorder" → SKU × จำนวน (หลายบรรทัดได้สำหรับเซ็ตที่มีหลาย SKU) ──
@@ -2338,9 +2346,10 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   const [editingName, setEditingName] = useState(null);
   const [bulkFor, setBulkFor] = useState(null);      // { pid } กำลังยืนยันปุ่ม "ครบ ✓"
   const [busy, setBusy] = useState(false);
-  const [recentFrom, setRecentFrom] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 6); return localDateStr(d); });
+  const [recentPreset, setRecentPreset] = useState("all"); // "all" | "today" | "yesterday" | "month" | "custom"
+  const [recentFrom, setRecentFrom] = useState(() => localDateStr(new Date()));
   const [recentTo, setRecentTo] = useState(() => localDateStr(new Date()));
-  const [recentShowClosed, setRecentShowClosed] = useState(false); // ติ๊กเพื่อดูใบที่ตัดสต็อกไปแล้วด้วย (เช็คว่ามีออเดอร์ค้างเปิดอยู่ไหม)
+  const [recentStatusFilter, setRecentStatusFilter] = useState("pending"); // "all" | "pending" | "closed"
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth < 900); // จอแคบ (มือถือ/แท็บเล็ต) → คอลัมน์เดียว รูปอยู่บน
   useEffect(() => { const onResize = () => setNarrow(window.innerWidth < 900); window.addEventListener("resize", onResize); return () => window.removeEventListener("resize", onResize); }, []);
   const inputRef = useRef(null);
@@ -2394,14 +2403,23 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   const loadRecent = async () => {
     setLoadingRecent(true);
     try {
-      const fromIso = new Date(recentFrom + "T00:00:00").toISOString();
-      const toIso = new Date(recentTo + "T23:59:59").toISOString();
-      const rows = await api.getOrderScansRange(fromIso, toIso);
-      setRecent(recentShowClosed ? (rows || []) : (rows || []).filter(r => r.pick_status !== "closed"));
+      let rows;
+      if (recentPreset === "all") {
+        rows = await api.getOrderScans();
+      } else {
+        const [from, to] = pickDateRangeForPreset(recentPreset, recentFrom, recentTo);
+        const fromIso = new Date(from + "T00:00:00").toISOString();
+        const toIso = new Date(to + "T23:59:59").toISOString();
+        rows = await api.getOrderScansRange(fromIso, toIso);
+      }
+      const filtered = recentStatusFilter === "all" ? (rows || [])
+        : recentStatusFilter === "closed" ? (rows || []).filter(r => r.pick_status === "closed")
+        : (rows || []).filter(r => r.pick_status !== "closed");
+      setRecent(filtered);
     } catch (e) { showToast(e.message, "error"); }
     setLoadingRecent(false);
   };
-  useEffect(() => { loadRecent(); }, [recentFrom, recentTo, recentShowClosed]);
+  useEffect(() => { loadRecent(); }, [recentPreset, recentFrom, recentTo, recentStatusFilter]);
 
   // โฟกัสช่องยิงค้างไว้เสมอ — ยกเว้นตอนผู้ใช้กำลังพิมพ์ในช่องอื่น หรืออยู่ในฟอร์มจับคู่ (data-nofocus)
   useEffect(() => {
@@ -2602,21 +2620,37 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
 
       {!pick && (
         <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 10 }}>
-            <div style={{ fontWeight: 700, color: "#111827", fontSize: 14 }}>🧾 {recentShowClosed ? "ใบหยิบทั้งหมด" : "ใบหยิบที่ยังไม่ตัดสต็อก (ค้างอยู่)"}</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 12, color: "#6B7280" }}>ช่วงวันที่:</span>
-              <input type="date" className="inp" style={{ padding: "6px 8px", fontSize: 12 }} value={recentFrom} onChange={e => setRecentFrom(e.target.value)} />
-              <span style={{ fontSize: 12, color: "#6B7280" }}>ถึง</span>
-              <input type="date" className="inp" style={{ padding: "6px 8px", fontSize: 12 }} value={recentTo} onChange={e => setRecentTo(e.target.value)} />
-              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#6B7280", cursor: "pointer" }}>
-                <input type="checkbox" checked={recentShowClosed} onChange={e => setRecentShowClosed(e.target.checked)} /> รวมที่ตัดสต็อกแล้ว
-              </label>
-              <button onClick={loadRecent} style={btnStyle("#F3F4F6", "#6B7280")}>🔄 รีเฟรช</button>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
+            <div style={{ fontWeight: 700, color: "#111827", fontSize: 14 }}>
+              🧾 {recentStatusFilter === "closed" ? "ใบหยิบที่ตัดสต็อกแล้ว" : recentStatusFilter === "all" ? "ใบหยิบทั้งหมด" : "ใบหยิบที่ยังไม่ตัดสต็อก (ค้างอยู่)"}
+            </div>
+            <button onClick={loadRecent} style={btnStyle("#F3F4F6", "#6B7280")}>🔄 รีเฟรช</button>
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 18, marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, color: "#6B7280" }}>วันที่:</span>
+              {[["all", "ทั้งหมด"], ["today", "วันนี้"], ["yesterday", "เมื่อวาน"], ["month", "เดือนนี้"], ["custom", "กำหนดเอง"]].map(([v, l]) => (
+                <button key={v} onClick={() => setRecentPreset(v)}
+                  style={{ background: recentPreset === v ? "#7C3AED" : "#F3F4F6", color: recentPreset === v ? "#fff" : "#6B7280", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{l}</button>
+              ))}
+              {recentPreset === "custom" && (
+                <>
+                  <input type="date" className="inp" style={{ padding: "6px 8px", fontSize: 12 }} value={recentFrom} onChange={e => setRecentFrom(e.target.value)} />
+                  <span style={{ fontSize: 12, color: "#6B7280" }}>ถึง</span>
+                  <input type="date" className="inp" style={{ padding: "6px 8px", fontSize: 12 }} value={recentTo} onChange={e => setRecentTo(e.target.value)} />
+                </>
+              )}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, color: "#6B7280" }}>สถานะ:</span>
+              {[["all", "ทั้งหมด"], ["pending", "รอตัดสต็อก"], ["closed", "ตัดสต็อกแล้ว"]].map(([v, l]) => (
+                <button key={v} onClick={() => setRecentStatusFilter(v)}
+                  style={{ background: recentStatusFilter === v ? "#7C3AED" : "#F3F4F6", color: recentStatusFilter === v ? "#fff" : "#6B7280", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{l}</button>
+              ))}
             </div>
           </div>
           {loadingRecent && <div style={{ color: "#9CA3AF", fontSize: 13, padding: 12 }}>กำลังโหลด...</div>}
-          {!loadingRecent && recent.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13, padding: 20, textAlign: "center" }}>ไม่มีใบหยิบในช่วงวันที่นี้ — ยิงบาร์โค้ด PK บนสลิป หรือรอ extension ส่งเข้ามา</div>}
+          {!loadingRecent && recent.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13, padding: 20, textAlign: "center" }}>ไม่มีใบหยิบตามเงื่อนไขที่เลือก — ยิงบาร์โค้ด PK บนสลิป หรือรอ extension ส่งเข้ามา</div>}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
             {recent.map(r => {
               const n = Array.isArray(r.products) ? r.products.length : 0;
@@ -2624,12 +2658,12 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
               const rClosed = r.pick_status === "closed";
               return (
                 <div key={r.id} onClick={() => loadPick(r.id)}
-                  style={{ position: "relative", border: "1px solid #E5E7EB", borderRadius: 12, padding: "12px 14px", cursor: "pointer", background: rClosed ? "#F9FAFB" : r.pick_status === "picking" ? "#FFFBEB" : "#FAFAFE" }}
+                  style={{ position: "relative", border: "1px solid #E5E7EB", borderRadius: 12, padding: "12px 14px", cursor: "pointer", background: rClosed ? "#F0FDF4" : r.pick_status === "picking" ? "#FFFBEB" : "#FAFAFE" }}
                   onMouseEnter={e => e.currentTarget.style.borderColor = "#7C3AED"} onMouseLeave={e => e.currentTarget.style.borderColor = "#E5E7EB"}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
                     <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#7C3AED", fontSize: 15 }}>PK{r.id}</span>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: rClosed ? "#F3F4F6" : r.pick_status === "picking" ? "#FEF3C7" : "#EDE9FE", color: rClosed ? "#6B7280" : r.pick_status === "picking" ? "#92400E" : "#5B21B6", fontWeight: 600 }}>{pickStatusLabel(r.pick_status)}</span>
+                      <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: rClosed ? "#D1FAE5" : r.pick_status === "picking" ? "#FEF3C7" : "#EDE9FE", color: rClosed ? "#065F46" : r.pick_status === "picking" ? "#92400E" : "#5B21B6", fontWeight: 600 }}>{pickStatusLabel(r.pick_status)}</span>
                       {!rClosed && (
                         <button onClick={(e) => { e.stopPropagation(); deletePick(r.id); }} title="ลบใบนี้ทิ้ง"
                           style={{ background: "none", border: "none", color: "#DC2626", cursor: "pointer", fontSize: 13, padding: 2 }}>🗑️</button>
