@@ -58,6 +58,7 @@ const api = {
   setOrderScanEffectiveDate: (id, date) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ effective_date: date }) }),
   // ── ยิงตัดสต๊อกจากใบหยิบ (สลิป MyOrder extension → order_scans) ──
   getRecentOrderScans: (sinceIso) => sbAll(`order_scans?select=*&created_at=gte.${encodeURIComponent(sinceIso)}&order=created_at.desc`),
+  getOrderScansRange: (fromIso, toIso) => sbAll(`order_scans?select=*&created_at=gte.${encodeURIComponent(fromIso)}&created_at=lte.${encodeURIComponent(toIso)}&order=created_at.desc`),
   getOrderScan: (id) => sb(`order_scans?id=eq.${Number(id)}&select=*`),
   updateOrderScan: (id, patch) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   getAliases: () => sbAll("product_aliases?select=*"),
@@ -2180,9 +2181,10 @@ function ReturnCheckerTab() {
 
 // ============================================================
 // ═══════════ ยิงตัดสต๊อกจากใบหยิบ (สลิป MyOrder extension v3.8 → order_scans) ═══════════
-// flow: extension พิมพ์สลิปพร้อมบาร์โค้ด "PK<id ของแถว order_scans>" → ฝ่ายคลังยิง PK เปิดใบใน StockMaster
+// flow: extension พิมพ์สลิปพร้อมบาร์โค้ด "PK<id ของแถว order_scans>" → ฝ่ายคลังยิง PK เปิดใบใน StockMaster (เปิดปุ๊บสถานะเป็น "รอตัดสต็อก" สีเหลืองทันที)
 // → จับคู่ "ชื่อสินค้าตาม myorder" (รวมชื่อโปร เช่น "6 แพค ฟรี 1 แพค") เป็น SKU × จำนวนชิ้น (ตาราง product_aliases จำไว้ตลอด)
-// → รายการถูกรวมเป็นราย SKU → ยิงบาร์โค้ด SKU ทีละชิ้น หรือยิงครั้งแรกแล้วกด "ครบ ✓" ใส่จำนวน → ตัดสต็อกทันที
+// → รายการถูกรวมเป็นราย SKU → ยิงบาร์โค้ด SKU ทีละชิ้น หรือยิงครั้งแรกแล้วกด "ครบ ✓" ยืนยันยอดรวมทั้งไลน์ — ขั้นตอนนี้ "ไม่" ตัดสต็อกจริง แค่บันทึกความคืบหน้า
+// → ตัดสต็อกจริงทีเดียวตอนกด "ยืนยันปิดใบหยิบ" เท่านั้น (กันตัดสต็อกไปก่อนโดยยังไม่ได้ยืนยันปิดบิล) — ปิดใบแล้วลบไม่ได้ ต้องยกเลิกก่อนปิดถ้าเปิดผิดใบ
 // ต้องรัน scan-verify-setup.sql ใน Supabase ก่อนใช้ครั้งแรก (เพิ่มคอลัมน์ pick_* ใน order_scans + ตาราง product_aliases)
 
 // Code128 ชุด B วาดเป็น SVG เอง — ใช้แผ่นบาร์โค้ด SKU (ตารางเดียวกับที่ใช้ใน extension พิมพ์รหัส PK)
@@ -2277,7 +2279,7 @@ const playScanTone = (kind) => {
   } catch {}
 };
 
-const pickStatusLabel = (s) => s === "closed" ? "ปิดใบแล้ว" : s === "picking" ? "กำลังยิง" : "ยังไม่เริ่ม";
+const pickStatusLabel = (s) => s === "closed" ? "ตัดสต็อกแล้ว" : s === "picking" ? "รอตัดสต็อก" : "ยังไม่เริ่ม";
 const fmtDT = (iso) => iso ? new Date(iso).toLocaleString("th-TH", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "-";
 const btnStyle = (bg, fg, extra = {}) => ({ background: bg, color: fg, border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer", ...extra });
 
@@ -2334,8 +2336,11 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   const [showSummary, setShowSummary] = useState(false);
   const [closing, setClosing] = useState(false);
   const [editingName, setEditingName] = useState(null);
-  const [bulkFor, setBulkFor] = useState(null);      // { pid, qty } กำลังกรอกจำนวนปุ่ม "ครบ ✓"
+  const [bulkFor, setBulkFor] = useState(null);      // { pid } กำลังยืนยันปุ่ม "ครบ ✓"
   const [busy, setBusy] = useState(false);
+  const [recentFrom, setRecentFrom] = useState(() => { const d = new Date(); d.setDate(d.getDate() - 6); return localDateStr(d); });
+  const [recentTo, setRecentTo] = useState(() => localDateStr(new Date()));
+  const [recentShowClosed, setRecentShowClosed] = useState(false); // ติ๊กเพื่อดูใบที่ตัดสต็อกไปแล้วด้วย (เช็คว่ามีออเดอร์ค้างเปิดอยู่ไหม)
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth < 900); // จอแคบ (มือถือ/แท็บเล็ต) → คอลัมน์เดียว รูปอยู่บน
   useEffect(() => { const onResize = () => setNarrow(window.innerWidth < 900); window.addEventListener("resize", onResize); return () => window.removeEventListener("resize", onResize); }, []);
   const inputRef = useRef(null);
@@ -2389,13 +2394,14 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   const loadRecent = async () => {
     setLoadingRecent(true);
     try {
-      const since = new Date(); since.setDate(since.getDate() - 3);
-      const rows = await api.getRecentOrderScans(since.toISOString());
-      setRecent((rows || []).filter(r => r.pick_status !== "closed"));
+      const fromIso = new Date(recentFrom + "T00:00:00").toISOString();
+      const toIso = new Date(recentTo + "T23:59:59").toISOString();
+      const rows = await api.getOrderScansRange(fromIso, toIso);
+      setRecent(recentShowClosed ? (rows || []) : (rows || []).filter(r => r.pick_status !== "closed"));
     } catch (e) { showToast(e.message, "error"); }
     setLoadingRecent(false);
   };
-  useEffect(() => { loadRecent(); }, []);
+  useEffect(() => { loadRecent(); }, [recentFrom, recentTo, recentShowClosed]);
 
   // โฟกัสช่องยิงค้างไว้เสมอ — ยกเว้นตอนผู้ใช้กำลังพิมพ์ในช่องอื่น หรืออยู่ในฟอร์มจับคู่ (data-nofocus)
   useEffect(() => {
@@ -2420,12 +2426,17 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
     setLoadingPick(true);
     try {
       const rows = await api.getOrderScan(id);
-      const row = rows && rows[0];
+      let row = rows && rows[0];
       if (!row) { playScanTone("bad"); setLast({ status: "bad", msg: `ไม่พบใบหยิบ PK${id} ในระบบ` }); setLoadingPick(false); return; }
+      // เปิดใบปุ๊บมาร์คสถานะ "รอตัดสต็อก" (เหลือง) ทันที แม้ยังไม่ได้ยิง SKU ไหนเลย — ให้เห็นว่ามีใบนี้ค้างอยู่
+      if (row.pick_status !== "closed" && row.pick_status !== "picking") {
+        try { await api.updateOrderScan(row.id, { pick_status: "picking", picked_by: staffRef.current || row.picked_by || null }); row = { ...row, pick_status: "picking" }; }
+        catch (e) { handleSetupError(e); }
+      }
       applyPick(row);
       const n = Array.isArray(row.products) ? row.products.length : 0;
-      if (row.pick_status === "closed") { playScanTone("warn"); setLast({ status: "warn", msg: `ใบหยิบ PK${id} ปิดไปแล้ว (${fmtDT(row.pick_closed_at)}) — ดูได้อย่างเดียว` }); }
-      else { playScanTone("ok"); setLast({ status: "info", msg: `เปิดใบหยิบ PK${id} · ${row.page_name || "ไม่ระบุเพจ"} · ${n} รายการ ${row.total_items || 0} หน่วยขาย` }); }
+      if (row.pick_status === "closed") { playScanTone("warn"); setLast({ status: "warn", msg: `ใบหยิบ PK${id} ตัดสต็อกไปแล้ว (${fmtDT(row.pick_closed_at)}) — ดูได้อย่างเดียว` }); }
+      else { playScanTone("ok"); setLast({ status: "info", msg: `เปิดใบหยิบ PK${id} · ${row.page_name || "ไม่ระบุเพจ"} · ${n} รายการ ${row.total_items || 0} หน่วยขาย · รอตัดสต็อกตอนปิดใบ` }); }
     } catch (e) { playScanTone("bad"); setLast({ status: "bad", msg: e.message }); }
     setLoadingPick(false);
   };
@@ -2440,19 +2451,13 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
 
   const qtyOf = (p) => (localQty.current[p.id] != null ? localQty.current[p.id] : p.quantity);
 
-  // ตัดสต็อก n ชิ้นของ line หนึ่ง (ใช้ทั้งยิงทีละชิ้น n=1 และปุ่ม "ครบ ✓")
-  const cutLine = async (line, n, viaBulk) => {
-    const p = pickRef.current; const product = productById.get(line.pid) || line.product;
-    const cur = qtyOf(product);
-    const newQty = cur - n;
-    await api.updateProduct(product.id, { quantity: newQty });
-    localQty.current[product.id] = newQty;
-    const [tx] = await api.addTransaction({ type: "out", product_id: product.id, quantity: n, date: localDateStr(), note: `ใบหยิบ PK${p.id}${viaBulk ? " (ยืนยันจำนวนรวม)" : ""}`, by: staffRef.current.trim() });
-    onStockCut(product.id, newQty, tx);
+  // บันทึกความคืบหน้าที่ยิงแล้ว n ชิ้นของ line หนึ่ง — "ไม่" ตัดสต็อกจริง (รอตัดทีเดียวตอนกดปิดใบหยิบ)
+  const registerScan = async (line, n, viaBulk) => {
+    const product = productById.get(line.pid) || line.product;
     const key = String(line.pid); const prev = progressRef.current[key] || {};
     const next = { ...progressRef.current, [key]: { scanned: (Number(prev.scanned) || 0) + n, short: Number(prev.short) || 0 } };
     playScanTone("ok");
-    setLast({ status: "ok", msg: `✓ ${product.name} — ${next[key].scanned}/${line.required}${viaBulk ? ` (ยืนยัน ${n} ชิ้น)` : ""} · เหลือในคลัง ${newQty}`, product, line: { ...line, scanned: next[key].scanned } });
+    setLast({ status: "ok", msg: `✓ ${product.name} — ${next[key].scanned}/${line.required}${viaBulk ? ` (ยืนยันครบ ${next[key].scanned} ชิ้น)` : ""} · รอตัดสต็อกตอนปิดใบ`, product, line: { ...line, scanned: next[key].scanned } });
     await saveProgress(next);
   };
 
@@ -2462,32 +2467,31 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
     if (pk) { await loadPick(Number(pk[1])); return; }
     const p = pickRef.current;
     if (!p) { playScanTone("bad"); setLast({ status: "bad", msg: `ยังไม่ได้เปิดใบหยิบ — ยิงบาร์โค้ด PK... บนสลิปก่อน (ยิงมา: ${code})` }); return; }
-    if (p.pick_status === "closed") { playScanTone("bad"); setLast({ status: "bad", msg: "ใบนี้ปิดไปแล้ว ตัดสต็อกเพิ่มไม่ได้" }); return; }
+    if (p.pick_status === "closed") { playScanTone("bad"); setLast({ status: "bad", msg: "ใบนี้ตัดสต็อกไปแล้ว บันทึกเพิ่มไม่ได้" }); return; }
     const product = productBySku.get(code.toUpperCase());
     if (!product) { playScanTone("bad"); setLast({ status: "bad", msg: `ไม่รู้จักบาร์โค้ด "${code}" — ไม่ตรงกับ SKU ใดในคลัง` }); return; }
     const line = linesRef.current.find(l => l.pid === product.id);
-    if (!line) { playScanTone("bad"); setLast({ status: "bad", msg: `"${product.name}" ไม่ได้อยู่ในใบหยิบนี้ — ไม่ตัดสต็อก เช็คว่าหยิบผิดตัวไหม${unmapped.length ? " (หรือยังไม่ได้จับคู่ชื่อโปร)" : ""}`, product }); return; }
-    if (line.scanned + line.short >= line.required) { playScanTone("warn"); setLast({ status: "warn", msg: `"${product.name}" ยิงครบแล้ว (${line.required} ชิ้น) — ไม่ตัดซ้ำ`, product, line }); return; }
-    if (qtyOf(product) <= 0) { playScanTone("warn"); setLast({ status: "warn", msg: `สต็อกในระบบของ "${product.name}" เป็น 0 ตัดไม่ได้ — ปรับสต็อกให้ถูกก่อน หรือกด "ของขาด"`, product, line }); return; }
-    if (!staffRef.current.trim()) { playScanTone("warn"); setLast({ status: "warn", msg: "กรอกชื่อพนักงานก่อนยิงตัดสต็อก (ช่องมุมขวาบน)", product, line }); return; }
-    try { await cutLine(line, 1, false); }
-    catch (e) { playScanTone("bad"); setLast({ status: "bad", msg: "ตัดสต็อกไม่สำเร็จ: " + e.message, product }); }
+    if (!line) { playScanTone("bad"); setLast({ status: "bad", msg: `"${product.name}" ไม่ได้อยู่ในใบหยิบนี้ — ไม่นับ เช็คว่าหยิบผิดตัวไหม${unmapped.length ? " (หรือยังไม่ได้จับคู่ชื่อโปร)" : ""}`, product }); return; }
+    if (line.scanned + line.short >= line.required) { playScanTone("warn"); setLast({ status: "warn", msg: `"${product.name}" ยิงครบแล้ว (${line.required} ชิ้น) — ไม่นับซ้ำ`, product, line }); return; }
+    if (qtyOf(product) <= 0) { playScanTone("warn"); setLast({ status: "warn", msg: `สต็อกในระบบของ "${product.name}" เป็น 0 — เช็คให้แน่ใจว่ามีของจริงก่อนยืนยัน (จะตัดสต็อกตอนปิดใบ)`, product, line }); return; }
+    if (!staffRef.current.trim()) { playScanTone("warn"); setLast({ status: "warn", msg: "กรอกชื่อพนักงานก่อนยิง (ช่องมุมขวาบน)", product, line }); return; }
+    try { await registerScan(line, 1, false); }
+    catch (e) { playScanTone("bad"); setLast({ status: "bad", msg: "บันทึกไม่สำเร็จ: " + e.message, product }); }
   };
   const enqueue = (fn) => { setBusy(true); queueRef.current = queueRef.current.then(fn).catch(() => {}).then(() => setBusy(false)); };
   const handleKey = (e) => { if (e.key !== "Enter") return; const v = scanInput; setScanInput(""); enqueue(() => processScan(v)); };
 
-  // ปุ่ม "ครบ ✓": ต้องยิงติดอย่างน้อย 1 ชิ้นก่อน (ยืนยันว่าหยิบถูกตัว) แล้วค่อยยืนยันจำนวนที่เหลือทีเดียว
+  // ปุ่ม "ครบ ✓": ต้องยิงติดอย่างน้อย 1 ชิ้นก่อน (ยืนยันว่าหยิบถูกตัว) แล้วค่อยยืนยันเป็นยอดรวมทั้งไลน์ทีเดียว (เช่น ต้องหยิบ 10 ยิงไป 1 กดครบ = ยืนยัน 10) — ยังไม่ตัดสต็อกจริง รอตัดตอนปิดใบ
   const confirmBulk = () => {
     const b = bulkFor; if (!b) return;
     const line = linesRef.current.find(l => l.pid === b.pid); if (!line) return;
     const remaining = line.required - line.scanned - line.short;
     const product = productById.get(line.pid);
-    const n = Math.max(1, Math.min(Number(b.qty) || 0, remaining));
-    if (n <= 0) { setBulkFor(null); return; }
+    if (remaining <= 0) { setBulkFor(null); return; }
     if (!staffRef.current.trim()) { playScanTone("warn"); setLast({ status: "warn", msg: "กรอกชื่อพนักงานก่อน", product, line }); return; }
-    if (qtyOf(product) < n) { playScanTone("warn"); setLast({ status: "warn", msg: `สต็อกในระบบมี ${qtyOf(product)} ไม่พอตัด ${n} ชิ้น — ปรับสต็อกก่อน หรือใส่จำนวนน้อยลง/กดของขาด`, product, line }); return; }
+    if (qtyOf(product) < line.required) { playScanTone("warn"); setLast({ status: "warn", msg: `สต็อกในระบบของ "${product.name}" มี ${qtyOf(product)} ไม่พอกับที่ต้องหยิบทั้งหมด ${line.required} ชิ้น — เช็คสต็อกก่อนยืนยัน หรือกด "ของขาด" แทนถ้าของจริงมีไม่พอ`, product, line }); return; }
     setBulkFor(null);
-    enqueue(async () => { try { await cutLine(line, n, true); } catch (e) { playScanTone("bad"); setLast({ status: "bad", msg: "ตัดสต็อกไม่สำเร็จ: " + e.message, product }); } });
+    enqueue(async () => { try { await registerScan(line, remaining, true); } catch (e) { playScanTone("bad"); setLast({ status: "bad", msg: "บันทึกไม่สำเร็จ: " + e.message, product }); } });
   };
 
   // ครบทุกรายการ → เปิดสรุปปิดใบให้อัตโนมัติ (ครั้งเดียวต่อใบ) — ปิดใบต้องกดยืนยันเองเสมอ
@@ -2511,17 +2515,41 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
     } catch (e) { if (!handleSetupError(e)) showToast(e.message, "error"); }
   };
 
+  // ยืนยันปิดใบหยิบ = จุดเดียวที่ตัดสต็อกจริง — ตัดทีเดียวรวมทุกไลน์ตามยอดที่ยิง/ยืนยันไว้ (ก่อนหน้านี้ตัดทันทีทุกครั้งที่ยิง ผู้ใช้ขอให้เลื่อนมาตัดตอนปิดใบแทน)
   const closePick = async () => {
     const p = pickRef.current; if (!p) return;
     setClosing(true);
     try {
+      let cutTotal = 0;
+      for (const line of linesRef.current) {
+        if (line.scanned <= 0) continue;
+        const product = productById.get(line.pid) || line.product;
+        const cur = qtyOf(product);
+        const newQty = cur - line.scanned;
+        await api.updateProduct(product.id, { quantity: newQty });
+        localQty.current[product.id] = newQty;
+        const [tx] = await api.addTransaction({ type: "out", product_id: product.id, quantity: line.scanned, date: localDateStr(), note: `ใบหยิบ PK${p.id}`, by: staffRef.current.trim() || p.picked_by || "" });
+        onStockCut(product.id, newQty, tx);
+        cutTotal += line.scanned;
+      }
       await api.updateOrderScan(p.id, { pick_progress: progressRef.current, pick_status: "closed", pick_closed_at: new Date().toISOString(), picked_by: staffRef.current || p.picked_by || null });
-      showToast(`ปิดใบหยิบ PK${p.id} แล้ว`);
+      showToast(`ปิดใบหยิบ PK${p.id} แล้ว — ตัดสต็อก ${cutTotal} ชิ้น`);
       applyPick(null); setLast(null); loadRecent();
     } catch (e) { if (!handleSetupError(e)) showToast(e.message, "error"); }
     setClosing(false);
   };
   const leavePick = () => { applyPick(null); setLast(null); loadRecent(); };
+
+  // ลบใบหยิบทิ้ง — ใช้เมื่อยิงเปิดผิดใบ/ใบซ้ำ ก่อนปิดใบ (ปิดใบไปแล้วตัดสต็อกจริงแล้ว ไม่ให้ลบจากหน้านี้)
+  const deletePick = async (id) => {
+    if (!window.confirm(`ลบใบหยิบ PK${id} ทิ้งถาวร?\n(ใช้เมื่อยิงเปิดผิดใบ หรือใบซ้ำ — ยังไม่ตัดสต็อกใดๆ)`)) return;
+    try {
+      await api.deleteOrderScan(id);
+      showToast(`ลบใบหยิบ PK${id} แล้ว`);
+      setRecent(prev => prev.filter(r => r.id !== id));
+      if (pickRef.current?.id === id) { applyPick(null); setLast(null); }
+    } catch (e) { showToast(e.message, "error"); }
+  };
 
   const borderColor = last?.status === "ok" ? "#10B981" : last?.status === "bad" ? "#EF4444" : last?.status === "warn" ? "#F59E0B" : "#7C3AED";
   const bannerBg = { ok: "#F0FDF4", bad: "#FEF2F2", warn: "#FFFBEB", info: "#F5F3FF" }[last?.status] || "#F9FAFB";
@@ -2535,7 +2563,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div>
           <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📦 ยิงตัดสต็อกจากใบหยิบ</h2>
-          <p style={{ fontSize: 13, color: "#6B7280" }}>1) ยิงบาร์โค้ด <b>PK…</b> บนสลิป MyOrder เพื่อเปิดใบ · 2) หยิบของพร้อมแผ่นบาร์โค้ดจากช่องเก็บ · 3) ยิงบาร์โค้ด SKU ทีละชิ้น หรือยิงชิ้นแรกแล้วกด "ครบ ✓" ใส่จำนวนที่เหลือ — ตัดสต็อกทันที โชว์รูปให้เทียบก่อนแพ็ก</p>
+          <p style={{ fontSize: 13, color: "#6B7280" }}>1) ยิงบาร์โค้ด <b>PK…</b> บนสลิป MyOrder เพื่อเปิดใบ (เปิดปุ๊บขึ้นสถานะ "รอตัดสต็อก" สีเหลืองทันที) · 2) หยิบของพร้อมแผ่นบาร์โค้ดจากช่องเก็บ · 3) ยิงบาร์โค้ด SKU ทีละชิ้น หรือยิงชิ้นแรกแล้วกด "ครบ ✓" ยืนยันยอดรวม โชว์รูปให้เทียบก่อนแพ็ก · <b>ตัดสต็อกจริงตอนกดยืนยันปิดใบเท่านั้น</b></p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 12, color: "#6B7280" }}>พนักงาน</span>
@@ -2556,6 +2584,10 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
             <div style={{ display: "flex", gap: 6 }}>
               <button onClick={() => setShowSummary(true)} style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 10, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>{isClosed ? "📋 ดูสรุป" : "✅ ปิดใบ / สรุป"}</button>
               <button onClick={leavePick} style={{ background: "#F3F4F6", color: "#6B7280", border: "none", borderRadius: 10, padding: "10px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>✕ ออกจากใบ</button>
+              {!isClosed && (
+                <button onClick={() => deletePick(pick.id)} title="ลบใบนี้ทิ้ง เช่น เปิดผิดใบ/ใบซ้ำ"
+                  style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>🗑️ ลบใบ</button>
+              )}
             </div>
           )}
         </div>
@@ -2570,23 +2602,39 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
 
       {!pick && (
         <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-            <div style={{ fontWeight: 700, color: "#111827", fontSize: 14 }}>🧾 ใบหยิบที่ยังไม่ปิด (3 วันล่าสุด)</div>
-            <button onClick={loadRecent} style={btnStyle("#F3F4F6", "#6B7280")}>🔄 รีเฟรช</button>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 10 }}>
+            <div style={{ fontWeight: 700, color: "#111827", fontSize: 14 }}>🧾 {recentShowClosed ? "ใบหยิบทั้งหมด" : "ใบหยิบที่ยังไม่ตัดสต็อก (ค้างอยู่)"}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, color: "#6B7280" }}>ช่วงวันที่:</span>
+              <input type="date" className="inp" style={{ padding: "6px 8px", fontSize: 12 }} value={recentFrom} onChange={e => setRecentFrom(e.target.value)} />
+              <span style={{ fontSize: 12, color: "#6B7280" }}>ถึง</span>
+              <input type="date" className="inp" style={{ padding: "6px 8px", fontSize: 12 }} value={recentTo} onChange={e => setRecentTo(e.target.value)} />
+              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: "#6B7280", cursor: "pointer" }}>
+                <input type="checkbox" checked={recentShowClosed} onChange={e => setRecentShowClosed(e.target.checked)} /> รวมที่ตัดสต็อกแล้ว
+              </label>
+              <button onClick={loadRecent} style={btnStyle("#F3F4F6", "#6B7280")}>🔄 รีเฟรช</button>
+            </div>
           </div>
           {loadingRecent && <div style={{ color: "#9CA3AF", fontSize: 13, padding: 12 }}>กำลังโหลด...</div>}
-          {!loadingRecent && recent.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13, padding: 20, textAlign: "center" }}>ไม่มีใบหยิบค้าง — ยิงบาร์โค้ด PK บนสลิป หรือรอ extension ส่งเข้ามา</div>}
+          {!loadingRecent && recent.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13, padding: 20, textAlign: "center" }}>ไม่มีใบหยิบในช่วงวันที่นี้ — ยิงบาร์โค้ด PK บนสลิป หรือรอ extension ส่งเข้ามา</div>}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
             {recent.map(r => {
               const n = Array.isArray(r.products) ? r.products.length : 0;
               const prog = r.pick_progress && typeof r.pick_progress === "object" ? Object.values(r.pick_progress).reduce((s, v) => s + (Number(v.scanned) || 0), 0) : 0;
+              const rClosed = r.pick_status === "closed";
               return (
                 <div key={r.id} onClick={() => loadPick(r.id)}
-                  style={{ border: "1px solid #E5E7EB", borderRadius: 12, padding: "12px 14px", cursor: "pointer", background: r.pick_status === "picking" ? "#FFFBEB" : "#FAFAFE" }}
+                  style={{ position: "relative", border: "1px solid #E5E7EB", borderRadius: 12, padding: "12px 14px", cursor: "pointer", background: rClosed ? "#F9FAFB" : r.pick_status === "picking" ? "#FFFBEB" : "#FAFAFE" }}
                   onMouseEnter={e => e.currentTarget.style.borderColor = "#7C3AED"} onMouseLeave={e => e.currentTarget.style.borderColor = "#E5E7EB"}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
                     <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#7C3AED", fontSize: 15 }}>PK{r.id}</span>
-                    <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: r.pick_status === "picking" ? "#FEF3C7" : "#EDE9FE", color: r.pick_status === "picking" ? "#92400E" : "#5B21B6", fontWeight: 600 }}>{pickStatusLabel(r.pick_status)}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: rClosed ? "#F3F4F6" : r.pick_status === "picking" ? "#FEF3C7" : "#EDE9FE", color: rClosed ? "#6B7280" : r.pick_status === "picking" ? "#92400E" : "#5B21B6", fontWeight: 600 }}>{pickStatusLabel(r.pick_status)}</span>
+                      {!rClosed && (
+                        <button onClick={(e) => { e.stopPropagation(); deletePick(r.id); }} title="ลบใบนี้ทิ้ง"
+                          style={{ background: "none", border: "none", color: "#DC2626", cursor: "pointer", fontSize: 13, padding: 2 }}>🗑️</button>
+                      )}
+                    </div>
                   </div>
                   <div style={{ fontSize: 13, color: "#111827", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.page_name || "ไม่ระบุเพจ"}</div>
                   <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>{fmtDT(r.created_at)} · {r.total_orders || 0} ออเดอร์ · {n} รายการ {r.total_items || 0} หน่วยขาย{prog ? ` · ยิงแล้ว ${prog} ชิ้น` : ""}</div>
@@ -2657,12 +2705,8 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
                         )}
                         {isBulk && (
                           <div style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", background: "#F5F3FF", border: "1px solid #DDD6FE", borderRadius: 10, padding: "8px 10px" }} data-nofocus>
-                            <span style={{ fontSize: 12, color: "#5B21B6", fontWeight: 600 }}>ยืนยันตัดเพิ่มอีก</span>
-                            <input className="inp" type="number" min={1} max={remaining} value={bulkFor.qty} autoFocus
-                              onChange={e => setBulkFor({ pid: l.pid, qty: e.target.value })} onKeyDown={e => { if (e.key === "Enter") confirmBulk(); if (e.key === "Escape") setBulkFor(null); }}
-                              style={{ width: 80, padding: "6px 8px", fontSize: 15, textAlign: "center", fontFamily: "monospace" }} />
-                            <span style={{ fontSize: 12, color: "#5B21B6" }}>ชิ้น (เหลือ {remaining})</span>
-                            <button onClick={confirmBulk} style={btnStyle("#7C3AED", "#fff", { padding: "7px 14px" })}>✓ ตัดสต็อก</button>
+                            <span style={{ fontSize: 12, color: "#5B21B6", fontWeight: 600 }}>ยืนยันว่าหยิบครบทั้งหมด {l.required} ชิ้น? (ยิงไปแล้ว {l.scanned} เหลืออีก {remaining} — รอตัดสต็อกตอนปิดใบ)</span>
+                            <button autoFocus onClick={confirmBulk} onKeyDown={e => { if (e.key === "Escape") setBulkFor(null); }} style={btnStyle("#7C3AED", "#fff", { padding: "7px 14px" })}>✓ ยืนยันครบ {l.required}</button>
                             <button onClick={() => setBulkFor(null)} style={btnStyle("none", "#6B7280")}>ยกเลิก</button>
                           </div>
                         )}
@@ -2673,8 +2717,8 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
                         {!isClosed && (
                           <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", marginTop: 4 }}>
                             {remaining > 0 && (
-                              <button disabled={l.scanned === 0 || busy} onClick={() => setBulkFor({ pid: l.pid, qty: remaining })}
-                                title={l.scanned === 0 ? "ยิงชิ้นแรกก่อน เพื่อยืนยันว่าหยิบถูกตัว แล้วค่อยกดครบ" : "ตัดจำนวนที่เหลือทีเดียว"}
+                              <button disabled={l.scanned === 0 || busy} onClick={() => setBulkFor({ pid: l.pid })}
+                                title={l.scanned === 0 ? "ยิงชิ้นแรกก่อน เพื่อยืนยันว่าหยิบถูกตัว แล้วค่อยกดครบ" : `ยืนยันว่าหยิบครบทั้งหมด ${l.required} ชิ้น`}
                                 style={btnStyle(l.scanned === 0 ? "#F3F4F6" : "#D1FAE5", l.scanned === 0 ? "#9CA3AF" : "#065F46", { fontSize: 11, padding: "3px 8px", cursor: l.scanned === 0 ? "not-allowed" : "pointer" })}>ครบ ✓</button>
                             )}
                             <button disabled={remaining <= 0} onClick={() => markShort(l.pid, 1)} title="ของขาดสต็อกจริง หยิบไม่ได้ 1 ชิ้น"
@@ -2754,7 +2798,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
             </div>
             <div style={{ padding: "12px 22px 18px", display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button onClick={() => setShowSummary(false)} style={{ background: "#F3F4F6", color: "#374151", border: "none", borderRadius: 10, padding: "10px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>{isClosed ? "ปิด" : "ยิงต่อ"}</button>
-              {!isClosed && <button onClick={closePick} disabled={closing} style={{ background: "linear-gradient(135deg,#7C3AED,#3B82F6)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer", opacity: closing ? 0.6 : 1 }}>{closing ? "⏳ กำลังปิด..." : "✅ ยืนยันปิดใบหยิบ"}</button>}
+              {!isClosed && <button onClick={closePick} disabled={closing} style={{ background: "linear-gradient(135deg,#7C3AED,#3B82F6)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer", opacity: closing ? 0.6 : 1 }}>{closing ? "⏳ กำลังตัดสต็อก..." : `✅ ยืนยันปิดใบ + ตัดสต็อก ${totalScanned} ชิ้น`}</button>}
             </div>
           </div>
         </div>
@@ -5238,6 +5282,11 @@ export default function WarehouseApp() {
                               {s.note && <span style={{ fontSize: 12, background: "#FEF3C7", color: "#92400E", padding: "2px 8px", borderRadius: 20 }}>📝 {s.note}</span>}
                               {s.effective_date && s.created_at && s.effective_date !== localDateStr(new Date(s.created_at)) && (
                                 <span title="วันที่ใช้เทียบถูกย้ายแล้ว" style={{ fontSize: 12, background: "#F3E8FF", color: "#7C3AED", padding: "2px 8px", borderRadius: 20 }}>📅 ย้ายวัน</span>
+                              )}
+                              {s.pick_status && (
+                                <span style={{ fontSize: 12, fontWeight: 700, padding: "2px 8px", borderRadius: 20, background: s.pick_status === "closed" ? "#F3F4F6" : "#FEF3C7", color: s.pick_status === "closed" ? "#6B7280" : "#92400E" }}>
+                                  {s.pick_status === "closed" ? "✅ ตัดสต็อกแล้ว" : "🎯 รอตัดสต็อก (ค้างอยู่)"}
+                                </span>
                               )}
                             </div>
                             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
