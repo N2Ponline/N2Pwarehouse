@@ -3471,7 +3471,18 @@ function LabelSheetPanel({ products }) {
       )}
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden", overflowX: "auto" }}>
         <table>
-          <thead><tr><th style={{ width: 40 }}></th><th>รูป</th><th>SKU</th><th>ชื่อสินค้า</th><th>ช่องเก็บ</th><th>คงเหลือ</th><th>ตัวอย่างบาร์โค้ด</th></tr></thead>
+          <thead><tr>
+            <th style={{ width: 40 }}>
+              <input type="checkbox" checked={list.length > 0 && list.every(p => sel.has(p.id))}
+                onChange={() => setSel(prev => {
+                  const allSelected = list.length > 0 && list.every(p => sel.has(p.id));
+                  const n = new Set(prev);
+                  list.forEach(p => allSelected ? n.delete(p.id) : n.add(p.id));
+                  return n;
+                })}
+                style={{ cursor: "pointer" }} title="เลือก/ยกเลิกเลือกทั้งหมดที่แสดง" />
+            </th>
+            <th>รูป</th><th>SKU</th><th>ชื่อสินค้า</th><th>ช่องเก็บ</th><th>คงเหลือ</th><th>ตัวอย่างบาร์โค้ด</th></tr></thead>
           <tbody>
             {list.map(p => {
               const flagMissing = sel.has(p.id) && !p.imageUrl;
