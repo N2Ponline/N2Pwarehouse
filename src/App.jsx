@@ -4762,6 +4762,18 @@ export default function WarehouseApp() {
                     </button>
                   </>
                 )}
+                {tab === "stockcheck" && stockSub === "adjust" && (
+                  <>
+                    <button onClick={openReturnBatchModal}
+                      style={{ background: "#FFF7ED", color: "#C2410C", border: "1px solid #FED7AA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                      📦 รับเข้าหลายรายการ
+                    </button>
+                    <button onClick={openOutBatchModal}
+                      style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                      📤 เบิกออก (หลายรายการ)
+                    </button>
+                  </>
+                )}
                 {disposeMode && (
                   <>
                     <span style={{ alignSelf: "center", fontSize: 13, color: "#DC2626", fontWeight: 700 }}>เลือกแล้ว {selectedForDispose.size} รายการ</span>
