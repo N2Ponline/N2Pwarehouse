@@ -3396,9 +3396,11 @@ function LabelSheetPanel({ products }) {
   const toggle = (id) => setSel(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const selectFiltered = () => setSel(prev => { const n = new Set(prev); list.forEach(p => n.add(p.id)); return n; });
   const selected = products.filter(p => sel.has(p.id));
+  const missingImage = selected.filter(p => !p.imageUrl); // บังคับให้ทุกสินค้าที่จะพิมพ์ต้องมีรูปก่อนเสมอ ไม่ว่าจะเลือกเลย์เอาต์ไหน (เลย์เอาต์ a4-21 เองก็ไม่โชว์รูปบนใบ แต่ยังบังคับต้องมีรูปในระบบก่อนพิมพ์ได้)
 
   const print = () => {
     if (selected.length === 0) return;
+    if (missingImage.length > 0) { alert(`มีสินค้า ${missingImage.length} รายการยังไม่มีรูป กรุณาเพิ่มรูปก่อนพิมพ์:\n${missingImage.slice(0, 15).map(p => "• " + p.name).join("\n")}${missingImage.length > 15 ? `\n...และอีก ${missingImage.length - 15} รายการ` : ""}\n\nไปที่หน้า "คลังสินค้า" แล้วคลิกที่รูปสินค้าเพื่ออัปโหลด`); return; }
     const page = layout === "s100" ? "@page { size: 100mm 150mm; margin: 4mm; }" : "@page { size: A4; margin: 8mm; }";
     const compact = layout === "a4-21"; // ชื่อ + บาร์โค้ด อย่างเดียว 3 คอลัมน์ × 7 แถว
     const grid = compact ? "grid-template-columns: repeat(3, 1fr); grid-auto-rows: 38mm;" : layout === "a4-8" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 68mm;" : layout === "a4-4" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 138mm;" : "grid-template-columns: 1fr; grid-auto-rows: 140mm;";
@@ -3455,23 +3457,36 @@ function LabelSheetPanel({ products }) {
         </label>
         <button onClick={selectFiltered} style={{ background: "#F3F4F6", color: "#374151", border: "none", borderRadius: 10, padding: "9px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>เลือกทั้งหมดที่แสดง ({list.length})</button>
         <button onClick={() => setSel(new Set())} disabled={sel.size === 0} style={{ background: "#F3F4F6", color: "#6B7280", border: "none", borderRadius: 10, padding: "9px 12px", fontSize: 13, cursor: "pointer", opacity: sel.size === 0 ? 0.5 : 1 }}>ล้าง</button>
-        <button onClick={print} disabled={sel.size === 0} style={{ background: sel.size ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#E5E7EB", color: "#fff", border: "none", borderRadius: 10, padding: "9px 18px", fontSize: 13, fontWeight: 700, cursor: sel.size ? "pointer" : "not-allowed" }}>🖨️ พิมพ์ {sel.size ? `${sel.size} รายการ` : ""}</button>
+        <button onClick={print} disabled={sel.size === 0 || missingImage.length > 0}
+          title={missingImage.length > 0 ? `มี ${missingImage.length} รายการยังไม่มีรูป — เพิ่มรูปให้ครบก่อนถึงจะพิมพ์ได้` : undefined}
+          style={{ background: sel.size && missingImage.length === 0 ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#E5E7EB", color: "#fff", border: "none", borderRadius: 10, padding: "9px 18px", fontSize: 13, fontWeight: 700, cursor: sel.size && missingImage.length === 0 ? "pointer" : "not-allowed" }}>🖨️ พิมพ์ {sel.size ? `${sel.size} รายการ` : ""}</button>
       </div>
+      {missingImage.length > 0 && (
+        <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 14, padding: "12px 16px", marginBottom: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 18 }}>⚠️</span>
+          <div style={{ fontSize: 13, color: "#991B1B" }}>
+            <b>สินค้าที่เลือกยังไม่มีรูป {missingImage.length} รายการ</b> — ต้องเพิ่มรูปให้ครบก่อนถึงจะพิมพ์ได้ (ไปที่หน้า "คลังสินค้า" คลิกที่รูปสินค้าเพื่ออัปโหลด) รายการที่ไม่มีรูปไฮไลท์สีแดงไว้ด้านล่าง
+          </div>
+        </div>
+      )}
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden", overflowX: "auto" }}>
         <table>
           <thead><tr><th style={{ width: 40 }}></th><th>รูป</th><th>SKU</th><th>ชื่อสินค้า</th><th>ช่องเก็บ</th><th>คงเหลือ</th><th>ตัวอย่างบาร์โค้ด</th></tr></thead>
           <tbody>
-            {list.map(p => (
-              <tr key={p.id} onClick={() => toggle(p.id)} style={{ cursor: "pointer", background: sel.has(p.id) ? "#F5F3FF" : undefined }}>
+            {list.map(p => {
+              const flagMissing = sel.has(p.id) && !p.imageUrl;
+              return (
+              <tr key={p.id} onClick={() => toggle(p.id)} style={{ cursor: "pointer", background: flagMissing ? "#FEF2F2" : sel.has(p.id) ? "#F5F3FF" : undefined }}>
                 <td><input type="checkbox" checked={sel.has(p.id)} onChange={() => toggle(p.id)} onClick={e => e.stopPropagation()} /></td>
-                <td>{p.imageUrl ? <img src={p.imageUrl} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 6, border: "1px solid #E5E7EB" }} /> : <span style={{ color: "#D1D5DB" }}>—</span>}</td>
+                <td>{p.imageUrl ? <img src={p.imageUrl} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 6, border: "1px solid #E5E7EB" }} /> : <span style={{ color: flagMissing ? "#DC2626" : "#D1D5DB", fontWeight: flagMissing ? 700 : 400 }}>{flagMissing ? "⚠️ ไม่มีรูป" : "—"}</span>}</td>
                 <td style={{ fontFamily: "monospace" }}>{p.sku}</td>
                 <td style={{ fontWeight: 600 }}>{p.name}</td>
                 <td>{p.location}</td>
                 <td style={{ fontFamily: "monospace" }}>{p.quantity}</td>
                 <td><div style={{ width: 130 }} dangerouslySetInnerHTML={{ __html: code128Svg(String(p.sku), { height: 22, module: 1, fontSize: 9 }).replace("<svg ", '<svg style="width:100%;height:auto" ') }} /></td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
         {list.length === 0 && <div style={{ textAlign: "center", padding: 32, color: "#9CA3AF", fontSize: 13 }}>ไม่พบสินค้า</div>}
