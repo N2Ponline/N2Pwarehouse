@@ -2902,6 +2902,8 @@ function BacklogNotesPanel({ products, showToast }) {
   const [editingNote, setEditingNote] = useState(false);
   const [noteDraft, setNoteDraft] = useState("");
   const [savingNote, setSavingNote] = useState(false);
+  const [savedFilter, setSavedFilter] = useState("all"); // "all" | "over" | "short" — แท็บย่อยของตารางบันทึก (คนละอันกับ filterMode ของตารางเทียบข้อมูลด้านบน)
+  const [savedSearch, setSavedSearch] = useState("");
 
   useEffect(() => {
     api.getAliases().then(rows2 => {
@@ -3013,11 +3015,11 @@ function BacklogNotesPanel({ products, showToast }) {
   const toggleSort = (col) => { if (sortCol === col) setSortDir(d => d === "asc" ? "desc" : "asc"); else { setSortCol(col); setSortDir(col === "name" ? "asc" : "desc"); } };
 
   // รักษาหมายเหตุต่อรายการ + จำนวนรอเข้าที่กรอกเองไว้ (เฉพาะรายการจับคู่ไม่ได้) ถ้ารายการเดิมยังอยู่ในการบันทึกครั้งนี้
-  // บันทึกเฉพาะ "ค้างส่ง (สต็อกไม่มีของ)" — ของที่มีสต็อกอยู่แล้วไปหยิบส่งได้เลย ไม่ต้องมาโน้ตไว้ — พร้อมแนบ "ค้างมา (วัน)" ของแต่ละรายการไว้ด้วย
+  // บันทึกทุกรายการที่จับคู่ได้ (ไม่ว่าสต็อกจะเหลือหรือไม่) + ที่จับคู่กับคลังไม่ได้ — ให้หน้าบันทึกมีของมีแต่ยังไม่ส่งด้วย ไม่ใช่แค่ของหมดสต็อก — พร้อมแนบ "ค้างมา (วัน)" ของแต่ละรายการไว้ด้วย
   const buildSaveItems = (builtRows, umRows) => {
     const oldById = new Map((saved?.items || []).map(it => [it.id, it]));
     return [
-      ...builtRows.filter(r => !r.over).map(r => ({
+      ...builtRows.map(r => ({
         id: String(r.p.id), name: r.p.name, sku: r.p.sku, myQty: r.my, stock: r.stock, incQty: r.inc, matched: true,
         itemNote: oldById.get(String(r.p.id))?.itemNote || "", age: r.age, firstSeen: r.firstSeen, dateIsReal: r.dateIsReal,
       })),
@@ -3073,7 +3075,7 @@ function BacklogNotesPanel({ products, showToast }) {
     updateSavedItems(saved.items.filter(x => x.id !== it.id));
   };
   const toggleSelect = (id) => setSelectedIds(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const toggleSelectAll = () => setSelectedIds(prev => (saved && prev.size === saved.items.length) ? new Set() : new Set((saved?.items || []).map(it => it.id)));
+  const toggleSelectAll = () => setSelectedIds(prev => (savedShown.length && prev.size === savedShown.length) ? new Set() : new Set(savedShown.map(it => it.id)));
   const deleteSelected = () => {
     if (!selectedIds.size) return;
     if (!window.confirm(`ลบ ${selectedIds.size} รายการที่เลือกออกจากบันทึกนี้ใช่ไหม?`)) return;
@@ -3118,11 +3120,21 @@ function BacklogNotesPanel({ products, showToast }) {
     </div>
   )) : <span style={{ color: "#D1D5DB", fontSize: 11 }}>—</span>;
 
+  // แท็บย่อยของ "ตารางบันทึก" ด้านล่าง — ของมีแต่ยังไม่ส่ง = มีสต็อก (ไม่ว่าจะพอส่งหรือไม่) · ค้างส่ง = ค้างจาก MyOrder มากกว่าสต็อกที่มี (รวมรายการจับคู่ไม่ได้ทั้งหมดด้วย เพราะไม่มีสต็อกอ้างอิง)
+  const savedItemsAll = saved?.items || [];
+  const savedOver = useMemo(() => savedItemsAll.filter(it => it.matched && Number(it.stock) > 0), [saved]);
+  const savedShort = useMemo(() => savedItemsAll.filter(it => Number(it.myQty) > Number(it.stock || 0)), [saved]);
+  const savedShown = useMemo(() => {
+    const base = savedFilter === "over" ? savedOver : savedFilter === "short" ? savedShort : savedItemsAll;
+    const kw = savedSearch.trim().toLowerCase();
+    return kw ? base.filter(it => it.name.toLowerCase().includes(kw)) : base;
+  }, [saved, savedFilter, savedSearch, savedOver, savedShort]);
+
   return (
     <div>
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16, marginBottom: 14 }}>
         <h2 style={{ fontSize: 18, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📋 บันทึกสินค้าค้างส่ง</h2>
-        <p style={{ fontSize: 12.5, color: "#6B7280", marginBottom: 10 }}>วางรายการจาก MyOrder (ปุ่ม "คัดลอกรายการสินค้า" ใน extension) แล้วกด "เทียบข้อมูลสินค้า" — ระบบจะบันทึกเฉพาะของที่<b>ไม่มีสต็อกเลย</b> + ที่จับคู่กับคลังไม่ได้ ไว้เป็นโน้ตกันตกหล่น<b>ให้อัตโนมัติทันที</b> พร้อมจำนวนวันที่ค้าง ทุกคนที่เข้าเว็บนี้เห็นบันทึกเดียวกัน</p>
+        <p style={{ fontSize: 12.5, color: "#6B7280", marginBottom: 10 }}>วางรายการจาก MyOrder (ปุ่ม "คัดลอกรายการสินค้า" ใน extension) แล้วกด "เทียบข้อมูลสินค้า" — ระบบจะบันทึก<b>ทุกรายการที่ค้างส่ง</b> (ทั้งที่ยังมีสต็อกและไม่มีสต็อก) + ที่จับคู่กับคลังไม่ได้ ไว้เป็นโน้ตกันตกหล่น<b>ให้อัตโนมัติทันที</b> พร้อมจำนวนวันที่ค้าง ทุกคนที่เข้าเว็บนี้เห็นบันทึกเดียวกัน</p>
         <textarea value={paste} onChange={e => setPaste(e.target.value)}
           placeholder={"เช่น\nที่เกี่ยวขาแว่นกันหล่น\t480 ชิ้น\nชั้นเสียบครีมติดผนัง\t204 ชิ้น"}
           style={{ width: "100%", minHeight: 130, border: "1px solid #E5E7EB", borderRadius: 10, padding: 10, fontSize: 13, fontFamily: "inherit", resize: "vertical" }} />
@@ -3134,7 +3146,7 @@ function BacklogNotesPanel({ products, showToast }) {
           {rows != null && (
             <button onClick={doSave} disabled={saving}
               style={{ background: "#16A34A", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.6 : 1 }}>
-              {saving ? "กำลังบันทึก..." : `💾 บันทึก "ค้างส่ง (สต็อกไม่มีของ)" ลงบันทึก (${noStock.length + unmatched.length} รายการ)`}
+              {saving ? "กำลังบันทึก..." : `💾 บันทึกอีกครั้ง (${rows.length + unmatched.length} รายการ)`}
             </button>
           )}
           <span style={{ fontSize: 12, color: "#6B7280" }}>{parseInfo}</span>
@@ -3282,6 +3294,15 @@ function BacklogNotesPanel({ products, showToast }) {
             </div>
           ) : (
           <>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+            <div style={{ display: "flex", gap: 4, background: "#EAEFED", borderRadius: 12, padding: 4 }}>
+              {[["all", `ทั้งหมด (${savedItemsAll.length})`], ["over", `🔴 ของมีแต่ยังไม่ส่ง (${savedOver.length})`], ["short", `📭 ค้างส่ง (${savedShort.length})`]].map(([v, l]) => (
+                <button key={v} onClick={() => setSavedFilter(v)}
+                  style={{ background: savedFilter === v ? "#7C3AED" : "transparent", color: savedFilter === v ? "#fff" : "#6B7280", border: "none", borderRadius: 9, padding: "8px 12px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>{l}</button>
+              ))}
+            </div>
+            <input className="inp" value={savedSearch} onChange={e => setSavedSearch(e.target.value)} placeholder="🔍 กรองชื่อสินค้า..." style={{ maxWidth: 220, padding: "8px 12px" }} />
+          </div>
           {selectedIds.size > 0 && (
             <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 12, padding: "8px 14px", marginBottom: 10 }}>
               <span style={{ fontSize: 12.5, color: "#991B1B", fontWeight: 700 }}>เลือกแล้ว {selectedIds.size} รายการ</span>
@@ -3298,12 +3319,15 @@ function BacklogNotesPanel({ products, showToast }) {
                       padding: "12px 10px", fontSize: 12, fontWeight: 800, color: "#fff", textAlign: i === 2 || i === 7 ? "left" : "center",
                       background: ["#3B82F6", "#3B82F6", "#3B82F6", "#F43F5E", "#F59E0B", "#10B981", "#EA580C", "#8B5CF6", "#64748B"][i],
                       borderRadius: i === 0 ? "12px 0 0 12px" : i === 8 ? "0 12px 12px 0" : 0,
-                    }}>{i === 0 ? <input type="checkbox" checked={saved.items.length > 0 && selectedIds.size === saved.items.length} onChange={toggleSelectAll} style={{ cursor: "pointer" }} /> : h}</th>
+                    }}>{i === 0 ? <input type="checkbox" checked={savedShown.length > 0 && selectedIds.size === savedShown.length} onChange={toggleSelectAll} style={{ cursor: "pointer" }} /> : h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {saved.items.map((it, i) => (
+                {savedShown.length === 0 && (
+                  <tr><td colSpan={9} style={{ textAlign: "center", padding: 24, color: "#9CA3AF", background: "#FAFBFC" }}>ไม่มีรายการในกลุ่มนี้</td></tr>
+                )}
+                {savedShown.map((it, i) => (
                   <tr key={it.id} style={{ background: selectedIds.has(it.id) ? "#FEF2F2" : undefined }}>
                     <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC", borderRadius: "12px 0 0 12px" }}>
                       <input type="checkbox" checked={selectedIds.has(it.id)} onChange={() => toggleSelect(it.id)} style={{ cursor: "pointer" }} />
