@@ -2224,6 +2224,9 @@ function printHtmlInPlace(html) {
   doc.open(); doc.write(html); doc.close();
 }
 const PICK_SETUP_HINT = "ยังไม่ได้ตั้งค่าฐานข้อมูล — รันไฟล์ scan-verify-setup.sql ใน Supabase SQL Editor ก่อน (เพิ่มคอลัมน์ pick_* ใน order_scans และตาราง product_aliases)";
+// order_scans ถูกใช้เก็บยอดสรุปที่ extension ส่งเข้ามาทุกครั้งที่พิมพ์สลิปมาตั้งแต่ก่อนฟีเจอร์ "ยิงตัดสต็อก" นี้จะมีอยู่ (ใช้เทียบยอดในหน้าเช็คออเดอร์ > สรุปรายวัน)
+// รายการเก่าก่อนวันนี้ที่ไม่เคยถูกยิงเปิดเลย (pick_status ว่าง) จึงเป็นแค่ log เก่า ไม่ใช่ใบหยิบจริง — ซ่อนไว้ไม่ให้มากองในหน้านี้ แต่ไม่ลบข้อมูลจริงออกจากฐานข้อมูล
+const PICK_FEATURE_FLOOR = "2026-09-13T00:00:00+07:00";
 const isSetupError = (e) => /pick_|product_aliases|schema cache|PGRST20/i.test(String(e?.message || e));
 
 // แปลงแถว product_aliases → Map(ชื่อ myorder → components [{product_id, qty}])  ([] = ไม่มีในคลัง ไม่ตัดสต็อก)
@@ -2412,9 +2415,10 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
         const toIso = new Date(to + "T23:59:59").toISOString();
         rows = await api.getOrderScansRange(fromIso, toIso);
       }
-      const filtered = recentStatusFilter === "all" ? (rows || [])
-        : recentStatusFilter === "closed" ? (rows || []).filter(r => r.pick_status === "closed")
-        : (rows || []).filter(r => r.pick_status !== "closed");
+      const notStaleLog = (rows || []).filter(r => r.pick_status || new Date(r.created_at) >= new Date(PICK_FEATURE_FLOOR));
+      const filtered = recentStatusFilter === "all" ? notStaleLog
+        : recentStatusFilter === "closed" ? notStaleLog.filter(r => r.pick_status === "closed")
+        : notStaleLog.filter(r => r.pick_status !== "closed");
       setRecent(filtered);
     } catch (e) { showToast(e.message, "error"); }
     setLoadingRecent(false);
