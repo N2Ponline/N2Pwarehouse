@@ -3532,9 +3532,7 @@ export default function WarehouseApp() {
   const [orderScanSearch, setOrderScanSearch] = useState("");
   const [expandedScanIds, setExpandedScanIds] = useState(new Set());
   const [reviewerName, setReviewerName] = useState("");
-  const [scansUnlocked, setScansUnlocked] = useState(() => {
-    try { return sessionStorage.getItem("orderScansUnlocked") === "1"; } catch { return false; }
-  });
+  const [scansUnlocked, setScansUnlocked] = useState(false); // ตั้งใจไม่จำข้ามการรีเฟรช — ผู้ใช้ขอให้ทุกครั้งที่รีเฟรชหน้าต้องกรอกรหัสใหม่เสมอ
   const [scanPasswordInput, setScanPasswordInput] = useState("");
   const [scanPasswordError, setScanPasswordError] = useState("");
   const [orderScansView, setOrderScansView] = useState("summary"); // "summary" | "list"
@@ -3555,7 +3553,6 @@ export default function WarehouseApp() {
       setScansUnlocked(true);
       setScanPasswordError("");
       setScanPasswordInput("");
-      try { sessionStorage.setItem("orderScansUnlocked", "1"); } catch {}
     } else {
       setScanPasswordError("รหัสไม่ถูกต้อง");
     }
@@ -4576,14 +4573,14 @@ export default function WarehouseApp() {
     setSelectedForDispose(new Set());
   };
   const stockSubTabs = tab === "stockcheck" ? (
-    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 18 }}>
-      {[["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"], ["labels", "🏷️ แผ่นบาร์โค้ด"], ["backlog", "📋 บันทึกค้างส่ง"], ["reorder", "🛒 ต้องสั่งซื้อ"], ["transactions", "🔄 เคลื่อนไหว"], ["dispose", "🗑️ จำหน่ายออก"]].map(([v, l]) => {
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, width: 200, flexShrink: 0 }}>
+      {[["backlog", "📋 บันทึกค้างส่ง"], ["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["reorder", "🛒 ต้องสั่งซื้อ"], ["dispose", "🗑️ จำหน่ายออก"], ["labels", "🏷️ แผ่นบาร์โค้ด"], ["transactions", "🔄 เคลื่อนไหว"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"]].map(([v, l]) => {
         const on = v !== "print" && stockSub === v;
         const badgeCount = v === "orders" ? unreviewedScanCount : v === "reorder" ? reorderList.length : 0;
         return (
           <button key={v} onClick={() => goStockSub(v)}
-            style={{ background: on ? "#7C3AED" : "#fff", color: on ? "#fff" : "#6B7280", border: "1px solid " + (on ? "#7C3AED" : "#E5E7EB"), borderRadius: 10, padding: "8px 16px", fontSize: 13, fontWeight: on ? 700 : 500, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
-            {l}{badgeCount > 0 ? ` (${badgeCount})` : ""}
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", textAlign: "left", background: on ? "#7C3AED" : "#fff", color: on ? "#fff" : "#6B7280", border: "1px solid " + (on ? "#7C3AED" : "#E5E7EB"), borderRadius: 10, padding: "10px 14px", fontSize: 13, fontWeight: on ? 700 : 500, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+            <span>{l}</span>{badgeCount > 0 ? <span style={{ background: on ? "rgba(255,255,255,.25)" : "#FEE2E2", color: on ? "#fff" : "#DC2626", borderRadius: 999, padding: "1px 8px", fontSize: 11, fontWeight: 700 }}>{badgeCount}</span> : null}
           </button>
         );
       })}
@@ -4713,8 +4710,9 @@ export default function WarehouseApp() {
 
         {/* ─── INVENTORY ─── */}
         {(tab === "inventory" || (tab === "stockcheck" && scansUnlocked && (stockSub === "adjust" || (stockSub === "dispose" && disposeMode)))) && (
-          <div>
+          <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
             {stockSubTabs}
+            <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
               <div>
                 <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>{tab === "stockcheck" ? (stockSub === "adjust" ? "🔍 ปรับสต็อก" : "🗑️ จำหน่ายออก") : "📦 คลังสินค้า"}</h2>
@@ -4903,13 +4901,15 @@ export default function WarehouseApp() {
                 <div style={{ textAlign: "center", padding: 48, color: "#9CA3AF" }}>ไม่พบสินค้า — ลองเปลี่ยนคำค้นหรือตัวกรอง</div>
               )}
             </div>
+            </div>
           </div>
         )}
 
         {/* ─── ต้องสั่งซื้อ ─── */}
         {tab === "stockcheck" && scansUnlocked && stockSub === "reorder" && (
-          <div>
+          <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
             {stockSubTabs}
+            <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
               <div>
                 <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🛒 ต้องสั่งซื้อ</h2>
@@ -4983,13 +4983,15 @@ export default function WarehouseApp() {
                 <ReorderTable list={reorderLowStockView} search={reorderSearch} />
               )}
             </div>
+            </div>
           </div>
         )}
 
         {/* ─── TRANSACTIONS ─── */}
         {tab === "stockcheck" && scansUnlocked && stockSub === "transactions" && (
-          <div>
+          <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
             {stockSubTabs}
+            <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
               <div>
                 <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🔄 รับเข้า - เบิกออก</h2>
@@ -5060,6 +5062,7 @@ export default function WarehouseApp() {
                 </div>
               )}
             </div>
+            </div>
           </div>
         )}
 
@@ -5068,8 +5071,9 @@ export default function WarehouseApp() {
 
         {/* ─── DISPOSE ─── */}
         {tab === "stockcheck" && scansUnlocked && stockSub === "dispose" && !disposeMode && (
-          <div>
+          <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
             {stockSubTabs}
+            <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
               <div>
                 <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🗑️ ประวัติจำหน่ายออก</h2>
@@ -5123,6 +5127,7 @@ export default function WarehouseApp() {
                 )}
               </div>
             )}
+            </div>
           </div>
         )}
 
@@ -5149,20 +5154,25 @@ export default function WarehouseApp() {
           </div>
         )}
         {tab === "stockcheck" && scansUnlocked && stockSub === "labels" && (
-          <div>
+          <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
             {stockSubTabs}
+            <div style={{ flex: 1, minWidth: 0 }}>
             <LabelSheetPanel products={products} />
+            </div>
           </div>
         )}
         {tab === "stockcheck" && scansUnlocked && stockSub === "backlog" && (
-          <div>
+          <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
             {stockSubTabs}
+            <div style={{ flex: 1, minWidth: 0 }}>
             <BacklogNotesPanel products={products} showToast={showToast} />
+            </div>
           </div>
         )}
         {tab === "stockcheck" && scansUnlocked && stockSub === "orders" && (
-          <div>
+          <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
             {stockSubTabs}
+            <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
               <div>
                 <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🧾 เช็คออเดอร์ (จาก MyOrder)</h2>
@@ -5428,6 +5438,7 @@ export default function WarehouseApp() {
                 )}
               </div>
             )}
+            </div>
           </div>
         )}
       </div>
