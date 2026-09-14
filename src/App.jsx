@@ -54,6 +54,11 @@ const api = {
   getBacklog: () => sbAll("n2p_backlog?select=id,name,total,rounds"),
   // ใบสั่งซื้อทั้งชุด (doc) — ใช้ตอนโชว์รายการรอรับแยกเป็นรายใบในหน้า "รับสินค้าเข้า" (สินค้าเดียวอาจมาจากหลายใบพร้อมกัน)
   getOrders: () => sbAll("n2p_orders?select=id,doc_no,data"),
+  // เขียนกลับตัดยอดรอบสั่งให้อัตโนมัติตอนผู้จัดการอนุมัติใน StockMaster (แทนฝ่ายจัดซื้อติ๊ก/กรอกเองใน n2p-order) — ดึงสดก่อนเขียนเสมอกันชนกับคนแก้พร้อมกัน
+  getBacklogItem: (id) => sb(`n2p_backlog?id=eq.${id}&select=*`).then(rows => (rows && rows[0]) || null),
+  updateBacklogRounds: (id, rounds) => sb(`n2p_backlog?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ rounds }) }),
+  getOrderDoc: (id) => sb(`n2p_orders?id=eq.${id}&select=*`).then(rows => (rows && rows[0]) || null),
+  updateOrderDocData: (id, docNo, data) => sb(`n2p_orders?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ doc_no: docNo, data }) }),
   reviewOrderScan: (id, by) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ reviewed: true, reviewed_by: by, reviewed_at: new Date().toISOString() }) }),
   unreviewOrderScan: (id) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ reviewed: false, reviewed_by: null, reviewed_at: null }) }),
   deleteOrderScan: (id) => sb(`order_scans?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
@@ -205,8 +210,9 @@ const matchBacklogName = (key, rawProducts, incomingAlias) => {
   return { productId: null, how: best ? "ใกล้เคียงหลายตัว เลือกเองก่อน" : "ไม่พบสินค้าที่ตรงกัน", score: 0, manual: false };
 };
 
-// ของรอเข้าของรายการหนึ่ง = ผลรวมของรอบที่ยังเข้าไม่ครบ (สูตรเดียวกับหน้ารอสั่งของระบบใบสั่ง) หักด้วยยอดที่รับเข้าไปแล้วผ่าน StockMaster เอง (loggedByRound)
-// เพราะ StockMaster ไม่เขียนกลับเข้า n2p_backlog.rounds.receivedQty (กันชนกับ sync ของระบบใบสั่งเอง) ถ้าไม่หักยอดรอเข้าจะค้างตลอดไปทั้งที่รับจริงแล้ว
+// ของรอเข้าของรายการหนึ่ง = ผลรวมของรอบที่ยังเข้าไม่ครบ (สูตรเดียวกับหน้ารอสั่งของระบบใบสั่ง) หักด้วยยอดที่ฝ่ายคลังบันทึกไว้แต่ผู้จัดการยังไม่อนุมัติ (loggedByRound)
+// ตอนอนุมัติแล้ว StockMaster เขียนกลับเข้า n2p_backlog.rounds.receivedQty ให้เองอัตโนมัติ (ดู syncApprovalToOrderSystem) ยอด receivedQty จึงแม่นอยู่แล้วไม่ต้องหักซ้ำ
+// ที่ต้องหักคือช่วง "รออนุมัติ" เท่านั้น กันพนักงานอีกคนเห็นว่ายังไม่มีใครบันทึกแล้วบันทึกซ้ำก่อนผู้จัดการจะกดอนุมัติทัน
 // รอบแรกอาจเป็น meta element ที่ระบบใบสั่งใช้เก็บ tag — ต้องข้าม
 const backlogInTransit = (row, loggedByRound) => (Array.isArray(row?.rounds) ? row.rounds : [])
   .reduce((sum, r) => {
@@ -215,15 +221,44 @@ const backlogInTransit = (row, loggedByRound) => (Array.isArray(row?.rounds) ? r
     return sum + Math.max(0, (Number(r?.qty) || 0) - (Number(r?.receivedQty) || 0) - logged);
   }, 0);
 
-// ยอดที่รับเข้าไปแล้วผ่าน StockMaster ต่อรอบสั่ง (backlog_round_id) — ไม่นับ status='skipped' เพราะแปลว่าตั้งใจไม่บันทึกลงคลัง ไม่ถือว่ารับแล้ว
+// ยอดที่ฝ่ายคลังบันทึกไว้แต่ยังรออนุมัติ (status='pending') ต่อรอบสั่ง — ไม่นับ approved/skipped เพราะ approved ถูกเขียนกลับเข้า receivedQty จริงแล้ว นับซ้ำจะหักเกิน
 const loggedQtyByRound = (receivingLogs) => {
   const m = new Map();
-  (receivingLogs || []).filter(r => r.status !== "skipped" && r.backlog_round_id != null).forEach(r => {
+  (receivingLogs || []).filter(r => r.status === "pending" && r.backlog_round_id != null).forEach(r => {
     const key = String(r.backlog_round_id);
     m.set(key, (m.get(key) || 0) + (Number(r.received_qty) || 0));
   });
   return m;
 };
+
+// ตัดยอดกลับเข้าระบบใบสั่งซื้อให้อัตโนมัติตอนผู้จัดการอนุมัติใน StockMaster — แทนที่ฝ่ายจัดซื้อจะต้องติ๊ก/กรอกจำนวนเองใน n2p-order
+// มิเรอร์ toggleRoundReceived + syncRoundToDoc ของระบบใบสั่งเป๊ะ (อ่านจากซอร์สจริงมาก่อนเขียน) ให้สถานะ "เข้าครบ/บางส่วน" ตรงกันทั้ง 2 ระบบเสมอ
+// ดึงข้อมูลสดก่อนเขียนทุกครั้ง (ไม่ใช้ค่าที่ค้างอยู่ในเครื่อง) ลดความเสี่ยงชนกับคนแก้พร้อมกัน — เขียนไม่สำเร็จไม่ทำให้การเพิ่มสต็อกล้มเหลวตามไปด้วย (สต็อกเข้าไปแล้วสำคัญกว่า แค่แจ้งเตือน)
+async function syncApprovalToOrderSystem(row, qty) {
+  if (row.backlog_item_id == null || row.backlog_round_id == null) return;
+  const freshItem = await api.getBacklogItem(row.backlog_item_id);
+  if (!freshItem) return;
+  let newReceivedQty = qty;
+  const rounds = (freshItem.rounds || []).map(r => {
+    if ((r && r.___meta) || String(r.id) !== String(row.backlog_round_id)) return r;
+    newReceivedQty = (Number(r.receivedQty) || 0) + qty;
+    return { ...r, receivedQty: newReceivedQty, received: newReceivedQty >= (Number(r.qty) || 0) };
+  });
+  await api.updateBacklogRounds(row.backlog_item_id, rounds);
+
+  if (row.doc_id != null) {
+    const freshDoc = await api.getOrderDoc(row.doc_id);
+    if (freshDoc && freshDoc.data) {
+      const data = { ...freshDoc.data };
+      data.items = (data.items || []).map(it => String(it.backlogRoundId) === String(row.backlog_round_id) ? { ...it, received: newReceivedQty } : it);
+      const named = data.items.filter(i => i.name);
+      data.status = named.length && named.every(i => i.received === i.ordered) ? "complete"
+        : named.some(i => i.received > 0) ? "partial" : "pending";
+      if (data.status !== "pending" && !data.recvDate) data.recvDate = new Date().toISOString().split("T")[0];
+      await api.updateOrderDocData(row.doc_id, data.docNo || freshDoc.doc_no, data);
+    }
+  }
+}
 
 // การจับคู่ที่ผู้ใช้ตั้งเอง เก็บใน localStorage — ตาราง n2p_backlog เพิ่มคอลัมน์ไม่ได้
 // และ meta element ใน rounds ถูกระบบใบสั่งเขียนทับทุกครั้งที่บันทึก
@@ -3587,8 +3622,9 @@ function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange
         }
       });
     });
+    // นับเฉพาะ status='pending' — 'approved' ถูกเขียนกลับเข้า receivedQty ของ n2p_backlog จริงแล้ว (syncApprovalToOrderSystem) นับซ้ำที่นี่จะหักเกิน
     const loggedByKey = new Map();
-    receivingLogsAll.filter(r => r.status !== "skipped").forEach(r => {
+    receivingLogsAll.filter(r => r.status === "pending").forEach(r => {
       const key = r.backlog_round_id != null ? `r:${r.backlog_round_id}` : `k:${r.doc_id}:${r.backlog_item_name}`;
       loggedByKey.set(key, (loggedByKey.get(key) || 0) + (Number(r.received_qty) || 0));
     });
@@ -3799,19 +3835,34 @@ function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange
 // ═══════════ รับเข้ารออนุมัติ — ผู้จัดการตรวจก่อนเข้าสต็อกจริง (อยู่ในเช็คสต็อกที่ล็อกรหัสอยู่แล้ว) ═══════════
 // onStockChange(productId, newQty, txRow) — ใช้ตัวเดียวกับ applyPickCut ของหน้าหลัก เพื่อให้ state สินค้า/ประวัติซิงค์กันทันที
 function ReceivingApprovalPanel({ products, onStockChange, onReceivingLogChange, showToast }) {
-  const [pending, setPending] = useState([]);
+  const [allLogs, setAllLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [approverBy, setApproverBy] = useState("");
   const [edits, setEdits] = useState({}); // { [id]: { receivedQty, productId, skip } }
   const [busyId, setBusyId] = useState(null);
+  const [view, setView] = useState("pending"); // "pending" | "history"
+  const [historySearch, setHistorySearch] = useState("");
+  const historyDateFilter = useDateFilterState("all");
 
   const load = async () => {
     setLoading(true);
-    try { setPending((await api.getReceivingLogs()).filter(r => r.status === "pending")); }
+    try { setAllLogs(await api.getReceivingLogs()); }
     catch (e) { showToast(e.message, "error"); }
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+
+  const pending = useMemo(() => allLogs.filter(r => r.status === "pending"), [allLogs]);
+  const history = useMemo(() => {
+    const kw = historySearch.trim().toLowerCase();
+    return allLogs.filter(r => {
+      if (r.status === "pending") return false;
+      const day = (r.approved_at || r.created_at || "").slice(0, 10);
+      if (historyDateFilter.mode !== "all" && (day < historyDateFilter.rangeFrom || day > historyDateFilter.rangeTo)) return false;
+      if (kw && !(r.product_name || r.backlog_item_name || "").toLowerCase().includes(kw)) return false;
+      return true;
+    }).sort((a, b) => (b.approved_at || b.created_at || "").localeCompare(a.approved_at || a.created_at || ""));
+  }, [allLogs, historySearch, historyDateFilter.mode, historyDateFilter.rangeFrom, historyDateFilter.rangeTo]);
 
   const getEdit = (row) => edits[row.id] || { receivedQty: row.received_qty, productId: row.product_id, skip: false };
   const setEdit = (id, patch) => setEdits(prev => {
@@ -3828,6 +3879,7 @@ function ReceivingApprovalPanel({ products, onStockChange, onReceivingLogChange,
       if (e.skip) {
         const updated = await api.updateReceivingLog(row.id, { status: "skipped", approved_by: approverBy.trim(), approved_at: new Date().toISOString() });
         if (onReceivingLogChange && updated) onReceivingLogChange(updated);
+        if (updated) setAllLogs(prev => prev.map(r => r.id === updated[0].id ? updated[0] : r));
         showToast("ตั้งเป็น \"ไม่บันทึกลงคลัง\" แล้ว");
       } else {
         const qty = Number(e.receivedQty) || 0;
@@ -3841,14 +3893,19 @@ function ReceivingApprovalPanel({ products, onStockChange, onReceivingLogChange,
           note: `รับเข้าจากใบสั่งซื้อ (${row.backlog_item_name})${row.note ? " - " + row.note : ""}`, by: approverBy.trim(),
         });
         onStockChange(product.id, newQty, newTx);
+        try {
+          await syncApprovalToOrderSystem(row, qty);
+        } catch (syncErr) {
+          showToast(`เพิ่มสต็อกสำเร็จ แต่ตัดยอดในใบสั่งซื้อไม่สำเร็จ: ${syncErr.message}`, "error");
+        }
         const updated = await api.updateReceivingLog(row.id, {
           status: "approved", approved_by: approverBy.trim(), approved_at: new Date().toISOString(),
           received_qty: qty, product_id: product.id, product_name: product.name, sku: product.sku,
         });
         if (onReceivingLogChange && updated) onReceivingLogChange(updated);
-        showToast(`เพิ่มเข้าสต็อก "${product.name}" +${qty} สำเร็จ`);
+        if (updated) setAllLogs(prev => prev.map(r => r.id === updated[0].id ? updated[0] : r));
+        showToast(`เพิ่มเข้าสต็อก "${product.name}" +${qty} สำเร็จ · ตัดยอดในใบสั่งซื้อให้แล้ว`);
       }
-      setPending(prev => prev.filter(r => r.id !== row.id));
     } catch (err) { showToast(err.message, "error"); }
     setBusyId(null);
   };
@@ -3860,6 +3917,19 @@ function ReceivingApprovalPanel({ products, onStockChange, onReceivingLogChange,
         <p style={{ fontSize: 13, color: "#6B7280" }}>รายการที่ฝ่ายคลังบันทึกรับเข้าไว้ ({pending.length} รายการ) — ตรวจสอบแล้วค่อยยืนยันเข้าสต็อกจริง</p>
       </div>
 
+      <div className="filter-tabs" style={{ display: "flex", gap: 4, background: "#EAEFED", borderRadius: 12, padding: 4, marginBottom: 14, width: "fit-content" }}>
+        {[["pending", `⏳ รออนุมัติ (${pending.length})`], ["history", "📜 ประวัติ"]].map(([v, l]) => (
+          <button key={v} onClick={() => setView(v)}
+            style={{ background: view === v ? "#7C3AED" : "transparent", color: view === v ? "#fff" : "#6B7280", border: "none", borderRadius: 9, padding: "8px 16px", fontSize: 13, fontWeight: view === v ? 700 : 500, cursor: "pointer" }}>
+            {l}
+          </button>
+        ))}
+      </div>
+
+      {loading && <div style={{ textAlign: "center", padding: 30, color: "#6B7280" }}>กำลังโหลด...</div>}
+
+      {!loading && view === "pending" && (
+      <>
       <div style={{ background: "#FFFBEB", border: "1.5px solid #FDE68A", borderRadius: 14, padding: "12px 16px", marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ fontSize: 18 }}>⚠️</span>
         <div style={{ fontSize: 13, color: "#92400E" }}><b>ตรวจสอบให้แน่ใจว่าสินค้าที่จับคู่ตรงกับของจริงก่อนยืนยันทุกครั้ง</b> — ถ้าจับคู่ผิดสินค้าจะทำให้สต็อกของสินค้านั้นคลาดเคลื่อน</div>
@@ -3869,11 +3939,10 @@ function ReceivingApprovalPanel({ products, onStockChange, onReceivingLogChange,
         <input className="inp" style={{ width: "100%" }} placeholder="ชื่อผู้อนุมัติ *" value={approverBy} onChange={e => setApproverBy(e.target.value)} />
       </div>
 
-      {loading && <div style={{ textAlign: "center", padding: 30, color: "#6B7280" }}>กำลังโหลด...</div>}
-      {!loading && pending.length === 0 && (
+      {pending.length === 0 && (
         <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 40, color: "#9CA3AF" }}>ไม่มีรายการรออนุมัติ 🎉</div>
       )}
-      {!loading && pending.length > 0 && (
+      {pending.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {pending.map(row => {
             const e = getEdit(row);
@@ -3925,6 +3994,46 @@ function ReceivingApprovalPanel({ products, onStockChange, onReceivingLogChange,
           })}
         </div>
       )}
+      </>
+      )}
+
+      {!loading && view === "history" && (
+        <div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+            <DateFilterRow filter={historyDateFilter} accent="linear-gradient(135deg,#7C3AED,#3B82F6)" />
+            <input className="inp" style={{ minWidth: 220 }} placeholder="🔍 กรองชื่อสินค้า..." value={historySearch} onChange={e => setHistorySearch(e.target.value)} />
+          </div>
+          <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden", overflowX: "auto" }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>วันที่</th><th>ชื่อสินค้า</th><th>SKU</th><th>จำนวน</th><th>ใบสั่งซื้อ</th><th>สถานะ</th><th>บันทึกโดย</th><th>อนุมัติโดย</th><th>หมายเหตุ</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map(r => (
+                  <tr key={r.id}>
+                    <td style={{ whiteSpace: "nowrap", fontSize: 12, color: "#6B7280" }}>{fmtDT(r.approved_at || r.created_at)}</td>
+                    <td style={{ fontWeight: 600 }}>{r.product_name || r.backlog_item_name}</td>
+                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{r.sku || "-"}</td>
+                    <td style={{ fontFamily: "monospace" }}>{r.received_qty}</td>
+                    <td style={{ fontSize: 12, color: "#6B7280" }}>{r.doc_no || "-"}</td>
+                    <td>
+                      <span style={{ background: r.status === "approved" ? "#D1FAE5" : "#F3F4F6", color: r.status === "approved" ? "#059669" : "#6B7280", borderRadius: 6, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>
+                        {r.status === "approved" ? "✅ เข้าสต็อกแล้ว" : "🚫 ไม่บันทึกลงคลัง"}
+                      </span>
+                    </td>
+                    <td>{r.received_by || "-"}</td>
+                    <td>{r.approved_by || "-"}</td>
+                    <td style={{ fontSize: 12, color: "#6B7280" }}>{r.note || "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {history.length === 0 && <div style={{ textAlign: "center", padding: 40, color: "#9CA3AF" }}>ไม่พบรายการ</div>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3934,7 +4043,7 @@ export default function WarehouseApp() {
   const [aliasMap, setAliasMap] = useState(new Map()); // ชื่อสินค้าตาม myorder → [{product_id, qty}] (จากตาราง product_aliases)
   const [backlog, setBacklog] = useState([]);            // n2p_backlog จากระบบใบสั่ง — ใช้แค่คำนวณ "รอเข้า" (ของที่สั่งซัพพลายเออร์แล้วยังไม่มาส่ง) เท่านั้น
   const [backlogNotes, setBacklogNotes] = useState(null); // backlog_notes ในตัว StockMaster เอง — ใช้คำนวณ "ค้างส่ง" (ค้างส่งลูกค้าจาก MyOrder) แทนของเดิมที่เคยอิงระบบใบสั่ง
-  const [receivingLogs, setReceivingLogs] = useState([]); // ใช้หักยอด "รอเข้า" ที่รับเข้าไปแล้วผ่าน StockMaster ออก เพราะไม่เขียนกลับเข้า n2p_backlog.rounds.receivedQty (กันชนกับ sync ของระบบใบสั่งเอง) ไม่งั้นยอดรอเข้าจะค้างตลอดไปทั้งที่รับจริงแล้ว
+  const [receivingLogs, setReceivingLogs] = useState([]); // ใช้หักยอด "รอเข้า" ชั่วคราวเฉพาะรายการที่ฝ่ายคลังบันทึกไว้แต่ยัง "รออนุมัติ" (status=pending) กันเห็นซ้ำ/บันทึกซ้ำก่อนผู้จัดการกดยืนยัน — พออนุมัติแล้ว StockMaster เขียนกลับเข้า n2p_backlog.rounds.receivedQty ให้เองอัตโนมัติ (syncApprovalToOrderSystem) ยอดรอเข้าจะถูกต้องจากต้นทางโดยตรง
   const [showIncomingModal, setShowIncomingModal] = useState(false);
   const [incomingAlias, setIncomingAlias] = useState(loadAliasMap);
   const [incomingSearch, setIncomingSearch] = useState("");
