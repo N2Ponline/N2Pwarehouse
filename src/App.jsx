@@ -3509,7 +3509,8 @@ function LabelSheetPanel({ products }) {
 export default function WarehouseApp() {
   const [rawProducts, setRawProducts] = useState([]);
   const [aliasMap, setAliasMap] = useState(new Map()); // ชื่อสินค้าตาม myorder → [{product_id, qty}] (จากตาราง product_aliases)
-  const [backlog, setBacklog] = useState([]);            // n2p_backlog จากระบบใบสั่ง
+  const [backlog, setBacklog] = useState([]);            // n2p_backlog จากระบบใบสั่ง — ใช้แค่คำนวณ "รอเข้า" (ของที่สั่งซัพพลายเออร์แล้วยังไม่มาส่ง) เท่านั้น
+  const [backlogNotes, setBacklogNotes] = useState(null); // backlog_notes ในตัว StockMaster เอง — ใช้คำนวณ "ค้างส่ง" (ค้างส่งลูกค้าจาก MyOrder) แทนของเดิมที่เคยอิงระบบใบสั่ง
   const [showIncomingModal, setShowIncomingModal] = useState(false);
   const [incomingAlias, setIncomingAlias] = useState(loadAliasMap);
   const [incomingSearch, setIncomingSearch] = useState("");
@@ -3768,18 +3769,21 @@ export default function WarehouseApp() {
     setLoading(true);
     setDbError(null);
     try {
-      const [prods, txs, bl, al] = await Promise.all([
+      const [prods, txs, bl, al, bn] = await Promise.all([
         api.getProducts(),
         api.getTransactions(),
         // ของระบบใบสั่ง — ถ้าดึงไม่ได้ก็ให้คลังทำงานต่อได้ตามปกติ แค่ไม่มียอดรอเข้า
         api.getBacklog().catch(() => []),
         // การจับคู่ชื่อ myorder → SKU — ตารางยังไม่ถูกสร้าง (ยังไม่รัน scan-verify-setup.sql) ก็ไม่ให้แอปพัง
         api.getAliases().catch(() => []),
+        // บันทึกค้างส่งในตัว StockMaster เอง — ถ้าดึงไม่ได้ (ยังไม่รัน backlog-notes-setup.sql) ก็ให้คลังทำงานต่อได้ แค่ไม่มียอดค้างส่ง
+        api.getBacklogNotes().catch(() => null),
       ]);
       setRawProducts((prods || []).map(dbToProduct));
       setTransactions((txs || []).map(dbToTx));
       setBacklog(bl || []);
       setAliasMap(aliasRowsToMap(al));
+      setBacklogNotes(bn);
     } catch (e) {
       setDbError(e.message);
     } finally {
@@ -3830,22 +3834,33 @@ export default function WarehouseApp() {
     const byProduct = new Map();
     rows.forEach(r => {
       if (r.productId == null) return;
-      const cur = byProduct.get(r.productId) || { qty: 0, backlogTotal: 0, sources: [] };
+      const cur = byProduct.get(r.productId) || { qty: 0, sources: [] };
       cur.qty += r.inTransit;
-      cur.backlogTotal += r.total;
-      cur.sources.push({ name: r.name, qty: r.inTransit, total: r.total });
+      cur.sources.push({ name: r.name, qty: r.inTransit });
       byProduct.set(r.productId, cur);
     });
     return { rows, byProduct };
   }, [backlog, rawProducts, incomingAlias]);
 
-  // ยอด "รอเข้า" และ "ค้างส่ง" ยึดตามระบบใบสั่งอย่างเดียว (แหล่งข้อมูลจริง)
+  // "ค้างส่ง" อิงบันทึกค้างส่งในตัว StockMaster เอง (backlog_notes เมนูย่อยใต้เช็คสต็อก) แทนระบบใบสั่งเดิม —
+  // ยึดยอด myQty ของรายการที่จับคู่สินค้าได้ (matched) จากบันทึกล่าสุด ไม่รวมรายการจับคู่ไม่ได้เพราะระบุสินค้าไม่ได้
+  const backlogFromNotes = useMemo(() => {
+    const byProduct = new Map();
+    (backlogNotes?.items || []).forEach(it => {
+      if (!it.matched) return;
+      byProduct.set(String(it.id), { myQty: Number(it.myQty) || 0, itemNote: it.itemNote || "" });
+    });
+    return byProduct;
+  }, [backlogNotes]);
+
+  // ยอด "รอเข้า" ยึดตามระบบใบสั่งอย่างเดียว (แหล่งข้อมูลจริงของสินค้าที่สั่งซัพพลายเออร์)
   // ใบไหนถูกลบทิ้ง (เช่น ล็อตสุดท้ายเข้าแล้วแต่ไม่ได้ติ๊กรับ แล้วลบใบทิ้งเลย) ยอดต้องเป็น 0 ทันที
   // ห้ามถอยไปใช้ค่าเก่าในตาราง products เด็ดขาด ไม่งั้นยอดผีจะค้างตลอดไป
   const products = useMemo(() => rawProducts.map(p => {
     const inc = incoming.byProduct.get(p.id);
-    return { ...p, qtyOnOrder: inc ? inc.qty : 0, backlogTotal: inc ? inc.backlogTotal : 0, incomingSources: inc ? inc.sources : null };
-  }), [rawProducts, incoming]);
+    const bn = backlogFromNotes.get(String(p.id));
+    return { ...p, qtyOnOrder: inc ? inc.qty : 0, incomingSources: inc ? inc.sources : null, backlogTotal: bn ? bn.myQty : 0, backlogNote: bn ? bn.itemNote : "" };
+  }), [rawProducts, incoming, backlogFromNotes]);
 
   const incomingUnmatched = incoming.rows.filter(r => r.productId == null && (r.inTransit > 0 || r.total > 0));
   const setAlias = (name, productId) => {
@@ -4885,9 +4900,9 @@ export default function WarehouseApp() {
                                 {p.incomingSources && <span style={{ marginLeft: 3, fontSize: 10, opacity: 0.65 }}>🧾</span>}
                               </td>
                         <td style={{ color: p.backlogTotal > 0 ? "#B45309" : "#D1D5DB", fontWeight: p.backlogTotal > 0 ? 700 : 400, whiteSpace: "nowrap" }}
-                          title={p.incomingSources ? "ค้างส่งจากระบบใบสั่ง:\n" + p.incomingSources.map(x => "• " + x.name + " — " + x.total).join("\n") : undefined}>
+                          title={p.backlogTotal > 0 ? `ค้างส่งจากบันทึกค้างส่งใน StockMaster (MyOrder):\nจำนวน: ${p.backlogTotal} ชิ้น${p.backlogNote ? `\nหมายเหตุ: ${p.backlogNote}` : ""}${backlogNotes?.saved_at ? `\nบันทึกล่าสุด: ${fmtDT(backlogNotes.saved_at)}` : ""}` : undefined}>
                           {p.backlogTotal > 0 ? p.backlogTotal : "-"}
-                          {p.backlogTotal > 0 && <span style={{ marginLeft: 3, fontSize: 10, opacity: 0.65 }}>🧾</span>}
+                          {p.backlogTotal > 0 && <span style={{ marginLeft: 3, fontSize: 10, opacity: 0.65 }}>📋</span>}
                         </td>
                         {stockCheckMode && (() => {
                           const raw = stockCounts[p.id] ?? "";
