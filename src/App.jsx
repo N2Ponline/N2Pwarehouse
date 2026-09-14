@@ -52,6 +52,8 @@ const api = {
   getOrderScans: () => sbAll("order_scans?select=*&order=created_at.desc"),
   // ตารางของระบบใบสั่ง (n2p-order.netlify.app) — อยู่ Supabase project เดียวกัน อ่านอย่างเดียว ไม่เขียนกลับ
   getBacklog: () => sbAll("n2p_backlog?select=id,name,total,rounds"),
+  // ใบสั่งซื้อทั้งชุด (doc) — ใช้ตอนโชว์รายการรอรับแยกเป็นรายใบในหน้า "รับสินค้าเข้า" (สินค้าเดียวอาจมาจากหลายใบพร้อมกัน)
+  getOrders: () => sbAll("n2p_orders?select=id,doc_no,data"),
   reviewOrderScan: (id, by) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ reviewed: true, reviewed_by: by, reviewed_at: new Date().toISOString() }) }),
   unreviewOrderScan: (id) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify({ reviewed: false, reviewed_by: null, reviewed_at: null }) }),
   deleteOrderScan: (id) => sb(`order_scans?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
@@ -181,6 +183,26 @@ const scoreMatchProduct = (name, products) => {
   });
   if (best && (best.score >= 0.99 || best.score - second >= 0.03)) return best.p;
   return null;
+};
+
+// จับคู่ชื่อสินค้าจากระบบใบสั่ง (n2p_backlog/n2p_orders) เข้ากับสินค้าในคลัง — ใช้ร่วมกันทั้งยอด
+// "รอเข้า/ค้างส่ง" รวมในตาราง Inventory และรายการรอรับแยกใบใน "รับสินค้าเข้า" กันตรรกะเพี้ยนคนละที่
+// ที่ผู้ใช้ตั้งเองมาก่อนเสมอ (incomingAlias) ถ้าไม่มีค่อยให้ระบบเดา และเดาได้ต่อเมื่อ "ชนะขาด" ตัวรองเท่านั้น
+const matchBacklogName = (key, rawProducts, incomingAlias) => {
+  if (Object.prototype.hasOwnProperty.call(incomingAlias, key)) {
+    const pid = incomingAlias[key];
+    return { productId: pid == null ? null : pid, how: pid == null ? "ตั้งเองว่าไม่จับคู่" : "จับคู่เอง", score: 1, manual: true };
+  }
+  let best = null, second = 0;
+  rawProducts.forEach(p => {
+    const r = nameScore(key, p.name);
+    if (r.score <= 0) return;
+    if (!best || r.score > best.score) { if (best) second = Math.max(second, best.score); best = { ...r, p }; }
+    else if (r.score > second) second = r.score;
+  });
+  if (best && (best.score >= 0.99 || best.score - second >= 0.03))
+    return { productId: best.p.id, how: best.how, score: best.score, manual: false };
+  return { productId: null, how: best ? "ใกล้เคียงหลายตัว เลือกเองก่อน" : "ไม่พบสินค้าที่ตรงกัน", score: 0, manual: false };
 };
 
 // ของรอเข้าของรายการหนึ่ง = ผลรวมของรอบที่ยังเข้าไม่ครบ (สูตรเดียวกับหน้ารอสั่งของระบบใบสั่ง)
@@ -3513,144 +3535,235 @@ function LabelSheetPanel({ products }) {
 
 // ═══════════ รับสินค้าเข้า (แทนใบพิมพ์กระดาษ) — ฝ่ายคลังบันทึกที่นี่ ไม่ล็อกรหัส ═══════════
 // บันทึกแล้วเป็นแค่ "pending" ไม่กระทบสต็อกทันที — ผู้จัดการต้องมาอนุมัติในหน้าเช็คสต็อกก่อนถึงจะเข้าสต็อกจริง
-function ReceivingPanel({ products, pendingBacklogRows, showToast }) {
-  const [logItems, setLogItems] = useState([]); // [{backlogItemId, backlogItemName, productId, orderedQty, receivedQty, note}]
+// รายการรอรับทำงานต่อ "ใบสั่งซื้อ" (n2p_orders) แต่ละใบ ไม่ใช่รวมยอดเป็นก้อนเดียวต่อสินค้า —
+// เพราะสินค้าตัวเดียวอาจมาจากหลายใบสั่งซื้อพร้อมกัน (คนละรอบสั่ง) ต้องรู้ว่าของที่รับมาตรงกับใบไหน
+// เหมือนใบพิมพ์กระดาษเดิมที่พิมพ์แยกทีละใบ (ดูภาพหน้าใบสั่งสินค้าจริงที่ผู้ใช้ส่งมาเป็นต้นแบบ)
+function ReceivingPanel({ products, backlog, incomingAlias, showToast }) {
+  const [orders, setOrders] = useState([]);
+  const [receivingLogsAll, setReceivingLogsAll] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [openDocId, setOpenDocId] = useState(null);
+  const [formItems, setFormItems] = useState({}); // { [roundKey]: {receivedQty, note, productId} }
   const [by, setBy] = useState("");
   const [search, setSearch] = useState("");
-  const [myPending, setMyPending] = useState([]);
-  const [loadingPending, setLoadingPending] = useState(true);
   const [saving, setSaving] = useState(false);
 
-  const loadMyPending = async () => {
-    setLoadingPending(true);
-    try { setMyPending((await api.getReceivingLogs()).filter(r => r.status === "pending")); }
-    catch { /* เงียบไว้ — ไม่ให้บล็อกการบันทึกใหม่ ถ้าตารางยังไม่ถูกสร้าง */ }
-    setLoadingPending(false);
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [ords, logs] = await Promise.all([api.getOrders(), api.getReceivingLogs()]);
+      setOrders(ords || []);
+      setReceivingLogsAll(logs || []);
+    } catch { /* เงียบไว้ — ไม่ให้บล็อกหน้าถ้าตารางยังไม่ถูกสร้าง */ }
+    setLoading(false);
   };
-  useEffect(() => { loadMyPending(); }, []);
+  useEffect(() => { load(); }, []);
+
+  // เริ่มจาก "รอบสั่ง" ที่ยังรับไม่ครบใน n2p_backlog เอง (แหล่งเดียวกับคอลัมน์ "รอเข้า" ในหน้าคลังที่ใช้อยู่แล้ว) แล้วค่อยไล่หาว่ามาจากใบสั่งซื้อใบไหน
+  // ไม่ไล่จากประวัติใบสั่งซื้อทั้งหมดตรงๆ เพราะใบเก่าจำนวนมาก (800+ ใบ) ไม่เคยอัปเดตสถานะรับเข้าในระบบใบสั่งเลย (เดิมรับด้วยกระดาษ ไม่เคยกดที่นั่น)
+  // ถ้าไล่จากใบสั่งจะเจอใบเก่าโผล่มาเป็นร้อยทั้งที่รับไปนานแล้ว — ต้องยึด n2p_backlog.rounds เป็นความจริงเสมอ
+  const pendingDocs = useMemo(() => {
+    const roundToDocItem = new Map(); // "backlogItemId:backlogRoundId" -> { doc, item }
+    orders.forEach(o => {
+      const d = o.data || {};
+      (d.items || []).forEach(it => {
+        if (it.backlogItemId != null && it.backlogRoundId != null) {
+          roundToDocItem.set(`${it.backlogItemId}:${it.backlogRoundId}`, { d, doc_no: o.doc_no, it });
+        }
+      });
+    });
+    const loggedByKey = new Map();
+    receivingLogsAll.filter(r => r.status !== "skipped").forEach(r => {
+      const key = r.backlog_round_id != null ? `r:${r.backlog_round_id}` : `k:${r.doc_id}:${r.backlog_item_name}`;
+      loggedByKey.set(key, (loggedByKey.get(key) || 0) + (Number(r.received_qty) || 0));
+    });
+
+    const docsMap = new Map();
+    (backlog || []).forEach(b => {
+      (b.rounds || []).forEach(r => {
+        if (r.___meta) return;
+        const orderedQty = Number(r.qty) || 0;
+        const alreadyInBacklog = Number(r.receivedQty) || 0;
+        const roundKey = `r:${r.id}`;
+        const alreadyLogged = loggedByKey.get(roundKey) || 0;
+        const pendingQty = Math.max(0, orderedQty - alreadyInBacklog - alreadyLogged);
+        if (pendingQty <= 0) return;
+        const match = roundToDocItem.get(`${b.id}:${r.id}`);
+        const docKey = match ? String(match.d.docNo || match.doc_no) + ":" + String(match.d.id || "") : `orphan:${b.id}:${r.id}`;
+        if (!docsMap.has(docKey)) {
+          docsMap.set(docKey, {
+            docKey, docId: match ? match.d.id : null, docNo: match ? (match.d.docNo || match.doc_no) : null,
+            orderDate: match ? match.d.orderDate : r.date, needDate: match ? match.d.needDate : null,
+            orderedBy: match ? match.d.orderedBy : r.orderedBy, supplier: match ? match.d.supplier : r.orderNo,
+            channel: match ? match.d.channel : r.tracking, orderNote: match ? match.d.orderNote : r.note,
+            items: [],
+          });
+        }
+        const itemName = match ? match.it.name : b.name;
+        const unit = match ? match.it.unit : "ชิ้น";
+        const m = matchBacklogName(String(itemName).trim(), products, incomingAlias);
+        docsMap.get(docKey).items.push({ roundKey, name: itemName, unit, backlogItemId: b.id, backlogRoundId: r.id, orderedQty, pendingQty, ...m });
+      });
+    });
+    return [...docsMap.values()].sort((a, b) => String(a.orderDate || "").localeCompare(String(b.orderDate || "")));
+  }, [orders, backlog, products, incomingAlias, receivingLogsAll]);
 
   const kw = search.trim().toLowerCase();
-  const pending = (pendingBacklogRows || []).filter(r => r.inTransit > 0 && !logItems.some(it => it.backlogItemId === r.id));
-  const shownPending = kw ? pending.filter(r => r.name.toLowerCase().includes(kw)) : pending;
+  const shownDocs = kw ? pendingDocs.filter(d => (d.docNo || "").toLowerCase().includes(kw) || d.items.some(it => it.name.toLowerCase().includes(kw))) : pendingDocs;
+  const openDoc = pendingDocs.find(d => d.docKey === openDocId) || null;
+  const myPending = receivingLogsAll.filter(r => r.status === "pending");
 
-  const addRow = (r) => {
-    setLogItems(prev => [...prev, {
-      backlogItemId: r.id, backlogItemName: r.name, productId: r.productId,
-      orderedQty: r.inTransit, receivedQty: r.inTransit, note: "",
-    }]);
-    setSearch("");
+  const openDocFor = (doc) => {
+    setOpenDocId(doc.docKey);
+    const init = {};
+    doc.items.forEach(it => { init[it.roundKey] = { receivedQty: it.pendingQty, note: "", productId: it.productId }; });
+    setFormItems(init);
   };
-  const updateRow = (backlogItemId, patch) => setLogItems(prev => prev.map(it => it.backlogItemId === backlogItemId ? { ...it, ...patch } : it));
-  const removeRow = (backlogItemId) => setLogItems(prev => prev.filter(it => it.backlogItemId !== backlogItemId));
+  const updateItem = (roundKey, patch) => setFormItems(prev => ({ ...prev, [roundKey]: { ...prev[roundKey], ...patch } }));
+  const dateLabel = (iso) => iso ? new Date(iso).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" }) : "-";
 
   const submit = async () => {
-    const valid = logItems.filter(it => Number(it.receivedQty) > 0);
-    if (valid.length === 0) return showToast("กรุณาเพิ่มรายการและระบุจำนวนที่รับอย่างน้อย 1 รายการ", "error");
+    if (!openDoc) return;
+    const valid = openDoc.items.filter(it => it.pendingQty > 0 && Number(formItems[it.roundKey]?.receivedQty) > 0);
+    if (valid.length === 0) return showToast("กรุณาระบุจำนวนที่รับอย่างน้อย 1 รายการ", "error");
     if (!by.trim()) return showToast("กรุณากรอกชื่อผู้รับสินค้า", "error");
     setSaving(true);
     try {
       const payload = valid.map(it => {
-        const p = it.productId ? products.find(x => String(x.id) === String(it.productId)) : null;
+        const f = formItems[it.roundKey];
+        const p = f.productId ? products.find(x => String(x.id) === String(f.productId)) : null;
         return {
-          backlog_item_id: it.backlogItemId, backlog_item_name: it.backlogItemName,
+          doc_id: openDoc.docId, doc_no: openDoc.docNo,
+          backlog_item_id: it.backlogItemId, backlog_round_id: it.backlogRoundId, backlog_item_name: it.name,
           product_id: p ? p.id : null, product_name: p ? p.name : null, sku: p ? p.sku : null,
-          ordered_qty: it.orderedQty, received_qty: Number(it.receivedQty) || 0,
-          note: it.note || null, received_by: by.trim(), status: "pending",
+          ordered_qty: it.pendingQty, received_qty: Number(f.receivedQty) || 0,
+          note: f.note || null, received_by: by.trim(), status: "pending",
         };
       });
       await api.addReceivingLogs(payload);
-      showToast(`บันทึกรับเข้า ${valid.length} รายการแล้ว — รอผู้จัดการอนุมัติ`);
-      setLogItems([]);
-      loadMyPending();
+      showToast(`บันทึกรับเข้า ${valid.length} รายการ${openDoc.docNo ? `จากใบสั่งซื้อ ${openDoc.docNo}` : ""} แล้ว — รอผู้จัดการอนุมัติ`);
+      setOpenDocId(null);
+      setFormItems({});
+      load();
     } catch (e) { showToast(e.message, "error"); }
     setSaving(false);
   };
+
+  if (loading) return <div style={{ textAlign: "center", padding: 40, color: "#6B7280" }}>กำลังโหลด...</div>;
+
+  if (openDoc) {
+    return (
+      <div>
+        <button onClick={() => { setOpenDocId(null); setFormItems({}); }}
+          style={{ background: "none", border: "none", color: "#7C3AED", fontSize: 13, fontWeight: 700, cursor: "pointer", marginBottom: 12, padding: 0 }}>
+          ← กลับไปรายการใบสั่งซื้อ
+        </button>
+        <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 11, color: "#9CA3AF" }}>N2P ใบสั่งและรับสินค้า</div>
+              <h2 style={{ fontSize: 19, fontWeight: 700, color: "#111827" }}>📥 รับสินค้าเข้า</h2>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 17, fontWeight: 700, color: "#1A56DB" }}>{openDoc.docNo ? `เลขที่ ${openDoc.docNo}` : "⚠️ ไม่พบใบสั่งซื้ออ้างอิง"}</div>
+            </div>
+          </div>
+          <div style={{ background: "#EFF6FF", borderLeft: "3px solid #1A56DB", borderRadius: "0 10px 10px 0", padding: "12px 16px", marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13 }}>
+            <div><span style={{ color: "#6B7280" }}>วันที่สั่ง:</span> <b>{dateLabel(openDoc.orderDate)}</b></div>
+            <div><span style={{ color: "#6B7280" }}>กำหนดรับ:</span> <b>{dateLabel(openDoc.needDate)}</b></div>
+            <div><span style={{ color: "#6B7280" }}>ผู้สั่ง:</span> {openDoc.orderedBy || "-"}</div>
+            <div><span style={{ color: "#6B7280" }}>หมายเลขสั่งซื้อ:</span> {openDoc.supplier || "-"}</div>
+            <div><span style={{ color: "#6B7280" }}>หมายเลขพัสดุ:</span> {openDoc.channel || "-"}</div>
+            {openDoc.orderNote && <div style={{ gridColumn: "1 / -1" }}><span style={{ color: "#6B7280" }}>หมายเหตุ:</span> {openDoc.orderNote}</div>}
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+            {openDoc.items.map(it => {
+              const f = formItems[it.roundKey] || { receivedQty: 0, note: "", productId: it.productId };
+              const p = f.productId ? products.find(x => String(x.id) === String(f.productId)) : null;
+              const done = it.pendingQty <= 0;
+              return (
+                <div key={it.roundKey} style={{ border: "1px solid " + (done ? "#E5E7EB" : "#DDD6FE"), borderRadius: 12, padding: 12, background: done ? "#F9FAFB" : "#FAFAFF" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 8 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 700, color: "#111827" }}>{it.name}</div>
+                      <div style={{ fontSize: 11.5, color: "#6B7280" }}>สั่งไว้ {it.orderedQty} {it.unit || "ชิ้น"}{done ? " · รับครบแล้ว" : ` · เหลือรอรับ ${it.pendingQty}`}</div>
+                    </div>
+                    {done && <span style={{ fontSize: 11, fontWeight: 700, color: "#059669", background: "#D1FAE5", borderRadius: 999, padding: "2px 10px", whiteSpace: "nowrap" }}>✓ รับครบแล้ว</span>}
+                  </div>
+                  {!done && (
+                    <>
+                      <div style={{ marginBottom: 8 }}>
+                        <ProductPicker products={products} value={p ? String(p.id) : "none"}
+                          autoLabel={it.productId ? (p ? p.name : "สินค้านี้ถูกลบไปแล้ว") : "— ไม่พบสินค้าที่ตรงกัน —"}
+                          onPick={v => updateItem(it.roundKey, { productId: v === "auto" || v === "none" ? null : parseInt(v) })} />
+                      </div>
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                        <label style={{ fontSize: 12, color: "#6B7280" }}>จำนวนที่รับจริง
+                          <input type="number" min={0} className="inp" style={{ width: 90, padding: "6px 8px", marginLeft: 6 }}
+                            value={f.receivedQty} onChange={e => updateItem(it.roundKey, { receivedQty: e.target.value })} />
+                        </label>
+                        <input className="inp" style={{ flex: 1, minWidth: 160, padding: "6px 8px" }} placeholder="หมายเหตุ (ถ้ามี เช่น ของขาด/กล่องบุบ)"
+                          value={f.note} onChange={e => updateItem(it.roundKey, { note: e.target.value })} />
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", borderTop: "1px solid #F0EDE8", paddingTop: 14 }}>
+            <input className="inp" style={{ flex: 1, minWidth: 200 }} placeholder="ชื่อผู้รับสินค้า (คลัง) *" value={by} onChange={e => setBy(e.target.value)} />
+            <button onClick={submit} disabled={saving}
+              style={{ background: "linear-gradient(135deg,#7C3AED,#3B82F6)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: saving ? "not-allowed" : "pointer" }}>
+              {saving ? "⏳ กำลังบันทึก..." : "📥 บันทึกรับเข้าใบนี้"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div>
       <div style={{ marginBottom: 14 }}>
         <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📥 รับสินค้าเข้า</h2>
-        <p style={{ fontSize: 13, color: "#6B7280" }}>บันทึกของที่รับเข้าจากใบสั่งซื้อแทนใบพิมพ์กระดาษ — บันทึกแล้วยังไม่เข้าสต็อกทันที ต้องรอผู้จัดการตรวจสอบและยืนยันก่อนเสมอ</p>
+        <p style={{ fontSize: 13, color: "#6B7280" }}>รายการรอรับแยกตามใบสั่งซื้อ แทนใบพิมพ์กระดาษ — บันทึกแล้วยังไม่เข้าสต็อกทันที ต้องรอผู้จัดการตรวจสอบและยืนยันก่อนเสมอ</p>
       </div>
 
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 14, marginBottom: 14 }}>
-        <div style={{ position: "relative", marginBottom: 12 }}>
-          <input className="inp" style={{ width: "100%" }} placeholder="🔍 ค้นหาชื่อสินค้าที่รอรับจากใบสั่งซื้อ..."
-            value={search} onChange={e => setSearch(e.target.value)} />
-        </div>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "#6B7280", marginBottom: 6 }}>รายการที่รอรับจากใบสั่งซื้อทั้งหมด ({shownPending.length}) — คลิกเพื่อเพิ่ม</div>
-        <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, maxHeight: 320, overflowY: "auto", marginBottom: 12 }}>
-          {shownPending.length === 0 && <div style={{ padding: 14, textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>{kw ? "ไม่พบรายการที่รอรับ" : "ไม่มีรายการรอรับ 🎉"}</div>}
-          {shownPending.map(r => {
-            const p = r.productId ? products.find(x => x.id === r.productId) : null;
+        <input className="inp" style={{ width: "100%", marginBottom: 12 }} placeholder="🔍 ค้นหาเลขที่ใบสั่งซื้อ / ชื่อสินค้า..."
+          value={search} onChange={e => setSearch(e.target.value)} />
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#6B7280", marginBottom: 6 }}>ใบสั่งซื้อที่ยังรอรับ ({shownDocs.length})</div>
+        {shownDocs.length === 0 && <div style={{ textAlign: "center", padding: 24, color: "#9CA3AF", fontSize: 13 }}>{kw ? "ไม่พบใบสั่งซื้อที่ตรงกับคำค้นหา" : "ไม่มีใบสั่งซื้อที่รอรับ 🎉"}</div>}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {shownDocs.map(doc => {
+            const pendingCount = doc.items.filter(it => it.pendingQty > 0).length;
+            const unmatchedCount = doc.items.filter(it => it.pendingQty > 0 && !it.productId).length;
             return (
-              <div key={r.id} onClick={() => addRow(r)}
-                style={{ padding: "9px 12px", borderBottom: "1px solid #F3F4F6", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}
+              <div key={doc.docKey} onClick={() => openDocFor(doc)}
+                style={{ border: "1px solid #E5E7EB", borderRadius: 12, padding: "12px 14px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}
                 onMouseEnter={e => e.currentTarget.style.background = "#F9FAFB"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 600, color: "#111827" }}>{r.name}</div>
-                  <div style={{ fontSize: 11.5, color: p ? "#059669" : "#DC2626" }}>{p ? `จับคู่กับ: ${p.name} (${p.sku})` : "⚠️ ยังไม่พบสินค้าที่ตรงกัน — เลือกเองได้หลังเพิ่ม"}</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#111827" }}>{doc.docNo ? `เลขที่ ${doc.docNo}` : "⚠️ ไม่พบใบสั่งซื้ออ้างอิง"}</div>
+                  <div style={{ fontSize: 12, color: "#6B7280" }}>สั่ง {dateLabel(doc.orderDate)}{doc.orderedBy ? ` · ผู้สั่ง ${doc.orderedBy}` : ""} · {pendingCount} รายการรอรับ{unmatchedCount > 0 ? ` · ⚠️ ${unmatchedCount} รายการยังไม่พบสินค้าที่ตรงกัน` : ""}</div>
                 </div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#7C3AED", whiteSpace: "nowrap" }}>รอรับ {r.inTransit}</div>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#7C3AED", flexShrink: 0 }}>เปิดดู →</span>
               </div>
             );
           })}
-        </div>
-
-        {logItems.length === 0 ? (
-          <div style={{ textAlign: "center", padding: 24, color: "#9CA3AF", fontSize: 13 }}>คลิกรายการด้านบนเพื่อเพิ่มเข้าใบรับสินค้า</div>
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
-            {logItems.map(it => {
-              const p = it.productId ? products.find(x => String(x.id) === String(it.productId)) : null;
-              return (
-                <div key={it.backlogItemId} style={{ border: "1px solid #E5E7EB", borderRadius: 12, padding: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 8 }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 13.5, fontWeight: 700, color: "#111827" }}>{it.backlogItemName}</div>
-                      <div style={{ fontSize: 11.5, color: "#6B7280" }}>สั่งไว้รอรับ {it.orderedQty} ชิ้น</div>
-                    </div>
-                    <button onClick={() => removeRow(it.backlogItemId)}
-                      style={{ background: "none", border: "none", color: "#D1D5DB", fontSize: 15, cursor: "pointer", flexShrink: 0 }}
-                      onMouseEnter={e => e.target.style.color = "#EF4444"} onMouseLeave={e => e.target.style.color = "#D1D5DB"}>✕</button>
-                  </div>
-                  <div style={{ marginBottom: 8 }}>
-                    <ProductPicker products={products} value={p ? String(p.id) : "none"}
-                      autoLabel={it.productId ? (p ? p.name : "สินค้านี้ถูกลบไปแล้ว") : "— ไม่พบสินค้าที่ตรงกัน —"}
-                      onPick={v => updateRow(it.backlogItemId, { productId: v === "auto" || v === "none" ? null : parseInt(v) })} />
-                  </div>
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                    <label style={{ fontSize: 12, color: "#6B7280" }}>จำนวนที่รับจริง
-                      <input type="number" min={0} className="inp" style={{ width: 90, padding: "6px 8px", marginLeft: 6 }}
-                        value={it.receivedQty} onChange={e => updateRow(it.backlogItemId, { receivedQty: e.target.value })} />
-                    </label>
-                    <input className="inp" style={{ flex: 1, minWidth: 160, padding: "6px 8px" }} placeholder="หมายเหตุ (ถ้ามี เช่น ของขาด/กล่องบุบ)"
-                      value={it.note} onChange={e => updateRow(it.backlogItemId, { note: e.target.value })} />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-          <input className="inp" style={{ flex: 1, minWidth: 200 }} placeholder="ชื่อผู้รับสินค้า *" value={by} onChange={e => setBy(e.target.value)} />
-          <button onClick={submit} disabled={saving || logItems.length === 0}
-            style={{ background: logItems.length ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#E5E7EB", color: "#fff", border: "none", borderRadius: 10, padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: logItems.length ? "pointer" : "not-allowed" }}>
-            {saving ? "⏳ กำลังบันทึก..." : `📥 บันทึกรับเข้า (${logItems.length})`}
-          </button>
         </div>
       </div>
 
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 14 }}>
         <div style={{ fontWeight: 700, fontSize: 14, color: "#111827", marginBottom: 10 }}>🕘 ที่เพิ่งบันทึกไว้ — รอผู้จัดการอนุมัติ ({myPending.length})</div>
-        {loadingPending && <div style={{ textAlign: "center", padding: 16, color: "#9CA3AF", fontSize: 13 }}>กำลังโหลด...</div>}
-        {!loadingPending && myPending.length === 0 && <div style={{ textAlign: "center", padding: 16, color: "#9CA3AF", fontSize: 13 }}>ยังไม่มีรายการรออนุมัติ</div>}
-        {!loadingPending && myPending.slice(0, 20).map(r => (
+        {myPending.length === 0 && <div style={{ textAlign: "center", padding: 16, color: "#9CA3AF", fontSize: 13 }}>ยังไม่มีรายการรออนุมัติ</div>}
+        {myPending.slice(0, 20).map(r => (
           <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #F3F4F6", fontSize: 13 }}>
             <div>
               <div style={{ color: "#111827", fontWeight: 600 }}>{r.product_name || r.backlog_item_name}{!r.product_id && <span style={{ marginLeft: 6, fontSize: 11, color: "#DC2626" }}>⚠️ ยังไม่จับคู่สินค้า</span>}</div>
-              <div style={{ fontSize: 11, color: "#9CA3AF" }}>{fmtDT(r.created_at)} · โดย {r.received_by || "-"}{r.note ? ` · ${r.note}` : ""}</div>
+              <div style={{ fontSize: 11, color: "#9CA3AF" }}>{r.doc_no ? `ใบสั่งซื้อ ${r.doc_no} · ` : ""}{fmtDT(r.created_at)} · โดย {r.received_by || "-"}{r.note ? ` · ${r.note}` : ""}</div>
             </div>
             <span style={{ fontWeight: 700, color: "#7C3AED" }}>+{r.received_qty}</span>
           </div>
@@ -3744,7 +3857,7 @@ function ReceivingApprovalPanel({ products, onStockChange, showToast }) {
               <div key={row.id} style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, padding: 14 }}>
                 <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 220 }}>
-                    <div style={{ fontSize: 11, color: "#9CA3AF", marginBottom: 2 }}>ชื่อตามใบสั่งซื้อ</div>
+                    <div style={{ fontSize: 11, color: "#9CA3AF", marginBottom: 2 }}>ชื่อตามใบสั่งซื้อ{row.doc_no ? ` · เลขที่ ${row.doc_no}` : ""}</div>
                     <div style={{ fontSize: 13.5, fontWeight: 700, color: "#111827", marginBottom: 8 }}>{row.backlog_item_name}</div>
                     <div style={{ fontSize: 11, color: "#9CA3AF", marginBottom: 2 }}>จับคู่กับสินค้าในคลัง</div>
                     <ProductPicker products={products} value={product ? String(product.id) : "none"}
@@ -4098,22 +4211,8 @@ export default function WarehouseApp() {
       const inTransit = backlogInTransit(b);
       const total = Number(b.total) || 0; // ยอด "ค้างส่ง" ที่แอดมินอัปเดตไว้ในระบบใบสั่ง
       const key = String(b.name || "").trim();
-      if (Object.prototype.hasOwnProperty.call(incomingAlias, key)) {
-        const pid = incomingAlias[key];
-        return { id: b.id, name: key, inTransit, total, productId: pid == null ? null : pid,
-                 how: pid == null ? "ตั้งเองว่าไม่จับคู่" : "จับคู่เอง", score: 1, manual: true };
-      }
-      let best = null, second = 0;
-      rawProducts.forEach(p => {
-        const r = nameScore(key, p.name);
-        if (r.score <= 0) return;
-        if (!best || r.score > best.score) { if (best) second = Math.max(second, best.score); best = { ...r, p }; }
-        else if (r.score > second) second = r.score;
-      });
-      if (best && (best.score >= 0.99 || best.score - second >= 0.03))
-        return { id: b.id, name: key, inTransit, total, productId: best.p.id, how: best.how, score: best.score, manual: false };
-      return { id: b.id, name: key, inTransit, total, productId: null,
-               how: best ? "ใกล้เคียงหลายตัว เลือกเองก่อน" : "ไม่พบสินค้าที่ตรงกัน", score: 0, manual: false };
+      const m = matchBacklogName(key, rawProducts, incomingAlias);
+      return { id: b.id, name: key, inTransit, total, ...m };
     }).sort((a, b) => b.inTransit - a.inTransit);
 
     const byProduct = new Map();
@@ -4950,7 +5049,7 @@ export default function WarehouseApp() {
 
         {/* ─── รับสินค้าเข้า (แทนใบพิมพ์กระดาษ) — ไม่ล็อกรหัส ─── */}
         {tab === "receiving" && (
-          <ReceivingPanel products={products} pendingBacklogRows={incoming.rows} showToast={showToast} />
+          <ReceivingPanel products={products} backlog={backlog} incomingAlias={incomingAlias} showToast={showToast} />
         )}
 
         {/* ─── DASHBOARD ─── */}
