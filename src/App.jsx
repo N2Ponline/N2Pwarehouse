@@ -3739,15 +3739,22 @@ function ReceivingPanel({ products, backlog, incomingAlias, showToast }) {
         {shownDocs.length === 0 && <div style={{ textAlign: "center", padding: 24, color: "#9CA3AF", fontSize: 13 }}>{kw ? "ไม่พบใบสั่งซื้อที่ตรงกับคำค้นหา" : "ไม่มีใบสั่งซื้อที่รอรับ 🎉"}</div>}
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {shownDocs.map(doc => {
-            const pendingCount = doc.items.filter(it => it.pendingQty > 0).length;
-            const unmatchedCount = doc.items.filter(it => it.pendingQty > 0 && !it.productId).length;
+            const pendingItems = doc.items.filter(it => it.pendingQty > 0);
+            const pendingCount = pendingItems.length;
+            const unmatchedCount = pendingItems.filter(it => !it.productId).length;
+            const itemNames = pendingItems.map(it => it.name).join(", ");
             return (
               <div key={doc.docKey} onClick={() => openDocFor(doc)}
                 style={{ border: "1px solid #E5E7EB", borderRadius: 12, padding: "12px 14px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}
                 onMouseEnter={e => e.currentTarget.style.background = "#F9FAFB"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "#111827" }}>{doc.docNo ? `เลขที่ ${doc.docNo}` : "⚠️ ไม่พบใบสั่งซื้ออ้างอิง"}</div>
-                  <div style={{ fontSize: 12, color: "#6B7280" }}>สั่ง {dateLabel(doc.orderDate)}{doc.orderedBy ? ` · ผู้สั่ง ${doc.orderedBy}` : ""} · {pendingCount} รายการรอรับ{unmatchedCount > 0 ? ` · ⚠️ ${unmatchedCount} รายการยังไม่พบสินค้าที่ตรงกัน` : ""}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: "#111827" }}>{doc.docNo || "⚠️ ไม่พบใบสั่งซื้ออ้างอิง"}</span>
+                    {doc.docId != null && <span style={{ fontSize: 10.5, fontWeight: 700, color: "#7C3AED", background: "#F5F3FF", borderRadius: 999, padding: "1px 8px" }}>⚡ จากสินค้ารอสั่ง</span>}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "#9CA3AF", marginTop: 1 }}>{doc.supplier ? `#${doc.supplier} · ` : ""}{dateLabel(doc.orderDate)}</div>
+                  <div style={{ fontSize: 13, color: "#374151", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{itemNames}</div>
+                  <div style={{ fontSize: 11.5, color: "#6B7280", marginTop: 2 }}>{doc.orderedBy ? `ผู้สั่ง ${doc.orderedBy} · ` : ""}{pendingCount} รายการรอรับ{unmatchedCount > 0 ? ` · ⚠️ ${unmatchedCount} รายการยังไม่พบสินค้าที่ตรงกัน` : ""}</div>
                 </div>
                 <span style={{ fontSize: 12, fontWeight: 700, color: "#7C3AED", flexShrink: 0 }}>เปิดดู →</span>
               </div>
