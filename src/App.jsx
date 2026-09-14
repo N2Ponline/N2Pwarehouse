@@ -205,10 +205,25 @@ const matchBacklogName = (key, rawProducts, incomingAlias) => {
   return { productId: null, how: best ? "ใกล้เคียงหลายตัว เลือกเองก่อน" : "ไม่พบสินค้าที่ตรงกัน", score: 0, manual: false };
 };
 
-// ของรอเข้าของรายการหนึ่ง = ผลรวมของรอบที่ยังเข้าไม่ครบ (สูตรเดียวกับหน้ารอสั่งของระบบใบสั่ง)
+// ของรอเข้าของรายการหนึ่ง = ผลรวมของรอบที่ยังเข้าไม่ครบ (สูตรเดียวกับหน้ารอสั่งของระบบใบสั่ง) หักด้วยยอดที่รับเข้าไปแล้วผ่าน StockMaster เอง (loggedByRound)
+// เพราะ StockMaster ไม่เขียนกลับเข้า n2p_backlog.rounds.receivedQty (กันชนกับ sync ของระบบใบสั่งเอง) ถ้าไม่หักยอดรอเข้าจะค้างตลอดไปทั้งที่รับจริงแล้ว
 // รอบแรกอาจเป็น meta element ที่ระบบใบสั่งใช้เก็บ tag — ต้องข้าม
-const backlogInTransit = (row) => (Array.isArray(row?.rounds) ? row.rounds : [])
-  .reduce((sum, r) => (r && r.___meta ? sum : sum + Math.max(0, (Number(r?.qty) || 0) - (Number(r?.receivedQty) || 0))), 0);
+const backlogInTransit = (row, loggedByRound) => (Array.isArray(row?.rounds) ? row.rounds : [])
+  .reduce((sum, r) => {
+    if (r && r.___meta) return sum;
+    const logged = loggedByRound ? (loggedByRound.get(String(r?.id)) || 0) : 0;
+    return sum + Math.max(0, (Number(r?.qty) || 0) - (Number(r?.receivedQty) || 0) - logged);
+  }, 0);
+
+// ยอดที่รับเข้าไปแล้วผ่าน StockMaster ต่อรอบสั่ง (backlog_round_id) — ไม่นับ status='skipped' เพราะแปลว่าตั้งใจไม่บันทึกลงคลัง ไม่ถือว่ารับแล้ว
+const loggedQtyByRound = (receivingLogs) => {
+  const m = new Map();
+  (receivingLogs || []).filter(r => r.status !== "skipped" && r.backlog_round_id != null).forEach(r => {
+    const key = String(r.backlog_round_id);
+    m.set(key, (m.get(key) || 0) + (Number(r.received_qty) || 0));
+  });
+  return m;
+};
 
 // การจับคู่ที่ผู้ใช้ตั้งเอง เก็บใน localStorage — ตาราง n2p_backlog เพิ่มคอลัมน์ไม่ได้
 // และ meta element ใน rounds ถูกระบบใบสั่งเขียนทับทุกครั้งที่บันทึก
@@ -3538,7 +3553,7 @@ function LabelSheetPanel({ products }) {
 // รายการรอรับทำงานต่อ "ใบสั่งซื้อ" (n2p_orders) แต่ละใบ ไม่ใช่รวมยอดเป็นก้อนเดียวต่อสินค้า —
 // เพราะสินค้าตัวเดียวอาจมาจากหลายใบสั่งซื้อพร้อมกัน (คนละรอบสั่ง) ต้องรู้ว่าของที่รับมาตรงกับใบไหน
 // เหมือนใบพิมพ์กระดาษเดิมที่พิมพ์แยกทีละใบ (ดูภาพหน้าใบสั่งสินค้าจริงที่ผู้ใช้ส่งมาเป็นต้นแบบ)
-function ReceivingPanel({ products, backlog, incomingAlias, showToast }) {
+function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange, showToast }) {
   const [orders, setOrders] = useState([]);
   const [receivingLogsAll, setReceivingLogsAll] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -3640,7 +3655,8 @@ function ReceivingPanel({ products, backlog, incomingAlias, showToast }) {
           note: f.note || null, received_by: by.trim(), status: "pending",
         };
       });
-      await api.addReceivingLogs(payload);
+      const created = await api.addReceivingLogs(payload);
+      if (onReceivingLogChange && created) onReceivingLogChange(created);
       showToast(`บันทึกรับเข้า ${valid.length} รายการ${openDoc.docNo ? `จากใบสั่งซื้อ ${openDoc.docNo}` : ""} แล้ว — รอผู้จัดการอนุมัติ`);
       setOpenDocId(null);
       setFormItems({});
@@ -3782,7 +3798,7 @@ function ReceivingPanel({ products, backlog, incomingAlias, showToast }) {
 
 // ═══════════ รับเข้ารออนุมัติ — ผู้จัดการตรวจก่อนเข้าสต็อกจริง (อยู่ในเช็คสต็อกที่ล็อกรหัสอยู่แล้ว) ═══════════
 // onStockChange(productId, newQty, txRow) — ใช้ตัวเดียวกับ applyPickCut ของหน้าหลัก เพื่อให้ state สินค้า/ประวัติซิงค์กันทันที
-function ReceivingApprovalPanel({ products, onStockChange, showToast }) {
+function ReceivingApprovalPanel({ products, onStockChange, onReceivingLogChange, showToast }) {
   const [pending, setPending] = useState([]);
   const [loading, setLoading] = useState(true);
   const [approverBy, setApproverBy] = useState("");
@@ -3810,7 +3826,8 @@ function ReceivingApprovalPanel({ products, onStockChange, showToast }) {
     setBusyId(row.id);
     try {
       if (e.skip) {
-        await api.updateReceivingLog(row.id, { status: "skipped", approved_by: approverBy.trim(), approved_at: new Date().toISOString() });
+        const updated = await api.updateReceivingLog(row.id, { status: "skipped", approved_by: approverBy.trim(), approved_at: new Date().toISOString() });
+        if (onReceivingLogChange && updated) onReceivingLogChange(updated);
         showToast("ตั้งเป็น \"ไม่บันทึกลงคลัง\" แล้ว");
       } else {
         const qty = Number(e.receivedQty) || 0;
@@ -3824,10 +3841,11 @@ function ReceivingApprovalPanel({ products, onStockChange, showToast }) {
           note: `รับเข้าจากใบสั่งซื้อ (${row.backlog_item_name})${row.note ? " - " + row.note : ""}`, by: approverBy.trim(),
         });
         onStockChange(product.id, newQty, newTx);
-        await api.updateReceivingLog(row.id, {
+        const updated = await api.updateReceivingLog(row.id, {
           status: "approved", approved_by: approverBy.trim(), approved_at: new Date().toISOString(),
           received_qty: qty, product_id: product.id, product_name: product.name, sku: product.sku,
         });
+        if (onReceivingLogChange && updated) onReceivingLogChange(updated);
         showToast(`เพิ่มเข้าสต็อก "${product.name}" +${qty} สำเร็จ`);
       }
       setPending(prev => prev.filter(r => r.id !== row.id));
@@ -3916,6 +3934,7 @@ export default function WarehouseApp() {
   const [aliasMap, setAliasMap] = useState(new Map()); // ชื่อสินค้าตาม myorder → [{product_id, qty}] (จากตาราง product_aliases)
   const [backlog, setBacklog] = useState([]);            // n2p_backlog จากระบบใบสั่ง — ใช้แค่คำนวณ "รอเข้า" (ของที่สั่งซัพพลายเออร์แล้วยังไม่มาส่ง) เท่านั้น
   const [backlogNotes, setBacklogNotes] = useState(null); // backlog_notes ในตัว StockMaster เอง — ใช้คำนวณ "ค้างส่ง" (ค้างส่งลูกค้าจาก MyOrder) แทนของเดิมที่เคยอิงระบบใบสั่ง
+  const [receivingLogs, setReceivingLogs] = useState([]); // ใช้หักยอด "รอเข้า" ที่รับเข้าไปแล้วผ่าน StockMaster ออก เพราะไม่เขียนกลับเข้า n2p_backlog.rounds.receivedQty (กันชนกับ sync ของระบบใบสั่งเอง) ไม่งั้นยอดรอเข้าจะค้างตลอดไปทั้งที่รับจริงแล้ว
   const [showIncomingModal, setShowIncomingModal] = useState(false);
   const [incomingAlias, setIncomingAlias] = useState(loadAliasMap);
   const [incomingSearch, setIncomingSearch] = useState("");
@@ -4169,12 +4188,21 @@ export default function WarehouseApp() {
     if (txRow) setTransactions(prev => [dbToTx(txRow), ...prev]);
   };
   const openAddProductNamed = (name) => { setForm({ name: stripPromo(name) || name }); setShowModal("add"); };
+  // ให้หน้า "รับสินค้าเข้า"/"รับเข้ารออนุมัติ" อัปเดต state ตัวนี้ทันทีที่บันทึก/อนุมัติ ไม่งั้นคอลัมน์ "รอเข้า" จะค้างเลขเก่าจนกว่าจะโหลดหน้าใหม่
+  const upsertReceivingLogs = (rows) => {
+    const list = Array.isArray(rows) ? rows : [rows];
+    setReceivingLogs(prev => {
+      const byId = new Map(prev.map(r => [r.id, r]));
+      list.forEach(r => byId.set(r.id, r));
+      return [...byId.values()];
+    });
+  };
 
   const loadAll = useCallback(async () => {
     setLoading(true);
     setDbError(null);
     try {
-      const [prods, txs, bl, al, bn] = await Promise.all([
+      const [prods, txs, bl, al, bn, rl] = await Promise.all([
         api.getProducts(),
         api.getTransactions(),
         // ของระบบใบสั่ง — ถ้าดึงไม่ได้ก็ให้คลังทำงานต่อได้ตามปกติ แค่ไม่มียอดรอเข้า
@@ -4183,12 +4211,15 @@ export default function WarehouseApp() {
         api.getAliases().catch(() => []),
         // บันทึกค้างส่งในตัว StockMaster เอง — ถ้าดึงไม่ได้ (ยังไม่รัน backlog-notes-setup.sql) ก็ให้คลังทำงานต่อได้ แค่ไม่มียอดค้างส่ง
         api.getBacklogNotes().catch(() => null),
+        // ที่รับเข้าไปแล้วผ่าน StockMaster — ถ้าดึงไม่ได้ (ยังไม่รัน receiving-logs-setup.sql) ก็ให้ยอดรอเข้าคำนวณแบบเดิมไปก่อน
+        api.getReceivingLogs().catch(() => []),
       ]);
       setRawProducts((prods || []).map(dbToProduct));
       setTransactions((txs || []).map(dbToTx));
       setBacklog(bl || []);
       setAliasMap(aliasRowsToMap(al));
       setBacklogNotes(bn);
+      setReceivingLogs(rl || []);
     } catch (e) {
       setDbError(e.message);
     } finally {
@@ -4214,8 +4245,9 @@ export default function WarehouseApp() {
   // จับคู่รายการค้างสั่งจากระบบใบสั่งเข้ากับสินค้าในคลัง
   // ที่ผู้ใช้ตั้งเองมาก่อนเสมอ ถ้าไม่มีค่อยให้ระบบเดา และเดาได้ต่อเมื่อ "ชนะขาด" ตัวรองเท่านั้น
   const incoming = useMemo(() => {
+    const loggedByRound = loggedQtyByRound(receivingLogs);
     const rows = backlog.map(b => {
-      const inTransit = backlogInTransit(b);
+      const inTransit = backlogInTransit(b, loggedByRound);
       const total = Number(b.total) || 0; // ยอด "ค้างส่ง" ที่แอดมินอัปเดตไว้ในระบบใบสั่ง
       const key = String(b.name || "").trim();
       const m = matchBacklogName(key, rawProducts, incomingAlias);
@@ -4231,7 +4263,7 @@ export default function WarehouseApp() {
       byProduct.set(r.productId, cur);
     });
     return { rows, byProduct };
-  }, [backlog, rawProducts, incomingAlias]);
+  }, [backlog, rawProducts, incomingAlias, receivingLogs]);
 
   // "ค้างส่ง" อิงบันทึกค้างส่งในตัว StockMaster เอง (backlog_notes เมนูย่อยใต้เช็คสต็อก) แทนระบบใบสั่งเดิม —
   // ยึดยอด myQty ของรายการที่จับคู่สินค้าได้ (matched) จากบันทึกล่าสุด ไม่รวมรายการจับคู่ไม่ได้เพราะระบุสินค้าไม่ได้
@@ -5056,7 +5088,7 @@ export default function WarehouseApp() {
 
         {/* ─── รับสินค้าเข้า (แทนใบพิมพ์กระดาษ) — ไม่ล็อกรหัส ─── */}
         {tab === "receiving" && (
-          <ReceivingPanel products={products} backlog={backlog} incomingAlias={incomingAlias} showToast={showToast} />
+          <ReceivingPanel products={products} backlog={backlog} incomingAlias={incomingAlias} onReceivingLogChange={upsertReceivingLogs} showToast={showToast} />
         )}
 
         {/* ─── DASHBOARD ─── */}
@@ -5622,7 +5654,7 @@ export default function WarehouseApp() {
           <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
             {stockSubTabs}
             <div style={{ flex: 1, minWidth: 0 }}>
-            <ReceivingApprovalPanel products={products} onStockChange={applyPickCut} showToast={showToast} />
+            <ReceivingApprovalPanel products={products} onStockChange={applyPickCut} onReceivingLogChange={upsertReceivingLogs} showToast={showToast} />
             </div>
           </div>
         )}
