@@ -3578,28 +3578,27 @@ function ReceivingPanel({ products, pendingBacklogRows, showToast }) {
           <input className="inp" style={{ width: "100%" }} placeholder="🔍 ค้นหาชื่อสินค้าที่รอรับจากใบสั่งซื้อ..."
             value={search} onChange={e => setSearch(e.target.value)} />
         </div>
-        {kw && (
-          <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, maxHeight: 220, overflowY: "auto", marginBottom: 12 }}>
-            {shownPending.length === 0 && <div style={{ padding: 14, textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>ไม่พบรายการที่รอรับ</div>}
-            {shownPending.map(r => {
-              const p = r.productId ? products.find(x => x.id === r.productId) : null;
-              return (
-                <div key={r.id} onClick={() => addRow(r)}
-                  style={{ padding: "9px 12px", borderBottom: "1px solid #F3F4F6", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}
-                  onMouseEnter={e => e.currentTarget.style.background = "#F9FAFB"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 13.5, fontWeight: 600, color: "#111827" }}>{r.name}</div>
-                    <div style={{ fontSize: 11.5, color: p ? "#059669" : "#DC2626" }}>{p ? `จับคู่กับ: ${p.name} (${p.sku})` : "⚠️ ยังไม่พบสินค้าที่ตรงกัน — เลือกเองได้หลังเพิ่ม"}</div>
-                  </div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#7C3AED", whiteSpace: "nowrap" }}>รอรับ {r.inTransit}</div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#6B7280", marginBottom: 6 }}>รายการที่รอรับจากใบสั่งซื้อทั้งหมด ({shownPending.length}) — คลิกเพื่อเพิ่ม</div>
+        <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, maxHeight: 320, overflowY: "auto", marginBottom: 12 }}>
+          {shownPending.length === 0 && <div style={{ padding: 14, textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>{kw ? "ไม่พบรายการที่รอรับ" : "ไม่มีรายการรอรับ 🎉"}</div>}
+          {shownPending.map(r => {
+            const p = r.productId ? products.find(x => x.id === r.productId) : null;
+            return (
+              <div key={r.id} onClick={() => addRow(r)}
+                style={{ padding: "9px 12px", borderBottom: "1px solid #F3F4F6", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}
+                onMouseEnter={e => e.currentTarget.style.background = "#F9FAFB"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 600, color: "#111827" }}>{r.name}</div>
+                  <div style={{ fontSize: 11.5, color: p ? "#059669" : "#DC2626" }}>{p ? `จับคู่กับ: ${p.name} (${p.sku})` : "⚠️ ยังไม่พบสินค้าที่ตรงกัน — เลือกเองได้หลังเพิ่ม"}</div>
                 </div>
-              );
-            })}
-          </div>
-        )}
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#7C3AED", whiteSpace: "nowrap" }}>รอรับ {r.inTransit}</div>
+              </div>
+            );
+          })}
+        </div>
 
         {logItems.length === 0 ? (
-          <div style={{ textAlign: "center", padding: 24, color: "#9CA3AF", fontSize: 13 }}>ค้นหาชื่อสินค้าด้านบนแล้วคลิกเพื่อเพิ่มรายการที่รับเข้า</div>
+          <div style={{ textAlign: "center", padding: 24, color: "#9CA3AF", fontSize: 13 }}>คลิกรายการด้านบนเพื่อเพิ่มเข้าใบรับสินค้า</div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
             {logItems.map(it => {
