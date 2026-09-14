@@ -71,6 +71,11 @@ const api = {
   patchBacklogNoteItems: (items) => sb("backlog_notes?id=eq.1", { method: "PATCH", body: JSON.stringify({ items }) }),
   // โน้ตข้อความเดียวอยู่บนสุดของหน้า (ฝากถึงฝ่ายอื่น) แยกจากรายการสินค้า — ต้องรัน sql/backlog-notes-add-note-column.sql ก่อน
   updateBacklogNote: (note) => sb("backlog_notes?id=eq.1", { method: "PATCH", body: JSON.stringify({ note }) }),
+  // ── รับสินค้าเข้า (แทนใบพิมพ์กระดาษ) — ฝ่ายคลังบันทึกก่อน (pending) ผู้จัดการอนุมัติทีหลังถึงเข้าสต็อกจริง ต้องรัน receiving-logs-setup.sql ก่อน ──
+  getReceivingLogs: () => sbAll("receiving_logs?select=*&order=created_at.desc"),
+  addReceivingLogs: (rows) => sb("receiving_logs", { method: "POST", body: JSON.stringify(rows) }), // รับ array บันทึกหลายแถวพร้อมกันได้
+  updateReceivingLog: (id, patch) => sb(`receiving_logs?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deleteReceivingLog: (id) => sb(`receiving_logs?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
 };
 
 const dbToProduct = (r) => ({
@@ -3506,6 +3511,287 @@ function LabelSheetPanel({ products }) {
   );
 }
 
+// ═══════════ รับสินค้าเข้า (แทนใบพิมพ์กระดาษ) — ฝ่ายคลังบันทึกที่นี่ ไม่ล็อกรหัส ═══════════
+// บันทึกแล้วเป็นแค่ "pending" ไม่กระทบสต็อกทันที — ผู้จัดการต้องมาอนุมัติในหน้าเช็คสต็อกก่อนถึงจะเข้าสต็อกจริง
+function ReceivingPanel({ products, pendingBacklogRows, showToast }) {
+  const [logItems, setLogItems] = useState([]); // [{backlogItemId, backlogItemName, productId, orderedQty, receivedQty, note}]
+  const [by, setBy] = useState("");
+  const [search, setSearch] = useState("");
+  const [myPending, setMyPending] = useState([]);
+  const [loadingPending, setLoadingPending] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const loadMyPending = async () => {
+    setLoadingPending(true);
+    try { setMyPending((await api.getReceivingLogs()).filter(r => r.status === "pending")); }
+    catch { /* เงียบไว้ — ไม่ให้บล็อกการบันทึกใหม่ ถ้าตารางยังไม่ถูกสร้าง */ }
+    setLoadingPending(false);
+  };
+  useEffect(() => { loadMyPending(); }, []);
+
+  const kw = search.trim().toLowerCase();
+  const pending = (pendingBacklogRows || []).filter(r => r.inTransit > 0 && !logItems.some(it => it.backlogItemId === r.id));
+  const shownPending = kw ? pending.filter(r => r.name.toLowerCase().includes(kw)) : pending;
+
+  const addRow = (r) => {
+    setLogItems(prev => [...prev, {
+      backlogItemId: r.id, backlogItemName: r.name, productId: r.productId,
+      orderedQty: r.inTransit, receivedQty: r.inTransit, note: "",
+    }]);
+    setSearch("");
+  };
+  const updateRow = (backlogItemId, patch) => setLogItems(prev => prev.map(it => it.backlogItemId === backlogItemId ? { ...it, ...patch } : it));
+  const removeRow = (backlogItemId) => setLogItems(prev => prev.filter(it => it.backlogItemId !== backlogItemId));
+
+  const submit = async () => {
+    const valid = logItems.filter(it => Number(it.receivedQty) > 0);
+    if (valid.length === 0) return showToast("กรุณาเพิ่มรายการและระบุจำนวนที่รับอย่างน้อย 1 รายการ", "error");
+    if (!by.trim()) return showToast("กรุณากรอกชื่อผู้รับสินค้า", "error");
+    setSaving(true);
+    try {
+      const payload = valid.map(it => {
+        const p = it.productId ? products.find(x => String(x.id) === String(it.productId)) : null;
+        return {
+          backlog_item_id: it.backlogItemId, backlog_item_name: it.backlogItemName,
+          product_id: p ? p.id : null, product_name: p ? p.name : null, sku: p ? p.sku : null,
+          ordered_qty: it.orderedQty, received_qty: Number(it.receivedQty) || 0,
+          note: it.note || null, received_by: by.trim(), status: "pending",
+        };
+      });
+      await api.addReceivingLogs(payload);
+      showToast(`บันทึกรับเข้า ${valid.length} รายการแล้ว — รอผู้จัดการอนุมัติ`);
+      setLogItems([]);
+      loadMyPending();
+    } catch (e) { showToast(e.message, "error"); }
+    setSaving(false);
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 14 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📥 รับสินค้าเข้า</h2>
+        <p style={{ fontSize: 13, color: "#6B7280" }}>บันทึกของที่รับเข้าจากใบสั่งซื้อแทนใบพิมพ์กระดาษ — บันทึกแล้วยังไม่เข้าสต็อกทันที ต้องรอผู้จัดการตรวจสอบและยืนยันก่อนเสมอ</p>
+      </div>
+
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 14, marginBottom: 14 }}>
+        <div style={{ position: "relative", marginBottom: 12 }}>
+          <input className="inp" style={{ width: "100%" }} placeholder="🔍 ค้นหาชื่อสินค้าที่รอรับจากใบสั่งซื้อ..."
+            value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+        {kw && (
+          <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, maxHeight: 220, overflowY: "auto", marginBottom: 12 }}>
+            {shownPending.length === 0 && <div style={{ padding: 14, textAlign: "center", color: "#9CA3AF", fontSize: 13 }}>ไม่พบรายการที่รอรับ</div>}
+            {shownPending.map(r => {
+              const p = r.productId ? products.find(x => x.id === r.productId) : null;
+              return (
+                <div key={r.id} onClick={() => addRow(r)}
+                  style={{ padding: "9px 12px", borderBottom: "1px solid #F3F4F6", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}
+                  onMouseEnter={e => e.currentTarget.style.background = "#F9FAFB"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 600, color: "#111827" }}>{r.name}</div>
+                    <div style={{ fontSize: 11.5, color: p ? "#059669" : "#DC2626" }}>{p ? `จับคู่กับ: ${p.name} (${p.sku})` : "⚠️ ยังไม่พบสินค้าที่ตรงกัน — เลือกเองได้หลังเพิ่ม"}</div>
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#7C3AED", whiteSpace: "nowrap" }}>รอรับ {r.inTransit}</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {logItems.length === 0 ? (
+          <div style={{ textAlign: "center", padding: 24, color: "#9CA3AF", fontSize: 13 }}>ค้นหาชื่อสินค้าด้านบนแล้วคลิกเพื่อเพิ่มรายการที่รับเข้า</div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
+            {logItems.map(it => {
+              const p = it.productId ? products.find(x => String(x.id) === String(it.productId)) : null;
+              return (
+                <div key={it.backlogItemId} style={{ border: "1px solid #E5E7EB", borderRadius: 12, padding: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 8 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 700, color: "#111827" }}>{it.backlogItemName}</div>
+                      <div style={{ fontSize: 11.5, color: "#6B7280" }}>สั่งไว้รอรับ {it.orderedQty} ชิ้น</div>
+                    </div>
+                    <button onClick={() => removeRow(it.backlogItemId)}
+                      style={{ background: "none", border: "none", color: "#D1D5DB", fontSize: 15, cursor: "pointer", flexShrink: 0 }}
+                      onMouseEnter={e => e.target.style.color = "#EF4444"} onMouseLeave={e => e.target.style.color = "#D1D5DB"}>✕</button>
+                  </div>
+                  <div style={{ marginBottom: 8 }}>
+                    <ProductPicker products={products} value={p ? String(p.id) : "none"}
+                      autoLabel={it.productId ? (p ? p.name : "สินค้านี้ถูกลบไปแล้ว") : "— ไม่พบสินค้าที่ตรงกัน —"}
+                      onPick={v => updateRow(it.backlogItemId, { productId: v === "auto" || v === "none" ? null : parseInt(v) })} />
+                  </div>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <label style={{ fontSize: 12, color: "#6B7280" }}>จำนวนที่รับจริง
+                      <input type="number" min={0} className="inp" style={{ width: 90, padding: "6px 8px", marginLeft: 6 }}
+                        value={it.receivedQty} onChange={e => updateRow(it.backlogItemId, { receivedQty: e.target.value })} />
+                    </label>
+                    <input className="inp" style={{ flex: 1, minWidth: 160, padding: "6px 8px" }} placeholder="หมายเหตุ (ถ้ามี เช่น ของขาด/กล่องบุบ)"
+                      value={it.note} onChange={e => updateRow(it.backlogItemId, { note: e.target.value })} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <input className="inp" style={{ flex: 1, minWidth: 200 }} placeholder="ชื่อผู้รับสินค้า *" value={by} onChange={e => setBy(e.target.value)} />
+          <button onClick={submit} disabled={saving || logItems.length === 0}
+            style={{ background: logItems.length ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#E5E7EB", color: "#fff", border: "none", borderRadius: 10, padding: "10px 20px", fontSize: 13.5, fontWeight: 700, cursor: logItems.length ? "pointer" : "not-allowed" }}>
+            {saving ? "⏳ กำลังบันทึก..." : `📥 บันทึกรับเข้า (${logItems.length})`}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 14 }}>
+        <div style={{ fontWeight: 700, fontSize: 14, color: "#111827", marginBottom: 10 }}>🕘 ที่เพิ่งบันทึกไว้ — รอผู้จัดการอนุมัติ ({myPending.length})</div>
+        {loadingPending && <div style={{ textAlign: "center", padding: 16, color: "#9CA3AF", fontSize: 13 }}>กำลังโหลด...</div>}
+        {!loadingPending && myPending.length === 0 && <div style={{ textAlign: "center", padding: 16, color: "#9CA3AF", fontSize: 13 }}>ยังไม่มีรายการรออนุมัติ</div>}
+        {!loadingPending && myPending.slice(0, 20).map(r => (
+          <div key={r.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #F3F4F6", fontSize: 13 }}>
+            <div>
+              <div style={{ color: "#111827", fontWeight: 600 }}>{r.product_name || r.backlog_item_name}{!r.product_id && <span style={{ marginLeft: 6, fontSize: 11, color: "#DC2626" }}>⚠️ ยังไม่จับคู่สินค้า</span>}</div>
+              <div style={{ fontSize: 11, color: "#9CA3AF" }}>{fmtDT(r.created_at)} · โดย {r.received_by || "-"}{r.note ? ` · ${r.note}` : ""}</div>
+            </div>
+            <span style={{ fontWeight: 700, color: "#7C3AED" }}>+{r.received_qty}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════ รับเข้ารออนุมัติ — ผู้จัดการตรวจก่อนเข้าสต็อกจริง (อยู่ในเช็คสต็อกที่ล็อกรหัสอยู่แล้ว) ═══════════
+// onStockChange(productId, newQty, txRow) — ใช้ตัวเดียวกับ applyPickCut ของหน้าหลัก เพื่อให้ state สินค้า/ประวัติซิงค์กันทันที
+function ReceivingApprovalPanel({ products, onStockChange, showToast }) {
+  const [pending, setPending] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [approverBy, setApproverBy] = useState("");
+  const [edits, setEdits] = useState({}); // { [id]: { receivedQty, productId, skip } }
+  const [busyId, setBusyId] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    try { setPending((await api.getReceivingLogs()).filter(r => r.status === "pending")); }
+    catch (e) { showToast(e.message, "error"); }
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const getEdit = (row) => edits[row.id] || { receivedQty: row.received_qty, productId: row.product_id, skip: false };
+  const setEdit = (id, patch) => setEdits(prev => {
+    const row = pending.find(r => r.id === id);
+    const current = prev[id] || { receivedQty: row.received_qty, productId: row.product_id, skip: false };
+    return { ...prev, [id]: { ...current, ...patch } };
+  });
+
+  const confirmRow = async (row) => {
+    const e = getEdit(row);
+    if (!approverBy.trim()) return showToast("กรุณากรอกชื่อผู้อนุมัติก่อน", "error");
+    setBusyId(row.id);
+    try {
+      if (e.skip) {
+        await api.updateReceivingLog(row.id, { status: "skipped", approved_by: approverBy.trim(), approved_at: new Date().toISOString() });
+        showToast("ตั้งเป็น \"ไม่บันทึกลงคลัง\" แล้ว");
+      } else {
+        const qty = Number(e.receivedQty) || 0;
+        const product = products.find(p => String(p.id) === String(e.productId));
+        if (!product) return showToast("กรุณาเลือกสินค้าให้ถูกต้องก่อนยืนยัน", "error");
+        if (qty <= 0) return showToast("จำนวนต้องมากกว่า 0", "error");
+        const newQty = product.quantity + qty;
+        await api.updateProduct(product.id, { quantity: newQty });
+        const [newTx] = await api.addTransaction({
+          type: "in", product_id: product.id, quantity: qty, date: new Date().toISOString().split("T")[0],
+          note: `รับเข้าจากใบสั่งซื้อ (${row.backlog_item_name})${row.note ? " - " + row.note : ""}`, by: approverBy.trim(),
+        });
+        onStockChange(product.id, newQty, newTx);
+        await api.updateReceivingLog(row.id, {
+          status: "approved", approved_by: approverBy.trim(), approved_at: new Date().toISOString(),
+          received_qty: qty, product_id: product.id, product_name: product.name, sku: product.sku,
+        });
+        showToast(`เพิ่มเข้าสต็อก "${product.name}" +${qty} สำเร็จ`);
+      }
+      setPending(prev => prev.filter(r => r.id !== row.id));
+    } catch (err) { showToast(err.message, "error"); }
+    setBusyId(null);
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 14 }}>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📥 รับเข้ารออนุมัติ</h2>
+        <p style={{ fontSize: 13, color: "#6B7280" }}>รายการที่ฝ่ายคลังบันทึกรับเข้าไว้ ({pending.length} รายการ) — ตรวจสอบแล้วค่อยยืนยันเข้าสต็อกจริง</p>
+      </div>
+
+      <div style={{ background: "#FFFBEB", border: "1.5px solid #FDE68A", borderRadius: 14, padding: "12px 16px", marginBottom: 14, display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ fontSize: 18 }}>⚠️</span>
+        <div style={{ fontSize: 13, color: "#92400E" }}><b>ตรวจสอบให้แน่ใจว่าสินค้าที่จับคู่ตรงกับของจริงก่อนยืนยันทุกครั้ง</b> — ถ้าจับคู่ผิดสินค้าจะทำให้สต็อกของสินค้านั้นคลาดเคลื่อน</div>
+      </div>
+
+      <div style={{ marginBottom: 14, maxWidth: 300 }}>
+        <input className="inp" style={{ width: "100%" }} placeholder="ชื่อผู้อนุมัติ *" value={approverBy} onChange={e => setApproverBy(e.target.value)} />
+      </div>
+
+      {loading && <div style={{ textAlign: "center", padding: 30, color: "#6B7280" }}>กำลังโหลด...</div>}
+      {!loading && pending.length === 0 && (
+        <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 40, color: "#9CA3AF" }}>ไม่มีรายการรออนุมัติ 🎉</div>
+      )}
+      {!loading && pending.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {pending.map(row => {
+            const e = getEdit(row);
+            const product = e.productId ? products.find(p => String(p.id) === String(e.productId)) : null;
+            return (
+              <div key={row.id} style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, padding: 14 }}>
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 220 }}>
+                    <div style={{ fontSize: 11, color: "#9CA3AF", marginBottom: 2 }}>ชื่อตามใบสั่งซื้อ</div>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: "#111827", marginBottom: 8 }}>{row.backlog_item_name}</div>
+                    <div style={{ fontSize: 11, color: "#9CA3AF", marginBottom: 2 }}>จับคู่กับสินค้าในคลัง</div>
+                    <ProductPicker products={products} value={product ? String(product.id) : "none"}
+                      autoLabel={e.productId ? "สินค้านี้ถูกลบไปแล้ว" : "— ยังไม่ได้จับคู่ —"}
+                      onPick={v => setEdit(row.id, { productId: v === "auto" || v === "none" ? null : parseInt(v) })} />
+                    {product && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, padding: "8px 10px", background: "#F5F3FF", borderRadius: 10 }}>
+                        {product.imageUrl
+                          ? <img src={product.imageUrl} alt="" style={{ width: 32, height: 32, objectFit: "cover", borderRadius: 6, border: "1px solid #E5E7EB" }} />
+                          : <div style={{ width: 32, height: 32, borderRadius: 6, background: "#EDE9FE", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>📦</div>}
+                        <div style={{ fontSize: 12 }}>
+                          <div style={{ fontWeight: 700, color: "#111827" }}>{product.name} <span style={{ color: "#9CA3AF", fontWeight: 400 }}>({product.sku})</span></div>
+                          <div style={{ color: "#6B7280" }}>คงเหลือตอนนี้ {product.quantity} {product.unit}</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ width: 200, flexShrink: 0 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: "#374151", marginBottom: 10, cursor: "pointer" }}>
+                      <input type="checkbox" checked={e.skip} onChange={ev => setEdit(row.id, { skip: ev.target.checked })} />
+                      ไม่บันทึกลงคลัง (ของเบ็ดเตล็ด)
+                    </label>
+                    {!e.skip && (
+                      <label style={{ fontSize: 12, color: "#6B7280", display: "block", marginBottom: 10 }}>จำนวนที่จะเพิ่มเข้าสต็อก
+                        <input type="number" min={0} className="inp" style={{ width: "100%", padding: "6px 8px", marginTop: 4 }}
+                          value={e.receivedQty} onChange={ev => setEdit(row.id, { receivedQty: ev.target.value })} />
+                      </label>
+                    )}
+                    <div style={{ fontSize: 11, color: "#9CA3AF", marginBottom: 10 }}>
+                      บันทึกโดย {row.received_by || "-"} · {fmtDT(row.created_at)}{row.note ? <><br />หมายเหตุ: {row.note}</> : ""}
+                    </div>
+                    <button onClick={() => confirmRow(row)} disabled={busyId === row.id}
+                      style={{ width: "100%", background: e.skip ? "#F9FAFB" : "#059669", color: e.skip ? "#6B7280" : "#fff", border: e.skip ? "1px solid #E5E7EB" : "none", borderRadius: 10, padding: "9px 12px", fontSize: 13, fontWeight: 700, cursor: busyId === row.id ? "not-allowed" : "pointer" }}>
+                      {busyId === row.id ? "⏳..." : e.skip ? "🚫 ยืนยันไม่บันทึกลงคลัง" : "✅ ยืนยันเพิ่มเข้าสต็อก"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function WarehouseApp() {
   const [rawProducts, setRawProducts] = useState([]);
   const [aliasMap, setAliasMap] = useState(new Map()); // ชื่อสินค้าตาม myorder → [{product_id, qty}] (จากตาราง product_aliases)
@@ -4615,7 +4901,7 @@ export default function WarehouseApp() {
   };
   const stockSubTabs = tab === "stockcheck" ? (
     <div style={{ display: "flex", flexDirection: "column", gap: 4, width: 200, flexShrink: 0 }}>
-      {[["backlog", "📋 บันทึกค้างส่ง"], ["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["reorder", "🛒 ต้องสั่งซื้อ"], ["dispose", "🗑️ จำหน่ายออก"], ["labels", "🏷️ แผ่นบาร์โค้ด"], ["transactions", "🔄 เคลื่อนไหว"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"]].map(([v, l]) => {
+      {[["backlog", "📋 บันทึกค้างส่ง"], ["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["receivingApproval", "📥 รับเข้ารออนุมัติ"], ["reorder", "🛒 ต้องสั่งซื้อ"], ["dispose", "🗑️ จำหน่ายออก"], ["labels", "🏷️ แผ่นบาร์โค้ด"], ["transactions", "🔄 เคลื่อนไหว"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"]].map(([v, l]) => {
         const on = v !== "print" && stockSub === v;
         const badgeCount = v === "orders" ? unreviewedScanCount : v === "reorder" ? reorderList.length : 0;
         return (
@@ -4643,7 +4929,7 @@ export default function WarehouseApp() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {[["dashboard","🏠 แดชบอร์ด"],["pick","🎯 ยิงตัดสต๊อก"],["inventory","📦 คลังสินค้า"],["returns","📮 พัสดุตีกลับ"],["stockcheck","🔍 เช็คสต็อก"]].map(([v,l]) => {
+            {[["dashboard","🏠 แดชบอร์ด"],["pick","🎯 ยิงตัดสต๊อก"],["receiving","📥 รับสินค้าเข้า"],["inventory","📦 คลังสินค้า"],["returns","📮 พัสดุตีกลับ"],["stockcheck","🔍 เช็คสต็อก"]].map(([v,l]) => {
               const badgeCount = v === "stockcheck" ? unreviewedScanCount + reorderList.length : 0;
               return (
               <button key={v} onClick={() => setTab(v)}
@@ -4661,6 +4947,11 @@ export default function WarehouseApp() {
         {/* ─── ยิงตัดสต๊อกจากใบหยิบ ─── */}
         {tab === "pick" && (
           <PickScanPanel products={products} aliases={aliasMap} onAliasesChange={setAliasMap} showToast={showToast} onStockCut={applyPickCut} onAddProduct={openAddProductNamed} />
+        )}
+
+        {/* ─── รับสินค้าเข้า (แทนใบพิมพ์กระดาษ) — ไม่ล็อกรหัส ─── */}
+        {tab === "receiving" && (
+          <ReceivingPanel products={products} pendingBacklogRows={incoming.rows} showToast={showToast} />
         )}
 
         {/* ─── DASHBOARD ─── */}
@@ -5219,6 +5510,14 @@ export default function WarehouseApp() {
             {stockSubTabs}
             <div style={{ flex: 1, minWidth: 0 }}>
             <BacklogNotesPanel products={products} showToast={showToast} />
+            </div>
+          </div>
+        )}
+        {tab === "stockcheck" && scansUnlocked && stockSub === "receivingApproval" && (
+          <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
+            {stockSubTabs}
+            <div style={{ flex: 1, minWidth: 0 }}>
+            <ReceivingApprovalPanel products={products} onStockChange={applyPickCut} showToast={showToast} />
             </div>
           </div>
         )}
