@@ -3825,7 +3825,10 @@ function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange
                   </div>
                   <div style={{ fontSize: 11.5, color: "#9CA3AF", marginTop: 1 }}>{doc.supplier ? `#${doc.supplier} · ` : ""}{dateLabel(doc.orderDate)}</div>
                   <div style={{ fontSize: 13, color: "#374151", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{itemNames}</div>
-                  <div style={{ fontSize: 11.5, color: "#6B7280", marginTop: 2 }}>{doc.orderedBy ? `ผู้สั่ง ${doc.orderedBy} · ` : ""}{pendingCount} รายการรอรับ{unmatchedCount > 0 ? ` · ⚠️ ${unmatchedCount} รายการยังไม่พบสินค้าที่ตรงกัน` : ""}</div>
+                  <div style={{ fontSize: 11.5, color: "#6B7280", marginTop: 2 }}>
+                    {doc.channel ? `หมายเลขพัสดุ ${doc.channel} · ` : <span style={{ color: "#DC2626", fontWeight: 700 }}>กรุณาใส่หมายเลขพัสดุ · </span>}
+                    {pendingCount} รายการรอรับ{unmatchedCount > 0 ? ` · ⚠️ ${unmatchedCount} รายการยังไม่พบสินค้าที่ตรงกัน` : ""}
+                  </div>
                 </div>
                 <span style={{ fontSize: 12, fontWeight: 700, color: "#7C3AED", flexShrink: 0 }}>เปิดดู →</span>
               </div>
