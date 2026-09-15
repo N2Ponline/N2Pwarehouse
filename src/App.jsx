@@ -3497,19 +3497,22 @@ function LabelSheetPanel({ products }) {
   const print = () => {
     if (selected.length === 0) return;
     if (missingImage.length > 0) { alert(`มีสินค้า ${missingImage.length} รายการยังไม่มีรูป กรุณาเพิ่มรูปก่อนพิมพ์:\n${missingImage.slice(0, 15).map(p => "• " + p.name).join("\n")}${missingImage.length > 15 ? `\n...และอีก ${missingImage.length - 15} รายการ` : ""}\n\nไปที่หน้า "คลังสินค้า" แล้วคลิกที่รูปสินค้าเพื่ออัปโหลด`); return; }
-    const page = layout === "s100" ? "@page { size: 100mm 150mm; margin: 4mm; }" : "@page { size: A4; margin: 8mm; }";
+    const roll = layout === "roll32x25"; // ม้วนสติกเกอร์ต่อเนื่องจากเครื่องพิมพ์บาร์โค้ดความร้อน (Xprinter/TSC) — 1 หน้า = 1 ดวงพอดี ไม่ใช่กระดาษ A4
+    const page = roll ? "@page { size: 32mm 25mm; margin: 1mm; }" : layout === "s100" ? "@page { size: 100mm 150mm; margin: 4mm; }" : "@page { size: A4; margin: 8mm; }";
     const compact = layout === "a4-21"; // ชื่อ + บาร์โค้ด อย่างเดียว 3 คอลัมน์ × 7 แถว
-    const grid = compact ? "grid-template-columns: repeat(3, 1fr); grid-auto-rows: 38mm;" : layout === "a4-8" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 68mm;" : layout === "a4-4" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 138mm;" : "grid-template-columns: 1fr; grid-auto-rows: 140mm;";
+    const grid = roll ? "grid-template-columns: 1fr; grid-auto-rows: 23mm; gap: 0;" : compact ? "grid-template-columns: repeat(3, 1fr); grid-auto-rows: 38mm;" : layout === "a4-8" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 68mm;" : layout === "a4-4" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 138mm;" : "grid-template-columns: 1fr; grid-auto-rows: 140mm;";
     const imgH = layout === "a4-8" ? "34mm" : layout === "a4-4" ? "85mm" : "82mm";
-    const nameSize = compact ? "9.5pt" : layout === "a4-8" ? "11pt" : "15pt";
+    const nameSize = roll ? "8pt" : compact ? "9.5pt" : layout === "a4-8" ? "11pt" : "15pt";
     const labels = [];
     selected.forEach(p => { for (let i = 0; i < Math.max(1, copies); i++) labels.push(p); });
     const cells = labels.map(p => `
       <div class="label">
-        ${compact ? "" : `<div class="img">${p.imageUrl ? `<img src="${escHtml(p.imageUrl)}" alt="">` : `<div class="noimg">📦<br><span>ไม่มีรูป</span></div>`}</div>`}
+        ${(compact || roll) ? "" : `<div class="img">${p.imageUrl ? `<img src="${escHtml(p.imageUrl)}" alt="">` : `<div class="noimg">📦<br><span>ไม่มีรูป</span></div>`}</div>`}
         <div class="name">${escHtml(p.name)}</div>
-        <div class="meta">${p.location && p.location !== "-" ? "ช่อง " + escHtml(p.location) + " · " : ""}${escHtml(p.unit || "ชิ้น")}</div>
-        <div class="bc">${code128Svg(String(p.sku), { height: compact ? 34 : 40, module: 2, fontSize: 13 })}</div>
+        ${roll
+          ? (p.location && p.location !== "-" ? `<div class="meta">ช่อง ${escHtml(p.location)}</div>` : "")
+          : `<div class="meta">${p.location && p.location !== "-" ? "ช่อง " + escHtml(p.location) + " · " : ""}${escHtml(p.unit || "ชิ้น")}</div>`}
+        <div class="bc">${code128Svg(String(p.sku), { height: roll ? 22 : compact ? 34 : 40, module: 2, fontSize: roll ? 9 : 13 })}</div>
       </div>`).join("");
     const html = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><title>แผ่นบาร์โค้ด ${labels.length} ใบ</title>
 <style>
@@ -3524,8 +3527,9 @@ function LabelSheetPanel({ products }) {
   .name { font-size: ${nameSize}; font-weight: 700; line-height: 1.25; margin-top: 1.5mm; }
   .meta { font-size: 8.5pt; color: #444; margin-top: 0.5mm; }
   .bc { margin-top: 1.5mm; width: 100%; display: flex; justify-content: center; }
-  .bc svg { width: ${compact ? "52mm" : layout === "a4-8" ? "58mm" : "70mm"}; height: auto; }
+  .bc svg { width: ${roll ? "28mm" : compact ? "52mm" : layout === "a4-8" ? "58mm" : "70mm"}; height: auto; }
   ${compact ? ".label { padding: 2mm 1.5mm; justify-content: center; } .name { margin-top: 0; min-height: 2.5em; display: flex; align-items: center; } .meta { font-size: 7.5pt; }" : ""}
+  ${roll ? ".label { border: none; padding: 0.5mm; justify-content: center; page-break-after: always; break-after: page; } .label:last-child { page-break-after: auto; break-after: auto; } .name { margin-top: 0; font-size: 8pt; } .meta { font-size: 6.5pt; margin-top: 0.3mm; }" : ""}
   @media print { .label { border-color: #bbb; } }
 </style></head><body><div class="grid">${cells}</div>
 </body></html>`;
@@ -3547,6 +3551,7 @@ function LabelSheetPanel({ products }) {
           <option value="a4-8">A4 — 8 แผ่น/หน้า (รูปกลาง)</option>
           <option value="a4-4">A4 — 4 แผ่น/หน้า (รูปใหญ่)</option>
           <option value="s100">สติกเกอร์ 100×150 มม. — 1 แผ่น/ใบ</option>
+          <option value="roll32x25">ม้วนต่อเนื่อง 32×25 มม. (Xprinter/TSC) — 1 บาร์โค้ด/ดวง</option>
         </select>
         <label style={{ fontSize: 12, color: "#6B7280", display: "flex", alignItems: "center", gap: 6 }}>สำเนา
           <input className="inp" type="number" min={1} max={10} value={copies} onChange={e => setCopies(Math.max(1, Math.min(10, parseInt(e.target.value) || 1)))} style={{ width: 64, padding: "7px 8px" }} />
