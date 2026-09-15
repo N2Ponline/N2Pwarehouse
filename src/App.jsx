@@ -3487,6 +3487,7 @@ function LabelSheetPanel({ products }) {
   const [sel, setSel] = useState(new Set());
   const [layout, setLayout] = useState("a4-21"); // ค่าเริ่มต้น = ชื่อ + บาร์โค้ด ไม่มีรูป (สินค้าส่วนใหญ่ยังไม่มีรูป)
   const [copies, setCopies] = useState(1);
+  const [notes, setNotes] = useState({}); // { [productId]: "รายละเอียดเพิ่มเติม เช่น ไซส์" } — พิมพ์ลงบนป้ายด้วยถ้ามี ไม่บันทึกลง DB แค่ใช้ตอนพิมพ์รอบนี้
   const kw = q.trim().toLowerCase();
   const list = useMemo(() => products.filter(p => !kw || p.name.toLowerCase().includes(kw) || String(p.sku || "").toLowerCase().includes(kw) || String(p.location || "").toLowerCase().includes(kw)), [products, kw]);
   const toggle = (id) => setSel(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -3497,23 +3498,32 @@ function LabelSheetPanel({ products }) {
   const print = () => {
     if (selected.length === 0) return;
     if (missingImage.length > 0) { alert(`มีสินค้า ${missingImage.length} รายการยังไม่มีรูป กรุณาเพิ่มรูปก่อนพิมพ์:\n${missingImage.slice(0, 15).map(p => "• " + p.name).join("\n")}${missingImage.length > 15 ? `\n...และอีก ${missingImage.length - 15} รายการ` : ""}\n\nไปที่หน้า "คลังสินค้า" แล้วคลิกที่รูปสินค้าเพื่ออัปโหลด`); return; }
-    const roll = layout === "roll32x25"; // ม้วนสติกเกอร์ต่อเนื่องจากเครื่องพิมพ์บาร์โค้ดความร้อน (Xprinter/TSC) — 1 หน้า = 1 ดวงพอดี ไม่ใช่กระดาษ A4
-    const page = roll ? "@page { size: 32mm 25mm; margin: 1mm; }" : layout === "s100" ? "@page { size: 100mm 150mm; margin: 4mm; }" : "@page { size: A4; margin: 8mm; }";
+    // ม้วนสติกเกอร์ต่อเนื่องจากเครื่องพิมพ์บาร์โค้ดความร้อน (Xprinter/TSC) — หน้าม้วนกว้าง 3 ดวง/แถว ดวงละ 32×25 มม.
+    // (ตามภาพม้วนจริงที่ผู้ใช้ส่งมา: JPS ROLL STICKER 32×25 มม. 3 คอลัมน์/แถว) — สูงของหน้าพิมพ์ = สูงของ 1 แถวพอดี
+    // เครื่องพิมพ์จะตัดหน้าใหม่เองทุกแถวโดยไม่ต้องกำหนด page-break เอง เพราะความสูงหน้าตรงกับความสูง 1 แถวเป๊ะ
+    const roll = layout === "roll32x25";
+    const page = roll ? "@page { size: 96mm 25mm; margin: 1mm; }" : layout === "s100" ? "@page { size: 100mm 150mm; margin: 4mm; }" : "@page { size: A4; margin: 8mm; }";
     const compact = layout === "a4-21"; // ชื่อ + บาร์โค้ด อย่างเดียว 3 คอลัมน์ × 7 แถว
-    const grid = roll ? "grid-template-columns: 1fr; grid-auto-rows: 23mm; gap: 0;" : compact ? "grid-template-columns: repeat(3, 1fr); grid-auto-rows: 38mm;" : layout === "a4-8" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 68mm;" : layout === "a4-4" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 138mm;" : "grid-template-columns: 1fr; grid-auto-rows: 140mm;";
+    const grid = compact ? "grid-template-columns: repeat(3, 1fr); grid-auto-rows: 38mm;" : layout === "a4-8" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 68mm;" : layout === "a4-4" ? "grid-template-columns: repeat(2, 1fr); grid-auto-rows: 138mm;" : "grid-template-columns: 1fr; grid-auto-rows: 140mm;";
     const imgH = layout === "a4-8" ? "34mm" : layout === "a4-4" ? "85mm" : "82mm";
     const nameSize = roll ? "8pt" : compact ? "9.5pt" : layout === "a4-8" ? "11pt" : "15pt";
     const labels = [];
     selected.forEach(p => { for (let i = 0; i < Math.max(1, copies); i++) labels.push(p); });
-    const cells = labels.map(p => `
+    const renderLabel = (p) => {
+      const note = (notes[p.id] || "").trim();
+      return `
       <div class="label">
         ${(compact || roll) ? "" : `<div class="img">${p.imageUrl ? `<img src="${escHtml(p.imageUrl)}" alt="">` : `<div class="noimg">📦<br><span>ไม่มีรูป</span></div>`}</div>`}
         <div class="name">${escHtml(p.name)}</div>
         ${roll
           ? (p.location && p.location !== "-" ? `<div class="meta">ช่อง ${escHtml(p.location)}</div>` : "")
           : `<div class="meta">${p.location && p.location !== "-" ? "ช่อง " + escHtml(p.location) + " · " : ""}${escHtml(p.unit || "ชิ้น")}</div>`}
-        <div class="bc">${code128Svg(String(p.sku), { height: roll ? 22 : compact ? 34 : 40, module: 2, fontSize: roll ? 9 : 13 })}</div>
-      </div>`).join("");
+        ${note ? `<div class="note">${escHtml(note)}</div>` : ""}
+        <div class="bc">${code128Svg(String(p.sku), { height: roll ? 20 : compact ? 34 : 40, module: 2, fontSize: roll ? 9 : 13 })}</div>
+      </div>`;
+    };
+    const cells = labels.map(renderLabel).join("");
+    const gridClass = roll ? "grid rollgrid" : "grid";
     const html = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><title>แผ่นบาร์โค้ด ${labels.length} ใบ</title>
 <style>
   ${page}
@@ -3526,12 +3536,18 @@ function LabelSheetPanel({ products }) {
   .noimg { color: #999; font-size: 22pt; line-height: 1.1; } .noimg span { font-size: 8pt; }
   .name { font-size: ${nameSize}; font-weight: 700; line-height: 1.25; margin-top: 1.5mm; }
   .meta { font-size: 8.5pt; color: #444; margin-top: 0.5mm; }
+  .note { font-size: 8pt; color: #6D28D9; font-style: italic; margin-top: 0.5mm; }
   .bc { margin-top: 1.5mm; width: 100%; display: flex; justify-content: center; }
-  .bc svg { width: ${roll ? "28mm" : compact ? "52mm" : layout === "a4-8" ? "58mm" : "70mm"}; height: auto; }
-  ${compact ? ".label { padding: 2mm 1.5mm; justify-content: center; } .name { margin-top: 0; min-height: 2.5em; display: flex; align-items: center; } .meta { font-size: 7.5pt; }" : ""}
-  ${roll ? ".label { border: none; padding: 0.5mm; justify-content: center; page-break-after: always; break-after: page; } .label:last-child { page-break-after: auto; break-after: auto; } .name { margin-top: 0; font-size: 8pt; } .meta { font-size: 6.5pt; margin-top: 0.3mm; }" : ""}
+  .bc svg { width: ${roll ? "29mm" : compact ? "52mm" : layout === "a4-8" ? "58mm" : "70mm"}; height: auto; }
+  ${compact ? ".label { padding: 2mm 1.5mm; justify-content: center; } .name { margin-top: 0; min-height: 2.5em; display: flex; align-items: center; } .meta { font-size: 7.5pt; } .note { font-size: 6.5pt; }" : ""}
+  ${roll ? `
+  .rollgrid { display: flex; flex-wrap: wrap; gap: 0; width: 94mm; }
+  .rollgrid .label { width: 31.33mm; height: 23mm; border: none; padding: 0.5mm; justify-content: center; }
+  .rollgrid .name { margin-top: 0; font-size: 8pt; }
+  .rollgrid .meta { font-size: 6.5pt; margin-top: 0.3mm; }
+  .rollgrid .note { font-size: 6pt; margin-top: 0.2mm; }` : ""}
   @media print { .label { border-color: #bbb; } }
-</style></head><body><div class="grid">${cells}</div>
+</style></head><body><div class="${gridClass}">${cells}</div>
 </body></html>`;
     printHtmlInPlace(html);
   };
@@ -3551,7 +3567,7 @@ function LabelSheetPanel({ products }) {
           <option value="a4-8">A4 — 8 แผ่น/หน้า (รูปกลาง)</option>
           <option value="a4-4">A4 — 4 แผ่น/หน้า (รูปใหญ่)</option>
           <option value="s100">สติกเกอร์ 100×150 มม. — 1 แผ่น/ใบ</option>
-          <option value="roll32x25">ม้วนต่อเนื่อง 32×25 มม. (Xprinter/TSC) — 1 บาร์โค้ด/ดวง</option>
+          <option value="roll32x25">ม้วนต่อเนื่อง 32×25 มม. 3 ดวง/แถว (Xprinter/TSC)</option>
         </select>
         <label style={{ fontSize: 12, color: "#6B7280", display: "flex", alignItems: "center", gap: 6 }}>สำเนา
           <input className="inp" type="number" min={1} max={10} value={copies} onChange={e => setCopies(Math.max(1, Math.min(10, parseInt(e.target.value) || 1)))} style={{ width: 64, padding: "7px 8px" }} />
@@ -3583,7 +3599,7 @@ function LabelSheetPanel({ products }) {
                 })}
                 style={{ cursor: "pointer" }} title="เลือก/ยกเลิกเลือกทั้งหมดที่แสดง" />
             </th>
-            <th>รูป</th><th>SKU</th><th>ชื่อสินค้า</th><th>ช่องเก็บ</th><th>คงเหลือ</th><th>ตัวอย่างบาร์โค้ด</th></tr></thead>
+            <th>รูป</th><th>SKU</th><th>ชื่อสินค้า</th><th>หมายเหตุ</th><th>ช่องเก็บ</th><th>คงเหลือ</th><th>ตัวอย่างบาร์โค้ด</th></tr></thead>
           <tbody>
             {list.map(p => {
               const flagMissing = sel.has(p.id) && !p.imageUrl;
@@ -3593,6 +3609,10 @@ function LabelSheetPanel({ products }) {
                 <td>{p.imageUrl ? <img src={p.imageUrl} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 6, border: "1px solid #E5E7EB" }} /> : <span style={{ color: flagMissing ? "#DC2626" : "#D1D5DB", fontWeight: flagMissing ? 700 : 400 }}>{flagMissing ? "⚠️ ไม่มีรูป" : "—"}</span>}</td>
                 <td style={{ fontFamily: "monospace" }}>{p.sku}</td>
                 <td style={{ fontWeight: 600 }}>{p.name}</td>
+                <td>
+                  <input className="inp" value={notes[p.id] || ""} onChange={e => setNotes(n => ({ ...n, [p.id]: e.target.value }))} onClick={e => e.stopPropagation()}
+                    placeholder="เช่น ไซส์ M" style={{ width: 120, padding: "6px 8px", fontSize: 12 }} />
+                </td>
                 <td>{p.location}</td>
                 <td style={{ fontFamily: "monospace" }}>{p.quantity}</td>
                 <td><div style={{ width: 130 }} dangerouslySetInnerHTML={{ __html: code128Svg(String(p.sku), { height: 22, module: 1, fontSize: 9 }).replace("<svg ", '<svg style="width:100%;height:auto" ') }} /></td>
