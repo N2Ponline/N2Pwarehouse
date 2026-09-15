@@ -4096,7 +4096,7 @@ export default function WarehouseApp() {
   const [exportingTx, setExportingTx] = useState(false);
   const [stockCheckMode, setStockCheckMode] = useState(false); // โหมดเช็ค/ปรับสต็อก
   const [stockCounts, setStockCounts] = useState({}); // { [productId]: "จำนวนนับจริง" }
-  const [stockSub, setStockSub] = useState("orders"); // เมนูย่อยของ "เช็คสต็อก": orders | adjust | print | labels | backlog | reorder | transactions | dispose
+  const [stockSub, setStockSub] = useState("orders"); // เมนูย่อยของ "เช็คสต็อก": orders | adjust | print | labels | receivingApproval | reorder | transactions | dispose (backlog ย้ายออกไปเป็นแท็บหลักแล้ว)
   const [checkerName, setCheckerName] = useState(""); // ผู้ตรวจนับ
   const [savingStockCheck, setSavingStockCheck] = useState(false);
   const [reorderDays, setReorderDays] = useState(7); // จำนวนวันที่ต้องการให้สต็อกพอ ในหน้า "ต้องสั่งซื้อ"
@@ -5163,7 +5163,7 @@ export default function WarehouseApp() {
   };
   const stockSubTabs = tab === "stockcheck" ? (
     <div style={{ display: "flex", flexDirection: "column", gap: 4, width: 200, flexShrink: 0 }}>
-      {[["backlog", "📋 บันทึกค้างส่ง"], ["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["receivingApproval", "📥 รับเข้ารออนุมัติ"], ["reorder", "🛒 ต้องสั่งซื้อ"], ["dispose", "🗑️ จำหน่ายออก"], ["labels", "🏷️ แผ่นบาร์โค้ด"], ["transactions", "🔄 เคลื่อนไหว"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"]].map(([v, l]) => {
+      {[["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["receivingApproval", "📥 รับเข้ารออนุมัติ"], ["reorder", "🛒 ต้องสั่งซื้อ"], ["dispose", "🗑️ จำหน่ายออก"], ["labels", "🏷️ แผ่นบาร์โค้ด"], ["transactions", "🔄 เคลื่อนไหว"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"]].map(([v, l]) => {
         const on = v !== "print" && stockSub === v;
         const badgeCount = v === "orders" ? unreviewedScanCount : v === "reorder" ? reorderList.length : 0;
         return (
@@ -5191,7 +5191,7 @@ export default function WarehouseApp() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {[["dashboard","🏠 แดชบอร์ด"],["pick","🎯 ยิงตัดสต๊อก"],["receiving","📥 รับสินค้าเข้า"],["inventory","📦 คลังสินค้า"],["returns","📮 พัสดุตีกลับ"],["stockcheck","🔍 เช็คสต็อก"]].map(([v,l]) => {
+            {[["dashboard","🏠 แดชบอร์ด"],["backlog","📋 บันทึกค้างส่ง"],["pick","🎯 ยิงตัดสต๊อก"],["receiving","📥 รับสินค้าเข้า"],["inventory","📦 คลังสินค้า"],["returns","📮 พัสดุตีกลับ"],["stockcheck","🔍 เช็คสต็อก"]].map(([v,l]) => {
               const badgeCount = v === "stockcheck" ? unreviewedScanCount + reorderList.length : 0;
               return (
               <button key={v} onClick={() => setTab(v)}
@@ -5214,6 +5214,11 @@ export default function WarehouseApp() {
         {/* ─── รับสินค้าเข้า (แทนใบพิมพ์กระดาษ) — ไม่ล็อกรหัส ─── */}
         {tab === "receiving" && (
           <ReceivingPanel products={products} backlog={backlog} incomingAlias={incomingAlias} onReceivingLogChange={upsertReceivingLogs} showToast={showToast} />
+        )}
+
+        {/* ─── บันทึกค้างส่ง — ย้ายออกมาเป็นแท็บหลัก ไม่ล็อกรหัสผู้จัดการอีกต่อไป ─── */}
+        {tab === "backlog" && (
+          <BacklogNotesPanel products={products} showToast={showToast} />
         )}
 
         {/* ─── DASHBOARD ─── */}
@@ -5764,14 +5769,6 @@ export default function WarehouseApp() {
             {stockSubTabs}
             <div style={{ flex: 1, minWidth: 0 }}>
             <LabelSheetPanel products={products} />
-            </div>
-          </div>
-        )}
-        {tab === "stockcheck" && scansUnlocked && stockSub === "backlog" && (
-          <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
-            {stockSubTabs}
-            <div style={{ flex: 1, minWidth: 0 }}>
-            <BacklogNotesPanel products={products} showToast={showToast} />
             </div>
           </div>
         )}
