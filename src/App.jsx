@@ -3205,6 +3205,8 @@ function BacklogNotesPanel({ products, showToast }) {
   const savedShort = useMemo(() => savedItemsAll.filter(it => Number(it.myQty) > Number(it.stock || 0)), [saved]);
   const toggleSavedSort = (col) => { if (savedSortCol === col) setSavedSortDir(d => d === "asc" ? "desc" : "asc"); else { setSavedSortCol(col); setSavedSortDir(col === "name" ? "asc" : "desc"); } };
   const savedArrow = (col) => savedSortCol === col ? (savedSortDir === "asc" ? " ▲" : " ▼") : "";
+  // อายุสด ณ วันนี้ (ไม่ใช้ it.age ที่ค้างมาจากตอนกด "เทียบข้อมูล" ครั้งล่าสุด) ให้ตรงกับตัวเลขที่แสดงในตารางเป๊ะเวลาเรียงคอลัมน์ "ค้างมา"
+  const liveAgeOf = (it) => it.firstSeen == null ? -1 : Math.max(0, Math.floor((new Date(todayStr() + "T00:00:00") - new Date(it.firstSeen + "T00:00:00")) / 86400000));
   const savedShown = useMemo(() => {
     let base = savedFilter === "over" ? savedOver : savedFilter === "short" ? savedShort : savedItemsAll;
     const kw = savedSearch.trim().toLowerCase();
@@ -3213,6 +3215,8 @@ function BacklogNotesPanel({ products, showToast }) {
       const dir = savedSortDir === "asc" ? 1 : -1;
       base = [...base].sort((a, b) => savedSortCol === "name"
         ? dir * a.name.localeCompare(b.name, "th")
+        : savedSortCol === "age"
+        ? ((liveAgeOf(a) - liveAgeOf(b)) * dir || a.name.localeCompare(b.name, "th"))
         : (((Number(a[savedSortCol]) || 0) - (Number(b[savedSortCol]) || 0)) * dir || a.name.localeCompare(b.name, "th")));
     }
     return base;
@@ -3441,10 +3445,10 @@ function BacklogNotesPanel({ products, showToast }) {
                       )}
                     </td>
                     <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC" }}>
-                      {it.age == null ? <span style={{ color: "#9CA3AF", fontSize: 11.5 }}>— (บันทึกก่อนหน้า)</span> : (
+                      {it.firstSeen == null ? <span style={{ color: "#9CA3AF", fontSize: 11.5 }}>— (บันทึกก่อนหน้า)</span> : (
                         <span title={`สั่งซื้อวันที่ ${it.firstSeen}${it.dateIsReal ? " (วันที่สั่งซื้อจริง)" : " (ประมาณจากวันที่สแกน)"}`}
-                          style={{ display: "inline-flex", alignItems: "center", gap: 3, background: backlogAgeBg(it.age), color: backlogAgeTone(it.age), borderRadius: 99, padding: "3px 9px", fontWeight: 800, fontSize: 12, fontFamily: "monospace" }}>
-                          {it.age} วัน{it.dateIsReal ? " 📅" : ""}
+                          style={{ display: "inline-flex", alignItems: "center", gap: 3, background: backlogAgeBg(liveAgeOf(it)), color: backlogAgeTone(liveAgeOf(it)), borderRadius: 99, padding: "3px 9px", fontWeight: 800, fontSize: 12, fontFamily: "monospace" }}>
+                          {liveAgeOf(it)} วัน{it.dateIsReal ? " 📅" : ""}
                         </span>
                       )}
                     </td>
