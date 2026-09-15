@@ -2963,7 +2963,7 @@ const backlogAgeBg = (age) => age >= 14 ? "#FEE2E2" : age >= 5 ? "#FEF3C7" : "#F
 // เก็บที่ตาราง backlog_notes แถวเดียว id=1 (jsonb) ให้ทุกคน/ทุกเครื่องเห็นตรงกัน (ต้องรัน backlog-notes-setup.sql ก่อนถึงจะใช้ได้)
 // บันทึกอัตโนมัติทุกครั้งที่กด "เทียบข้อมูลสินค้า" สำเร็จ (ไม่ต้องกดปุ่ม "บันทึก" แยกอีกต่อไป — ปุ่มยังอยู่ไว้กดบันทึกซ้ำเองได้เผื่อบันทึกอัตโนมัติล้มเหลว)
 // แก้ไข/ลบ/ใส่หมายเหตุทีละรายการได้โดยไม่กระทบวันที่บันทึกล่าสุด, การบันทึกซ้ำ (อัตโนมัติหรือกดเอง) จะไม่ทับหมายเหตุ/จำนวนรอเข้าที่กรอกเองไว้ (merge จาก saved.items เดิมเสมอ)
-function BacklogNotesPanel({ products, showToast }) {
+function BacklogNotesPanel({ products, showToast, onViewHistory }) {
   const [paste, setPaste] = useState("");
   const [parseInfo, setParseInfo] = useState("");
   const [aliases, setAliases] = useState(null); // Map(myorder_name -> components[]) | null ระหว่างโหลด
@@ -3457,6 +3457,9 @@ function BacklogNotesPanel({ products, showToast }) {
                     </td>
                     <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC", borderRadius: "0 12px 12px 0" }}>
                       <div style={{ display: "flex", gap: 4, justifyContent: "center" }}>
+                        {it.matched && onViewHistory && (
+                          <button onClick={() => onViewHistory(byId.get(String(it.id)))} title="ดูรายการเคลื่อนไหว" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>🕘</button>
+                        )}
                         <button onClick={() => editQty(it)} title="แก้ไขจำนวนค้างส่ง" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>✏️</button>
                         <button onClick={() => editItemNote(it)} title="แก้ไขหมายเหตุ" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>📝</button>
                         <button onClick={() => deleteItem(it)} title="ลบรายการนี้" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>🗑️</button>
@@ -5218,7 +5221,7 @@ export default function WarehouseApp() {
 
         {/* ─── บันทึกค้างส่ง — ย้ายออกมาเป็นแท็บหลัก ไม่ล็อกรหัสผู้จัดการอีกต่อไป ─── */}
         {tab === "backlog" && (
-          <BacklogNotesPanel products={products} showToast={showToast} />
+          <BacklogNotesPanel products={products} showToast={showToast} onViewHistory={setHistoryProduct} />
         )}
 
         {/* ─── DASHBOARD ─── */}
