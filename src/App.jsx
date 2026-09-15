@@ -2981,6 +2981,8 @@ function BacklogNotesPanel({ products, showToast }) {
   const [savingNote, setSavingNote] = useState(false);
   const [savedFilter, setSavedFilter] = useState("all"); // "all" | "over" | "short" — แท็บย่อยของตารางบันทึก (คนละอันกับ filterMode ของตารางเทียบข้อมูลด้านบน)
   const [savedSearch, setSavedSearch] = useState("");
+  const [savedSortCol, setSavedSortCol] = useState(null); // เรียงคอลัมน์ในตารางบันทึก — คนละ state กับ sortCol ของตารางเทียบข้อมูลด้านบน
+  const [savedSortDir, setSavedSortDir] = useState("desc");
 
   useEffect(() => {
     api.getAliases().then(rows2 => {
@@ -3201,11 +3203,20 @@ function BacklogNotesPanel({ products, showToast }) {
   const savedItemsAll = saved?.items || [];
   const savedOver = useMemo(() => savedItemsAll.filter(it => it.matched && Number(it.stock) > 0), [saved]);
   const savedShort = useMemo(() => savedItemsAll.filter(it => Number(it.myQty) > Number(it.stock || 0)), [saved]);
+  const toggleSavedSort = (col) => { if (savedSortCol === col) setSavedSortDir(d => d === "asc" ? "desc" : "asc"); else { setSavedSortCol(col); setSavedSortDir(col === "name" ? "asc" : "desc"); } };
+  const savedArrow = (col) => savedSortCol === col ? (savedSortDir === "asc" ? " ▲" : " ▼") : "";
   const savedShown = useMemo(() => {
-    const base = savedFilter === "over" ? savedOver : savedFilter === "short" ? savedShort : savedItemsAll;
+    let base = savedFilter === "over" ? savedOver : savedFilter === "short" ? savedShort : savedItemsAll;
     const kw = savedSearch.trim().toLowerCase();
-    return kw ? base.filter(it => it.name.toLowerCase().includes(kw)) : base;
-  }, [saved, savedFilter, savedSearch, savedOver, savedShort]);
+    if (kw) base = base.filter(it => it.name.toLowerCase().includes(kw));
+    if (savedSortCol) {
+      const dir = savedSortDir === "asc" ? 1 : -1;
+      base = [...base].sort((a, b) => savedSortCol === "name"
+        ? dir * a.name.localeCompare(b.name, "th")
+        : (((Number(a[savedSortCol]) || 0) - (Number(b[savedSortCol]) || 0)) * dir || a.name.localeCompare(b.name, "th")));
+    }
+    return base;
+  }, [saved, savedFilter, savedSearch, savedOver, savedShort, savedSortCol, savedSortDir]);
 
   return (
     <div>
@@ -3391,12 +3402,13 @@ function BacklogNotesPanel({ products, showToast }) {
             <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: "0 6px", padding: "0 10px 10px" }}>
               <thead>
                 <tr>
-                  {["", "ลำดับ", "📦 ชื่อสินค้า", "✅ ค้างส่งจาก MyOrder", "📦 สต็อกคงเหลือ", "🚚 สินค้ารอเข้า", "⏳ ค้างมา (วัน)", "📝 หมายเหตุ", "จัดการ"].map((h, i) => (
-                    <th key={i} style={{
+                  {[["", null], ["ลำดับ", null], ["📦 ชื่อสินค้า", "name"], ["✅ ค้างส่งจาก MyOrder", "myQty"], ["📦 สต็อกคงเหลือ", "stock"], ["🚚 สินค้ารอเข้า", "incQty"], ["⏳ ค้างมา (วัน)", "age"], ["📝 หมายเหตุ", null], ["จัดการ", null]].map(([h, col], i) => (
+                    <th key={i} onClick={col ? () => toggleSavedSort(col) : undefined} style={{
                       padding: "12px 10px", fontSize: 12, fontWeight: 800, color: "#fff", textAlign: i === 2 || i === 7 ? "left" : "center",
                       background: ["#3B82F6", "#3B82F6", "#3B82F6", "#F43F5E", "#F59E0B", "#10B981", "#EA580C", "#8B5CF6", "#64748B"][i],
                       borderRadius: i === 0 ? "12px 0 0 12px" : i === 8 ? "0 12px 12px 0" : 0,
-                    }}>{i === 0 ? <input type="checkbox" checked={savedShown.length > 0 && selectedIds.size === savedShown.length} onChange={toggleSelectAll} style={{ cursor: "pointer" }} /> : h}</th>
+                      cursor: col ? "pointer" : "default", userSelect: "none", whiteSpace: "nowrap",
+                    }}>{i === 0 ? <input type="checkbox" checked={savedShown.length > 0 && selectedIds.size === savedShown.length} onChange={toggleSelectAll} style={{ cursor: "pointer" }} /> : <>{h}{col ? savedArrow(col) : ""}</>}</th>
                   ))}
                 </tr>
               </thead>
