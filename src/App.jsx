@@ -83,6 +83,12 @@ const api = {
   addReceivingLogs: (rows) => sb("receiving_logs", { method: "POST", body: JSON.stringify(rows) }), // รับ array บันทึกหลายแถวพร้อมกันได้
   updateReceivingLog: (id, patch) => sb(`receiving_logs?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   deleteReceivingLog: (id) => sb(`receiving_logs?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
+  // ── การจับคู่ชื่อ "ของรอเข้า" ที่เลือกเอง (หน้าต่าง 🧾 ของรอเข้า) — คนละตารางกับ product_aliases ด้านบน
+  // (อันนั้นจับคู่ชื่อตอนขาย/สแกน อันนี้จับคู่ชื่อตอนรอรับเข้า) ต้องรัน incoming-aliases-setup.sql ก่อน
+  // เก็บที่ Supabase แทน localStorage เดิม ให้ทุกเครื่อง/ทุกคนเห็นการแก้ตรงกัน
+  getIncomingAliases: () => sbAll("incoming_aliases?select=*"),
+  setIncomingAlias: (name, productId) => sb("incoming_aliases?on_conflict=name", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ name, product_id: productId, updated_at: new Date().toISOString() }) }),
+  deleteIncomingAlias: (name) => sb(`incoming_aliases?name=eq.${encodeURIComponent(name)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
 };
 
 const dbToProduct = (r) => ({
@@ -260,8 +266,10 @@ async function syncApprovalToOrderSystem(row, qty) {
   }
 }
 
-// การจับคู่ที่ผู้ใช้ตั้งเอง เก็บใน localStorage — ตาราง n2p_backlog เพิ่มคอลัมน์ไม่ได้
-// และ meta element ใน rounds ถูกระบบใบสั่งเขียนทับทุกครั้งที่บันทึก
+// การจับคู่ที่ผู้ใช้ตั้งเอง เดิมเก็บใน localStorage (เครื่องใครเครื่องมัน) — เปลี่ยนมาเก็บที่ตาราง
+// incoming_aliases ใน Supabase แทนแล้ว (ให้ทุกเครื่อง/ทุกคนเห็นตรงกัน) ตาราง n2p_backlog เองเพิ่มคอลัมน์ไม่ได้
+// และ meta element ใน rounds ถูกระบบใบสั่งเขียนทับทุกครั้งที่บันทึก เลยต้องแยกตารางเก็บเอง
+// ยังเก็บฟังก์ชันอ่าน localStorage ไว้แค่เพื่อย้ายของเก่าที่เคยตั้งไว้ในเครื่องนี้ขึ้น Supabase ครั้งเดียวตอนเปิดแอปครั้งแรกหลังอัปเดต (ดู loadAll)
 const ALIAS_KEY = "n2p_incoming_alias_v1";
 const loadAliasMap = () => {
   try { return JSON.parse(localStorage.getItem(ALIAS_KEY) || "{}"); } catch { return {}; }
@@ -4358,7 +4366,7 @@ export default function WarehouseApp() {
     setLoading(true);
     setDbError(null);
     try {
-      const [prods, txs, bl, al, bn, rl] = await Promise.all([
+      const [prods, txs, bl, al, bn, rl, ia] = await Promise.all([
         api.getProducts(),
         api.getTransactions(),
         // ของระบบใบสั่ง — ถ้าดึงไม่ได้ก็ให้คลังทำงานต่อได้ตามปกติ แค่ไม่มียอดรอเข้า
@@ -4369,6 +4377,8 @@ export default function WarehouseApp() {
         api.getBacklogNotes().catch(() => null),
         // ที่รับเข้าไปแล้วผ่าน StockMaster — ถ้าดึงไม่ได้ (ยังไม่รัน receiving-logs-setup.sql) ก็ให้ยอดรอเข้าคำนวณแบบเดิมไปก่อน
         api.getReceivingLogs().catch(() => []),
+        // การจับคู่ "ของรอเข้า" ที่เลือกเอง — null (ไม่ใช่ []) = ดึงไม่ได้/ตารางยังไม่ถูกสร้าง (ยังไม่รัน incoming-aliases-setup.sql) ใช้ของเดิมใน localStorage เครื่องนี้ไปก่อน
+        api.getIncomingAliases().catch(() => null),
       ]);
       setRawProducts((prods || []).map(dbToProduct));
       setTransactions((txs || []).map(dbToTx));
@@ -4376,6 +4386,23 @@ export default function WarehouseApp() {
       setAliasMap(aliasRowsToMap(al));
       setBacklogNotes(bn);
       setReceivingLogs(rl || []);
+
+      if (ia) {
+        const serverMap = {};
+        ia.forEach(r => { serverMap[r.name] = r.product_id; });
+        // ย้ายของเก่าที่เคยตั้งไว้ในเครื่องนี้ตั้งแต่ก่อนเปลี่ยนมาเก็บ Supabase ขึ้นไปด้วย ครั้งเดียวพอ (ชื่อที่ยังไม่มีบน Supabase เท่านั้น กันเขียนทับของคนอื่น)
+        const local = loadAliasMap();
+        const missing = Object.keys(local).filter(k => !Object.prototype.hasOwnProperty.call(serverMap, k));
+        if (missing.length) {
+          Promise.all(missing.map(k => api.setIncomingAlias(k, local[k]).catch(() => null)))
+            .then(() => { try { localStorage.removeItem(ALIAS_KEY); } catch { /* โหมดส่วนตัวลบไม่ได้ ไม่เป็นไร */ } });
+          setIncomingAlias({ ...serverMap, ...Object.fromEntries(missing.map(k => [k, local[k]])) });
+        } else {
+          setIncomingAlias(serverMap);
+        }
+      } else {
+        setIncomingAlias(loadAliasMap()); // ตารางยังไม่ถูกสร้าง หรือดึงไม่ได้ ใช้ของเดิมในเครื่องนี้ไปก่อนไม่ให้แอปพัง
+      }
     } catch (e) {
       setDbError(e.message);
     } finally {
@@ -4445,8 +4472,10 @@ export default function WarehouseApp() {
   const setAlias = (name, productId) => {
     const next = { ...incomingAlias };
     if (productId === "auto") delete next[name]; else next[name] = productId;
-    setIncomingAlias(next);
-    try { localStorage.setItem(ALIAS_KEY, JSON.stringify(next)); } catch { /* โหมดส่วนตัวเขียนไม่ได้ ไม่เป็นไร */ }
+    setIncomingAlias(next); // อัปเดตหน้าจอทันที ไม่ต้องรอ network ตอบกลับ
+    const onFail = () => showToast("บันทึกการจับคู่ไม่สำเร็จ — อาจยังไม่ได้รัน sql/incoming-aliases-setup.sql ในเครื่องเซิร์ฟเวอร์ (เครื่องอื่นจะยังไม่เห็นการแก้นี้)", "error");
+    if (productId === "auto") api.deleteIncomingAlias(name).catch(onFail);
+    else api.setIncomingAlias(name, productId).catch(onFail);
   };
 
   const filteredProducts = useMemo(() => {
@@ -6469,7 +6498,7 @@ export default function WarehouseApp() {
                 {rows.length === 0 && <div style={{ textAlign: "center", padding: 36, color: "#9CA3AF", fontSize: 13 }}>ไม่พบรายการ</div>}
                 <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 10 }}>
                   * ยอดรอเข้า/ค้างส่งอ่านจากระบบใบสั่งอย่างเดียว ไม่เขียนกลับ — แก้จำนวนต้องไปแก้ที่ระบบใบสั่ง
-                  <br />* การจับคู่ที่เลือกเองเก็บไว้ในเบราว์เซอร์เครื่องนี้ (เครื่องอื่นจะเห็นเฉพาะที่ระบบจับคู่ให้อัตโนมัติ)
+                  <br />* การจับคู่ที่เลือกเองบันทึกใช้ร่วมกันได้ทุกเครื่อง/ทุกคน (ถ้าเห็นข้อความแจ้งบันทึกไม่สำเร็จ แปลว่ายังไม่ได้ตั้งค่าฐานข้อมูลส่วนนี้ — แจ้งผู้ดูแลระบบ)
                 </p>
               </div>
             </div>
