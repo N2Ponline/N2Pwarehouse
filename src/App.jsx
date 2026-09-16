@@ -3557,12 +3557,40 @@ function thermalLabelHtml(labels, notes, { dpi = 203, gap = 0 } = {}) {
   </style></head><body>${rows.join("")}</body></html>`;
 }
 
+const LABEL_PRINT_KEY = "n2p.labelPrint.v1";
+const LABEL_PRINT_PRESETS = {
+  "a4-21": { title: "A4 · 21 ดวงต่อหน้า", hint: "จัดหน้า A4 ให้อัตโนมัติ · ชื่อ + บาร์โค้ด" },
+  "a4-8": { title: "A4 · 8 ดวงต่อหน้า", hint: "จัดหน้า A4 ให้อัตโนมัติ · รูปสินค้า + ชื่อ + บาร์โค้ด" },
+  "a4-4": { title: "A4 · 4 ดวงต่อหน้า", hint: "จัดหน้า A4 ให้อัตโนมัติ · รูปใหญ่ + ชื่อ + บาร์โค้ด" },
+  s100: { title: "สติกเกอร์ 100 × 150 มม.", hint: "จัดหน้า 1 ดวงต่อใบให้อัตโนมัติ" },
+  roll32x25: { title: "TSC · 32 × 25 มม.", hint: "จัดหน้า 3 ดวงต่อแถว · พิมพ์จากดวงซ้ายไปขวา" },
+};
+function readLabelPrintSettings() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(LABEL_PRINT_KEY) || "{}"); } catch { saved = {}; }
+  const profile = saved?.profiles?.roll32x25;
+  return {
+    layout: Object.prototype.hasOwnProperty.call(LABEL_PRINT_PRESETS, saved?.layout) ? saved.layout : "roll32x25",
+    dpi: profile?.dpi === 300 ? 300 : 203,
+    gap: typeof profile?.gap === "number" && Number.isFinite(profile.gap) ? Math.max(0, Math.min(5, profile.gap)) : 0,
+  };
+}
+
 function LabelSheetPanel({ products }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(new Set());
-  const [layout, setLayout] = useState("roll32x25");
-  const [thermalDpi, setThermalDpi] = useState(203);
-  const [thermalGap, setThermalGap] = useState(0);
+  const [initialPrintSettings] = useState(readLabelPrintSettings);
+  const [layout, setLayout] = useState(initialPrintSettings.layout);
+  const [thermalDpi, setThermalDpi] = useState(initialPrintSettings.dpi);
+  const [thermalGap, setThermalGap] = useState(initialPrintSettings.gap);
+  const [printSettingsOpen, setPrintSettingsOpen] = useState(false);
+  const [printSettingsSaved, setPrintSettingsSaved] = useState(true);
+  useEffect(() => {
+    try {
+      localStorage.setItem(LABEL_PRINT_KEY, JSON.stringify({ layout, profiles: { roll32x25: { dpi: thermalDpi, gap: thermalGap } } }));
+      setPrintSettingsSaved(true);
+    } catch { setPrintSettingsSaved(false); }
+  }, [layout, thermalDpi, thermalGap]);
   const [copies, setCopies] = useState(1);
   const [notes, setNotes] = useState({}); // { [productId]: "รายละเอียดเพิ่มเติม เช่น ไซส์" } — พิมพ์ลงบนป้ายด้วยถ้ามี ไม่บันทึกลง DB แค่ใช้ตอนพิมพ์รอบนี้
   const kw = q.trim().toLowerCase();
@@ -3640,12 +3668,12 @@ function LabelSheetPanel({ products }) {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <div>
           <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🏷️ พิมพ์แผ่นบาร์โค้ด SKU</h2>
-          <p style={{ fontSize: 13, color: "#6B7280" }}>เลือกสินค้า → พิมพ์แผ่นที่มีรูปใหญ่ + ชื่อ + บาร์โค้ด Code128 ของ SKU เอาไปติด<b>ที่ช่องเก็บ</b> (ไม่ใช่วางลอยๆ) เวลาเติมของต้องเช็คว่าแผ่นตรงกับของที่เติมทุกครั้ง</p>
+          <p style={{ fontSize: 13, color: "#6B7280" }}>เลือกแบบกระดาษ → เลือกสินค้า → กดพิมพ์ ระบบจัดหน้าตามแบบที่เลือกให้ ใช้ป้ายติดที่ช่องเก็บสินค้า</p>
         </div>
       </div>
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 14, marginBottom: 12, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <input className="inp" value={q} onChange={e => setQ(e.target.value)} placeholder="🔍 ค้นหาชื่อ / SKU / ช่องเก็บ..." style={{ flex: 1, minWidth: 220 }} />
-        <select className="inp" value={layout} onChange={e => setLayout(e.target.value)} style={{ width: 230 }}>
+        <select className="inp" aria-label="แบบกระดาษและการพิมพ์" value={layout} onChange={e => { setLayout(e.target.value); setPrintSettingsOpen(false); }} style={{ width: 230 }}>
           <option value="a4-21">A4 — 21 แผ่น/หน้า (ชื่อ + บาร์โค้ด ไม่มีรูป)</option>
           <option value="a4-8">A4 — 8 แผ่น/หน้า (รูปกลาง)</option>
           <option value="a4-4">A4 — 4 แผ่น/หน้า (รูปใหญ่)</option>
@@ -3661,9 +3689,17 @@ function LabelSheetPanel({ products }) {
           title={missingImage.length > 0 ? `มี ${missingImage.length} รายการยังไม่มีรูป — เพิ่มรูปให้ครบก่อนถึงจะพิมพ์ได้` : undefined}
           style={{ background: sel.size && missingImage.length === 0 ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#E5E7EB", color: "#fff", border: "none", borderRadius: 10, padding: "9px 18px", fontSize: 13, fontWeight: 700, cursor: sel.size && missingImage.length === 0 ? "pointer" : "not-allowed" }}>🖨️ พิมพ์ {sel.size ? `${sel.size} รายการ` : ""}</button>
       </div>
-      {layout === "roll32x25" && (
-        <div style={{ background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 14, padding: "12px 16px", marginBottom: 12, fontSize: 13, lineHeight: 1.8 }}>
-          <b>TSC · ฉลาก 32 × 25 มม. · 3 ดวงต่อแถว</b>
+      <div style={{ background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 12, padding: "10px 14px", marginBottom: 12, fontSize: 13, lineHeight: 1.8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div><b>{LABEL_PRINT_PRESETS[layout].title}</b> · {LABEL_PRINT_PRESETS[layout].hint}</div>
+          {layout === "roll32x25" && <button type="button" onClick={() => setPrintSettingsOpen(v => !v)} aria-expanded={printSettingsOpen} aria-controls="tsc-print-settings" style={{ background: "#fff", border: "1px solid #CBD5E1", borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: "#475569", fontSize: 12 }}>⚙ ตั้งค่าการพิมพ์</button>}
+        </div>
+        <div style={{ color: printSettingsSaved ? "#64748B" : "#B45309", fontSize: 12 }} role="status">{printSettingsSaved ? "จำแบบกระดาษและค่าพิมพ์ไว้ในเบราว์เซอร์นี้แล้ว" : "เบราว์เซอร์ไม่อนุญาตให้บันทึกค่า — ค่าที่เลือกยังใช้พิมพ์ครั้งนี้ได้"}</div>
+        <div style={{ color: "#64748B", fontSize: 12 }}>ในหน้าต่างพิมพ์ เลือกเครื่องและกระดาษให้ตรงกับแบบนี้ · ขนาดจริง 100%</div>
+      {layout === "roll32x25" && printSettingsOpen && (
+        <div id="tsc-print-settings" style={{ borderTop: "1px solid #E2E8F0", paddingTop: 10, marginTop: 8 }}>
+          <b>ตั้งค่าเฉพาะ TSC · ปรับครั้งแรกหรือเมื่อเปลี่ยนเครื่อง/ม้วนกระดาษ</b>
+          <div>บันทึกอัตโนมัติในเบราว์เซอร์นี้ และเรียกใช้เมื่อเลือก TSC อีกครั้ง · ไม่กระทบแบบ A4</div>
           <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", margin: "8px 0" }}>
             <label>ความละเอียดเครื่อง <select className="inp" aria-label="ความละเอียด TSC" value={thermalDpi} onChange={e => setThermalDpi(Number(e.target.value))} style={{ width: 110, padding: 6 }}><option value={203}>203 DPI</option><option value={300}>300 DPI</option></select></label>
             <label>ช่องว่างระหว่างดวงแนวนอน <input className="inp" aria-label="ช่องว่างระหว่างดวงแนวนอน" type="number" min={0} max={5} step={0.1} value={thermalGap} onChange={e => setThermalGap(Math.max(0, Math.min(5, Number(e.target.value) || 0)))} style={{ width: 70, padding: 6 }} /> มม.</label>
@@ -3673,6 +3709,7 @@ function LabelSheetPanel({ products }) {
           <div>ชื่อสินค้า 2 บรรทัด + บาร์โค้ด + SKU + ช่องเก็บ/หมายเหตุ · แถวสุดท้ายที่ไม่ครบ 3 ดวงจะเว้นว่าง · ทดลองพิมพ์และสแกน 1 แถวก่อน</div>
         </div>
       )}
+      </div>
       {missingImage.length > 0 && (
         <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 14, padding: "12px 16px", marginBottom: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <span style={{ fontSize: 18 }}>⚠️</span>
