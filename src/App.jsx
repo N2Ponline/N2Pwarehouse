@@ -2971,7 +2971,7 @@ const backlogAgeBg = (age) => age >= 14 ? "#FEE2E2" : age >= 5 ? "#FEF3C7" : "#F
 // เก็บที่ตาราง backlog_notes แถวเดียว id=1 (jsonb) ให้ทุกคน/ทุกเครื่องเห็นตรงกัน (ต้องรัน backlog-notes-setup.sql ก่อนถึงจะใช้ได้)
 // บันทึกอัตโนมัติทุกครั้งที่กด "เทียบข้อมูลสินค้า" สำเร็จ (ไม่ต้องกดปุ่ม "บันทึก" แยกอีกต่อไป — ปุ่มยังอยู่ไว้กดบันทึกซ้ำเองได้เผื่อบันทึกอัตโนมัติล้มเหลว)
 // แก้ไข/ลบ/ใส่หมายเหตุทีละรายการได้โดยไม่กระทบวันที่บันทึกล่าสุด, การบันทึกซ้ำ (อัตโนมัติหรือกดเอง) จะไม่ทับหมายเหตุ/จำนวนรอเข้าที่กรอกเองไว้ (merge จาก saved.items เดิมเสมอ)
-function BacklogNotesPanel({ products, showToast, onViewHistory }) {
+function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, onSetAlias }) {
   const [paste, setPaste] = useState("");
   const [parseInfo, setParseInfo] = useState("");
   const [aliases, setAliases] = useState(null); // Map(myorder_name -> components[]) | null ระหว่างโหลด
@@ -3018,6 +3018,13 @@ function BacklogNotesPanel({ products, showToast, onViewHistory }) {
     const um = [];
     items.forEach(it => {
       const key = it.name;
+      // จับคู่กลาง (incomingAlias) มาก่อนเสมอ — ตารางเดียวกับที่ใช้ในหน้า "🧾 ของรอเข้า" (คลังสินค้า) และ "รับสินค้าเข้า"
+      // sync ผ่าน Supabase แล้ว (ดู incoming_aliases) เพื่อให้แก้จับคู่ที่ไหนก็ได้ มีผลทุกหน้าเหมือนกันหมด ไม่ต้องแก้แยกทีละหน้า
+      if (incomingAlias && Object.prototype.hasOwnProperty.call(incomingAlias, key)) {
+        const pid = incomingAlias[key];
+        if (pid == null || !byId.has(String(pid))) { um.push({ ...it, how: pid == null ? "ตั้งเองว่าไม่มีในคลัง (จับคู่กลาง)" : "สินค้าที่ตั้งไว้ถูกลบ" }); return; }
+        const s = slot(pid); s.my += it.qty; s.mySrc.push({ name: key, qty: it.qty, tag: "central-alias" }); mergeOrderDate(s, it.orderDate); return;
+      }
       if (Object.prototype.hasOwnProperty.call(manual, key)) {
         const pid = manual[key];
         if (pid == null || !byId.has(String(pid))) { um.push({ ...it, how: pid == null ? "ตั้งเองว่าไม่มีในคลัง" : "สินค้าที่ตั้งไว้ถูกลบ" }); return; }
@@ -3072,7 +3079,8 @@ function BacklogNotesPanel({ products, showToast, onViewHistory }) {
   };
 
   // จับคู่เอง/แก้ไขวันครั้งไหนแล้ว เทียบใหม่อัตโนมัติให้เห็นผลทันที (ถ้าเคยกดเทียบไปแล้วรอบนี้)
-  useEffect(() => { if (rows != null) doCompare(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [manual]);
+  // รวม incomingAlias ด้วย — แก้จับคู่จากหน้า "ของรอเข้า" ตอนนี้ต้องอัปเดตตารางนี้ให้ทันทีเหมือนกัน ไม่ต้องกดเทียบข้อมูลใหม่เอง
+  useEffect(() => { if (rows != null) doCompare(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [manual, incomingAlias]);
   useEffect(() => { try { localStorage.setItem(BACKLOG_MANUAL_KEY, JSON.stringify(manual)); } catch {} }, [manual]);
 
   const setManualMatch = (name, v) => setManual(prev => { const next = { ...prev }; if (v === "auto") delete next[name]; else next[name] = v === "none" ? null : Number(v); return next; });
@@ -3312,19 +3320,25 @@ function BacklogNotesPanel({ products, showToast, onViewHistory }) {
           {unmatched.length > 0 && (
             <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16, marginTop: 14 }}>
               <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>❓ ชื่อจาก MyOrder ที่จับคู่กับสินค้าในคลังไม่ได้ ({unmatched.length}) — ยอดพวกนี้ไม่รวมในตารางด้านบน</h3>
+              <p style={{ fontSize: 11.5, color: "#9CA3AF", marginTop: -4, marginBottom: 8 }}>* การจับคู่เองที่นี่บันทึกใช้ร่วมกับหน้า "🧾 ของรอเข้า" (คลังสินค้า) ทุกเครื่อง/ทุกคนเห็นตรงกัน</p>
               <table>
                 <thead><tr><th>ชื่อใน MyOrder</th><th>ชิ้น</th><th>สาเหตุ</th><th>จับคู่เอง</th></tr></thead>
                 <tbody>
-                  {unmatched.map((u, i) => (
+                  {unmatched.map((u, i) => {
+                    const hasCentral = incomingAlias && Object.prototype.hasOwnProperty.call(incomingAlias, u.name);
+                    const pickerValue = hasCentral ? (incomingAlias[u.name] == null ? "none" : String(incomingAlias[u.name]))
+                      : Object.prototype.hasOwnProperty.call(manual, u.name) ? (manual[u.name] == null ? "none" : String(manual[u.name])) : "auto";
+                    return (
                     <tr key={i}>
                       <td>{u.name}</td><td style={{ fontFamily: "monospace" }}>{u.qty}</td><td style={{ fontSize: 11.5, color: "#9CA3AF" }}>{u.how}</td>
                       <td>
                         <ProductPicker products={products}
-                          value={Object.prototype.hasOwnProperty.call(manual, u.name) ? (manual[u.name] == null ? "none" : String(manual[u.name])) : "auto"}
-                          autoLabel="— เลือกสินค้าในคลัง —" onPick={v => setManualMatch(u.name, v)} />
+                          value={pickerValue}
+                          autoLabel="— เลือกสินค้าในคลัง —" onPick={v => onSetAlias(u.name, v === "auto" ? "auto" : v === "none" ? null : Number(v))} />
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -5278,7 +5292,7 @@ export default function WarehouseApp() {
 
         {/* ─── บันทึกค้างส่ง — ย้ายออกมาเป็นแท็บหลัก ไม่ล็อกรหัสผู้จัดการอีกต่อไป ─── */}
         {tab === "backlog" && (
-          <BacklogNotesPanel products={products} showToast={showToast} onViewHistory={setHistoryProduct} />
+          <BacklogNotesPanel products={products} showToast={showToast} onViewHistory={setHistoryProduct} incomingAlias={incomingAlias} onSetAlias={setAlias} />
         )}
 
         {/* ─── DASHBOARD ─── */}
@@ -6498,7 +6512,7 @@ export default function WarehouseApp() {
                 {rows.length === 0 && <div style={{ textAlign: "center", padding: 36, color: "#9CA3AF", fontSize: 13 }}>ไม่พบรายการ</div>}
                 <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 10 }}>
                   * ยอดรอเข้า/ค้างส่งอ่านจากระบบใบสั่งอย่างเดียว ไม่เขียนกลับ — แก้จำนวนต้องไปแก้ที่ระบบใบสั่ง
-                  <br />* การจับคู่ที่เลือกเองบันทึกใช้ร่วมกันได้ทุกเครื่อง/ทุกคน (ถ้าเห็นข้อความแจ้งบันทึกไม่สำเร็จ แปลว่ายังไม่ได้ตั้งค่าฐานข้อมูลส่วนนี้ — แจ้งผู้ดูแลระบบ)
+                  <br />* การจับคู่ที่เลือกเองบันทึกใช้ร่วมกันได้ทุกเครื่อง/ทุกคน และมีผลกับหน้า "บันทึกค้างส่ง"/"รับสินค้าเข้า" ด้วย ไม่ต้องแก้แยกทีละหน้า (ถ้าเห็นข้อความแจ้งบันทึกไม่สำเร็จ แปลว่ายังไม่ได้ตั้งค่าฐานข้อมูลส่วนนี้ — แจ้งผู้ดูแลระบบ)
                 </p>
               </div>
             </div>
