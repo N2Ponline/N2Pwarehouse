@@ -3504,10 +3504,65 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
 }
 
 // ═══════════ พิมพ์แผ่นบาร์โค้ด SKU (รูปใหญ่ + ชื่อ + Code128) ไว้ติดที่ช่องเก็บสินค้า ═══════════
+// Physical TSC labels: each page is one row of three 32 × 25 mm labels.
+function thermalBarcode(text, dpi = 203) {
+  const sku = String(text ?? "");
+  if (!sku || !/^[\x20-\x7e]+$/.test(sku)) throw new Error(`SKU ${sku || "(ว่าง)"}: ใช้ตัวเลขหรืออักษรภาษาอังกฤษเท่านั้น`);
+  const vals = [];
+  if (/^\d{4,}$/.test(sku)) {
+    vals.push(105); // Code C packs numeric SKU pairs without changing leading zeroes.
+    const paired = sku.length - sku.length % 2;
+    for (let i = 0; i < paired; i += 2) vals.push(Number(sku.slice(i, i + 2)));
+    if (paired < sku.length) vals.push(100, sku.charCodeAt(paired) - 32);
+  } else {
+    vals.push(104, ...Array.from(sku, c => c.charCodeAt(0) - 32));
+  }
+  const checksum = vals.reduce((sum, v, i) => sum + v * (i || 1), 0) % 103;
+  vals.push(checksum, 106);
+  const modules = 20 + vals.reduce((sum, v) => sum + [...C128[v]].reduce((n, w) => n + Number(w), 0), 0);
+  const dots = Math.floor(30 / (modules * 25.4 / dpi));
+  if (dots < 2) throw new Error(`SKU ${sku} ยาวเกินฉลาก 32 มม. ที่ ${dpi} DPI — เลือก 300 DPI เฉพาะเมื่อเครื่องรองรับ หรือใช้กระดาษกว้างขึ้น`);
+  let x = 10, rects = "";
+  for (const v of vals) [...C128[v]].forEach((width, i) => {
+    const w = Number(width);
+    if (i % 2 === 0) rects += `<rect x="${x}" y="0" width="${w}" height="80"/>`;
+    x += w;
+  });
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${modules * dots * 25.4 / dpi}mm" height="8mm" viewBox="0 0 ${modules} 80" preserveAspectRatio="none" shape-rendering="crispEdges"><g fill="#000">${rects}</g></svg>`;
+}
+
+function thermalLabelHtml(labels, notes, { dpi = 203, gap = 0 } = {}) {
+  const width = 96 + gap * 2;
+  const rows = [];
+  for (let i = 0; i < labels.length; i += 3) {
+    rows.push(`<div class="row">${labels.slice(i, i + 3).map(p => `<div class="label">
+      <div class="name">${escHtml(p.name)}</div>
+      <div class="barcode">${thermalBarcode(p.sku, dpi)}</div>
+      <div class="sku">${escHtml(p.sku)}</div>
+      <div class="detail">${escHtml([p.location && p.location !== "-" ? "ช่อง " + p.location : "", (notes[p.id] || "").trim()].filter(Boolean).join(" · "))}</div>
+    </div>`).join("")}</div>`);
+  }
+  return `<!doctype html><html lang="th"><head><meta charset="utf-8"><title>TSC 32×25 — ${labels.length} ดวง</title><style>
+    @page { size: ${width}mm 25mm; margin: 0; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: ${width}mm; background: #fff; color: #000; font-family: Tahoma, sans-serif; color-scheme: light; }
+    .row { width: ${width}mm; height: 25mm; display: flex; gap: ${gap}mm; break-inside: avoid; break-after: page; page-break-after: always; overflow: hidden; }
+    .row:last-child { break-after: auto; page-break-after: auto; }
+    .label { flex: 0 0 32mm; width: 32mm; height: 25mm; padding: 1mm; text-align: center; overflow: hidden; }
+    .name { height: 7mm; font-size: 8pt; font-weight: bold; line-height: 3.5mm; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+    .barcode { height: 8mm; display: flex; justify-content: center; }
+    .barcode svg { flex: none; }
+    .sku { height: 4mm; font: 8pt/4mm Consolas, monospace; white-space: nowrap; }
+    .detail { height: 3mm; font-size: 6.5pt; line-height: 3mm; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  </style></head><body>${rows.join("")}</body></html>`;
+}
+
 function LabelSheetPanel({ products }) {
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(new Set());
-  const [layout, setLayout] = useState("a4-21"); // ค่าเริ่มต้น = ชื่อ + บาร์โค้ด ไม่มีรูป (สินค้าส่วนใหญ่ยังไม่มีรูป)
+  const [layout, setLayout] = useState("roll32x25");
+  const [thermalDpi, setThermalDpi] = useState(203);
+  const [thermalGap, setThermalGap] = useState(0);
   const [copies, setCopies] = useState(1);
   const [notes, setNotes] = useState({}); // { [productId]: "รายละเอียดเพิ่มเติม เช่น ไซส์" } — พิมพ์ลงบนป้ายด้วยถ้ามี ไม่บันทึกลง DB แค่ใช้ตอนพิมพ์รอบนี้
   const kw = q.trim().toLowerCase();
@@ -3520,6 +3575,12 @@ function LabelSheetPanel({ products }) {
   const print = () => {
     if (selected.length === 0) return;
     if (missingImage.length > 0) { alert(`มีสินค้า ${missingImage.length} รายการยังไม่มีรูป กรุณาเพิ่มรูปก่อนพิมพ์:\n${missingImage.slice(0, 15).map(p => "• " + p.name).join("\n")}${missingImage.length > 15 ? `\n...และอีก ${missingImage.length - 15} รายการ` : ""}\n\nไปที่หน้า "คลังสินค้า" แล้วคลิกที่รูปสินค้าเพื่ออัปโหลด`); return; }
+    if (layout === "roll32x25") {
+      const labels = selected.flatMap(p => Array.from({ length: copies }, () => p));
+      try { printHtmlInPlace(thermalLabelHtml(labels, notes, { dpi: thermalDpi, gap: thermalGap })); }
+      catch (e) { alert(e.message); }
+      return;
+    }
     // ม้วนสติกเกอร์ต่อเนื่องจากเครื่องพิมพ์บาร์โค้ดความร้อน (Xprinter/TSC) — หน้าม้วนกว้าง 3 ดวง/แถว ดวงละ 32×25 มม.
     // (ตามภาพม้วนจริงที่ผู้ใช้ส่งมา: JPS ROLL STICKER 32×25 มม. 3 คอลัมน์/แถว) — สูงของหน้าพิมพ์ = สูงของ 1 แถวพอดี
     // เครื่องพิมพ์จะตัดหน้าใหม่เองทุกแถวโดยไม่ต้องกำหนด page-break เอง เพราะความสูงหน้าตรงกับความสูง 1 แถวเป๊ะ
@@ -3589,7 +3650,7 @@ function LabelSheetPanel({ products }) {
           <option value="a4-8">A4 — 8 แผ่น/หน้า (รูปกลาง)</option>
           <option value="a4-4">A4 — 4 แผ่น/หน้า (รูปใหญ่)</option>
           <option value="s100">สติกเกอร์ 100×150 มม. — 1 แผ่น/ใบ</option>
-          <option value="roll32x25">ม้วนต่อเนื่อง 32×25 มม. 3 ดวง/แถว (Xprinter/TSC)</option>
+          <option value="roll32x25">TSC — 32×25 มม. · 3 ดวง/แถว</option>
         </select>
         <label style={{ fontSize: 12, color: "#6B7280", display: "flex", alignItems: "center", gap: 6 }}>สำเนา
           <input className="inp" type="number" min={1} max={10} value={copies} onChange={e => setCopies(Math.max(1, Math.min(10, parseInt(e.target.value) || 1)))} style={{ width: 64, padding: "7px 8px" }} />
@@ -3600,6 +3661,18 @@ function LabelSheetPanel({ products }) {
           title={missingImage.length > 0 ? `มี ${missingImage.length} รายการยังไม่มีรูป — เพิ่มรูปให้ครบก่อนถึงจะพิมพ์ได้` : undefined}
           style={{ background: sel.size && missingImage.length === 0 ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#E5E7EB", color: "#fff", border: "none", borderRadius: 10, padding: "9px 18px", fontSize: 13, fontWeight: 700, cursor: sel.size && missingImage.length === 0 ? "pointer" : "not-allowed" }}>🖨️ พิมพ์ {sel.size ? `${sel.size} รายการ` : ""}</button>
       </div>
+      {layout === "roll32x25" && (
+        <div style={{ background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 14, padding: "12px 16px", marginBottom: 12, fontSize: 13, lineHeight: 1.8 }}>
+          <b>TSC · ฉลาก 32 × 25 มม. · 3 ดวงต่อแถว</b>
+          <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", margin: "8px 0" }}>
+            <label>ความละเอียดเครื่อง <select className="inp" aria-label="ความละเอียด TSC" value={thermalDpi} onChange={e => setThermalDpi(Number(e.target.value))} style={{ width: 110, padding: 6 }}><option value={203}>203 DPI</option><option value={300}>300 DPI</option></select></label>
+            <label>ช่องว่างระหว่างดวงแนวนอน <input className="inp" aria-label="ช่องว่างระหว่างดวงแนวนอน" type="number" min={0} max={5} step={0.1} value={thermalGap} onChange={e => setThermalGap(Math.max(0, Math.min(5, Number(e.target.value) || 0)))} style={{ width: 70, padding: 6 }} /> มม.</label>
+          </div>
+          <div>ตั้งขนาดกระดาษในไดรเวอร์ TSC: <b>{Number((96 + thermalGap * 2).toFixed(1))} × 25 มม.</b> · สเกล 100% · ขอบ 0 · ปิดหัว/ท้ายกระดาษ</div>
+          <div>วัดช่องว่างแนวนอนจากม้วนจริง (ค่า 0 = ไม่มีช่องว่าง) · ตั้งเซ็นเซอร์ Gap และระยะห่างระหว่างแถวตามม้วนจริงในไดรเวอร์ · กระดาษร้อนแบบไม่ใช้ริบบอนเลือก Direct Thermal</div>
+          <div>ชื่อสินค้า 2 บรรทัด + บาร์โค้ด + SKU + ช่องเก็บ/หมายเหตุ · แถวสุดท้ายที่ไม่ครบ 3 ดวงจะเว้นว่าง · ทดลองพิมพ์และสแกน 1 แถวก่อน</div>
+        </div>
+      )}
       {missingImage.length > 0 && (
         <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 14, padding: "12px 16px", marginBottom: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <span style={{ fontSize: 18 }}>⚠️</span>
