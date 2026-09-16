@@ -3764,7 +3764,7 @@ function LabelSheetPanel({ products }) {
 // รายการรอรับทำงานต่อ "ใบสั่งซื้อ" (n2p_orders) แต่ละใบ ไม่ใช่รวมยอดเป็นก้อนเดียวต่อสินค้า —
 // เพราะสินค้าตัวเดียวอาจมาจากหลายใบสั่งซื้อพร้อมกัน (คนละรอบสั่ง) ต้องรู้ว่าของที่รับมาตรงกับใบไหน
 // เหมือนใบพิมพ์กระดาษเดิมที่พิมพ์แยกทีละใบ (ดูภาพหน้าใบสั่งสินค้าจริงที่ผู้ใช้ส่งมาเป็นต้นแบบ)
-function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange, showToast }) {
+function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange, showToast, onSetAlias }) {
   const [orders, setOrders] = useState([]);
   const [receivingLogsAll, setReceivingLogsAll] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -3924,7 +3924,11 @@ function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange
                       <div style={{ marginBottom: 8 }}>
                         <ProductPicker products={products} value={p ? String(p.id) : "none"}
                           autoLabel={it.productId ? (p ? p.name : "สินค้านี้ถูกลบไปแล้ว") : "— ไม่พบสินค้าที่ตรงกัน —"}
-                          onPick={v => updateItem(it.roundKey, { productId: v === "auto" || v === "none" ? null : parseInt(v) })} />
+                          onPick={v => {
+                            updateItem(it.roundKey, { productId: v === "auto" || v === "none" ? null : parseInt(v) });
+                            // บันทึกการจับคู่ใหม่เข้า incoming_aliases กลาง (ตารางเดียวกับหน้าคลังสินค้า/บันทึกค้างส่ง) ไม่งั้นแก้ที่นี่แล้วหายตอนโหลดหน้าใหม่/ครั้งหน้า
+                            if (onSetAlias) onSetAlias(String(it.name).trim(), v === "auto" ? "auto" : v === "none" ? null : Number(v));
+                          }} />
                       </div>
                       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                         <label style={{ fontSize: 12, color: "#6B7280" }}>จำนวนที่รับจริง
@@ -5397,7 +5401,7 @@ export default function WarehouseApp() {
 
         {/* ─── รับสินค้าเข้า (แทนใบพิมพ์กระดาษ) — ไม่ล็อกรหัส ─── */}
         {tab === "receiving" && (
-          <ReceivingPanel products={products} backlog={backlog} incomingAlias={incomingAlias} onReceivingLogChange={upsertReceivingLogs} showToast={showToast} />
+          <ReceivingPanel products={products} backlog={backlog} incomingAlias={incomingAlias} onReceivingLogChange={upsertReceivingLogs} showToast={showToast} onSetAlias={setAlias} />
         )}
 
         {/* ─── บันทึกค้างส่ง — ย้ายออกมาเป็นแท็บหลัก ไม่ล็อกรหัสผู้จัดการอีกต่อไป ─── */}
