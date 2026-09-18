@@ -2760,6 +2760,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
                     </div>
                   </div>
                   <div style={{ fontSize: 13, color: "#111827", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.page_name || "ไม่ระบุเพจ"}</div>
+                  <div style={{ fontSize: 12, color: "#374151", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📦 {pickName(r.products?.[0]?.name) || "ไม่ระบุสินค้า"}{n > 1 ? ` +${n - 1} รายการ` : ""}</div>
                   <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>{fmtDT(r.created_at)} · {r.total_orders || 0} ออเดอร์ · {n} รายการ {r.total_items || 0} หน่วยขาย{prog ? ` · ยิงแล้ว ${prog} ชิ้น` : ""}</div>
                 </div>
               );
