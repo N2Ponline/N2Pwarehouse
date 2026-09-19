@@ -2438,6 +2438,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   const [recentFrom, setRecentFrom] = useState(() => localDateStr(new Date()));
   const [recentTo, setRecentTo] = useState(() => localDateStr(new Date()));
   const [recentStatusFilter, setRecentStatusFilter] = useState("pending"); // "all" | "pending" | "closed"
+  const [recentSearch, setRecentSearch] = useState(""); // ค้นหาจากเลขใบ (PK) / ชื่อสินค้า / ชื่อเพจ
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth < 900); // จอแคบ (มือถือ/แท็บเล็ต) → คอลัมน์เดียว รูปอยู่บน
   useEffect(() => { const onResize = () => setNarrow(window.innerWidth < 900); window.addEventListener("resize", onResize); return () => window.removeEventListener("resize", onResize); }, []);
   const inputRef = useRef(null);
@@ -2509,6 +2510,18 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
     setLoadingRecent(false);
   };
   useEffect(() => { loadRecent(); }, [recentPreset, recentFrom, recentTo, recentStatusFilter]);
+
+  // ค้นหาในรายการที่โหลดมาแล้ว (ตามช่วงวันที่/สถานะที่เลือกไว้) — ไม่ยิง query ใหม่
+  const filteredRecent = useMemo(() => {
+    const q = recentSearch.trim().toLowerCase();
+    if (!q) return recent;
+    const qNum = q.replace(/^pk/i, "").trim();
+    return recent.filter(r =>
+      String(r.id).includes(qNum) ||
+      (r.page_name || "").toLowerCase().includes(q) ||
+      (Array.isArray(r.products) && r.products.some(p => String(p.name || "").toLowerCase().includes(q)))
+    );
+  }, [recent, recentSearch]);
 
   // โฟกัสช่องยิงค้างไว้เสมอ — ยกเว้นตอนผู้ใช้กำลังพิมพ์ในช่องอื่น หรืออยู่ในฟอร์มจับคู่ (data-nofocus)
   useEffect(() => {
@@ -2625,6 +2638,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   // ยืนยันปิดใบหยิบ = จุดเดียวที่ตัดสต็อกจริง — ตัดทีเดียวรวมทุกไลน์ตามยอดที่ยิง/ยืนยันไว้ (ก่อนหน้านี้ตัดทันทีทุกครั้งที่ยิง ผู้ใช้ขอให้เลื่อนมาตัดตอนปิดใบแทน)
   const closePick = async () => {
     const p = pickRef.current; if (!p) return;
+    if (!allDone) { showToast(unmapped.length > 0 ? "มีรายการยังไม่จับคู่ SKU — จับคู่ให้ครบก่อนปิดใบ" : "ยิงยังไม่ครบ — กด \"ของขาด +1\" ระบุจำนวนที่ขาดจริงก่อน ถึงจะปิดใบได้", "error"); return; }
     setClosing(true);
     try {
       let cutTotal = 0;
@@ -2737,11 +2751,23 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
                   style={{ background: recentStatusFilter === v ? "#7C3AED" : "#F3F4F6", color: recentStatusFilter === v ? "#fff" : "#6B7280", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{l}</button>
               ))}
             </div>
+            <div style={{ flex: 1, minWidth: 220, position: "relative" }}>
+              <input value={recentSearch} onChange={e => setRecentSearch(e.target.value)} placeholder="🔍 ค้นหา เลขใบ (PK) / ชื่อสินค้า / ชื่อเพจ..."
+                className="inp" style={{ width: "100%", padding: "7px 30px 7px 10px", fontSize: 13 }} />
+              {recentSearch && (
+                <button onClick={() => setRecentSearch("")} title="ล้างการค้นหา"
+                  style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#9CA3AF", cursor: "pointer", fontSize: 14, padding: 4 }}>✕</button>
+              )}
+            </div>
           </div>
           {loadingRecent && <div style={{ color: "#9CA3AF", fontSize: 13, padding: 12 }}>กำลังโหลด...</div>}
-          {!loadingRecent && recent.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13, padding: 20, textAlign: "center" }}>ไม่มีใบหยิบตามเงื่อนไขที่เลือก — ยิงบาร์โค้ด PK บนสลิป หรือรอ extension ส่งเข้ามา</div>}
+          {!loadingRecent && filteredRecent.length === 0 && (
+            <div style={{ color: "#9CA3AF", fontSize: 13, padding: 20, textAlign: "center" }}>
+              {recentSearch ? `ไม่พบใบหยิบที่ตรงกับ "${recentSearch}"` : "ไม่มีใบหยิบตามเงื่อนไขที่เลือก — ยิงบาร์โค้ด PK บนสลิป หรือรอ extension ส่งเข้ามา"}
+            </div>
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
-            {recent.map(r => {
+            {filteredRecent.map(r => {
               const n = Array.isArray(r.products) ? r.products.length : 0;
               const prog = r.pick_progress && typeof r.pick_progress === "object" ? Object.values(r.pick_progress).reduce((s, v) => s + (Number(v.scanned) || 0), 0) : 0;
               const rClosed = r.pick_status === "closed";
@@ -2922,7 +2948,12 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
             </div>
             <div style={{ padding: "12px 22px 18px", display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button onClick={() => setShowSummary(false)} style={{ background: "#F3F4F6", color: "#374151", border: "none", borderRadius: 10, padding: "10px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>{isClosed ? "ปิด" : "ยิงต่อ"}</button>
-              {!isClosed && <button onClick={closePick} disabled={closing} style={{ background: "linear-gradient(135deg,#7C3AED,#3B82F6)", color: "#fff", border: "none", borderRadius: 10, padding: "10px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer", opacity: closing ? 0.6 : 1 }}>{closing ? "⏳ กำลังตัดสต็อก..." : `✅ ยืนยันปิดใบ + ตัดสต็อก ${totalScanned} ชิ้น`}</button>}
+              {!isClosed && (
+                <button onClick={closePick} disabled={closing || !allDone} title={!allDone ? "ยิงให้ครบทุกรายการก่อน (ของขาดจริงให้กด \"ของขาด +1\" ที่รายการนั้น)" : undefined}
+                  style={{ background: allDone ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#E5E7EB", color: allDone ? "#fff" : "#9CA3AF", border: "none", borderRadius: 10, padding: "10px 18px", fontSize: 13, fontWeight: 700, cursor: closing || !allDone ? "not-allowed" : "pointer", opacity: closing ? 0.6 : 1 }}>
+                  {closing ? "⏳ กำลังตัดสต็อก..." : allDone ? `✅ ยืนยันปิดใบ + ตัดสต็อก ${totalScanned} ชิ้น` : "⛔ ยิงให้ครบก่อนปิดใบ"}
+                </button>
+              )}
             </div>
           </div>
         </div>
