@@ -4930,8 +4930,24 @@ export default function WarehouseApp() {
     );
   };
 
+  // หา SKU ถัดไปที่ยังไม่มีใครใช้ — เดินหน้าอย่างเดียว (max + 1) ไม่เติมช่องว่างเก่าที่เคยถูกลบ/จำหน่ายออก กันเลขซ้ำกับป้ายบาร์โค้ดเก่าที่อาจยังไม่ถูกทิ้ง
+  const nextAutoSku = () => {
+    const nums = rawProducts.map(p => (/^\d+$/.test(String(p.sku || "").trim()) ? Number(p.sku) : 0));
+    const max = nums.length ? Math.max(...nums) : 6900000;
+    return String(max + 1);
+  };
+
+  // เช็ค SKU ซ้ำกับสินค้าตัวอื่น (excludeId = ตัวเองตอนแก้ไข) — กันเคสคีย์เลขเองแล้วชนของเดิม
+  const findSkuConflict = (sku, excludeId) => {
+    const s = String(sku || "").trim().toUpperCase();
+    if (!s) return null;
+    return rawProducts.find(p => p.id !== excludeId && String(p.sku || "").trim().toUpperCase() === s) || null;
+  };
+
   const handleAddProduct = async () => {
     if (!form.name || !form.sku) return showToast("กรุณากรอกชื่อและ SKU", "error");
+    const conflict = findSkuConflict(form.sku, null);
+    if (conflict) return showToast(`SKU "${form.sku}" ซ้ำกับ "${conflict.name}" (id ${conflict.id}) อยู่แล้ว — กรุณาใช้เลขอื่น`, "error");
     setSaving(true);
     try {
       const [created] = await api.addProduct(productToDb(form));
@@ -4965,6 +4981,8 @@ export default function WarehouseApp() {
   };
 
   const handleEditProduct = () => {
+    const conflict = findSkuConflict(form.sku, selectedProduct.id);
+    if (conflict) return showToast(`SKU "${form.sku}" ซ้ำกับ "${conflict.name}" (id ${conflict.id}) อยู่แล้ว — กรุณาใช้เลขอื่น`, "error");
     const oldQ = Number(selectedProduct.quantity) || 0;
     const newQ = parseInt(form.quantity) || 0;
     if (newQ !== oldQ) { requireManagerUnlock(doSaveEditProduct); return; } // เปลี่ยนจำนวนคงเหลือ = ต้องรหัสผ่านผู้จัดการ เหมือนรับเข้า/เบิกออก
@@ -5583,7 +5601,7 @@ export default function WarehouseApp() {
                       style={{ background: incomingUnmatched.length > 0 ? "#FEF3C7" : "#F5F3FF", color: incomingUnmatched.length > 0 ? "#B45309" : "#7C3AED", border: `1px solid ${incomingUnmatched.length > 0 ? "#FDE68A" : "#DDD6FE"}`, borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
                       🧾 ของรอเข้า{incomingUnmatched.length > 0 ? ` · ${incomingUnmatched.length} ยังไม่จับคู่` : ""}
                     </button>
-                    <button onClick={() => { setForm({}); setShowModal("add"); }}
+                    <button onClick={() => { setForm({ sku: nextAutoSku() }); setShowModal("add"); }}
                       style={{ background: "linear-gradient(135deg,#7C3AED,#3B82F6)", color: "#fff", border: "none", borderRadius: 10, padding: "9px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
                       ＋ เพิ่มสินค้า
                     </button>
