@@ -4333,6 +4333,33 @@ export default function WarehouseApp() {
     }
   };
 
+  // ── ล็อกรับเข้า/เบิกออก/แก้ไขจำนวนคงเหลือ ในหน้า "คลังสินค้า" — เฉพาะผู้จัดการ (ใช้รหัสเดียวกับเช็คสต็อก) ──
+  // ไม่จำข้ามรีเฟรชเหมือน scansUnlocked; ถ้าปลดล็อกเช็คสต็อกไว้แล้วก็ถือว่าผ่านเลย ไม่ต้องกรอกซ้ำ
+  const [invActionsUnlocked, setInvActionsUnlocked] = useState(false);
+  const isManagerUnlocked = invActionsUnlocked || scansUnlocked;
+  const [showInvGate, setShowInvGate] = useState(false);
+  const [invGatePasswordInput, setInvGatePasswordInput] = useState("");
+  const [invGatePasswordError, setInvGatePasswordError] = useState("");
+  const [pendingInvAction, setPendingInvAction] = useState(null); // ฟังก์ชันที่จะรันทันทีหลังปลดล็อกสำเร็จ
+
+  const requireManagerUnlock = (fn) => {
+    if (isManagerUnlocked) { fn(); return; }
+    setPendingInvAction(() => fn);
+    setInvGatePasswordInput(""); setInvGatePasswordError("");
+    setShowInvGate(true);
+  };
+  const handleUnlockInvActions = () => {
+    if (invGatePasswordInput === ORDER_SCANS_PASSWORD) {
+      setInvActionsUnlocked(true);
+      setShowInvGate(false);
+      setInvGatePasswordError(""); setInvGatePasswordInput("");
+      const fn = pendingInvAction; setPendingInvAction(null);
+      if (fn) fn();
+    } else {
+      setInvGatePasswordError("รหัสไม่ถูกต้อง");
+    }
+  };
+
   // ── รับเข้าตีกลับ (หลายรายการ ครั้งเดียว) ──
   const [showReturnBatchModal, setShowReturnBatchModal] = useState(false);
   const [returnBatchSearch, setReturnBatchSearch] = useState("");
@@ -4937,7 +4964,14 @@ export default function WarehouseApp() {
     }
   };
 
-  const handleEditProduct = async () => {
+  const handleEditProduct = () => {
+    const oldQ = Number(selectedProduct.quantity) || 0;
+    const newQ = parseInt(form.quantity) || 0;
+    if (newQ !== oldQ) { requireManagerUnlock(doSaveEditProduct); return; } // เปลี่ยนจำนวนคงเหลือ = ต้องรหัสผ่านผู้จัดการ เหมือนรับเข้า/เบิกออก
+    doSaveEditProduct();
+  };
+
+  const doSaveEditProduct = async () => {
     setSaving(true);
     try {
       const before = selectedProduct;
@@ -5711,10 +5745,10 @@ export default function WarehouseApp() {
                           <span style={{ background: statusColor(p).bg, color: statusColor(p).fg, borderRadius: 6, padding: "2px 10px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{statusOf(p)}</span>
                         </td>
                         <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                          <button onClick={() => { setTxType("in"); setTxForm({ productId: String(p.id), quantity: "", note: "", by: "" }); setShowModal("tx"); }}
-                            title="รับเข้า" style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", color: "#059669", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer", marginRight: 4, fontWeight: 700 }}>📥</button>
-                          <button onClick={() => { setTxType("out"); setTxForm({ productId: String(p.id), quantity: "", note: "", by: "" }); setShowModal("tx"); }}
-                            title="เบิกออก" style={{ background: "#FEF2F2", border: "1px solid #FECACA", color: "#DC2626", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer", marginRight: 4, fontWeight: 700 }}>📤</button>
+                          <button onClick={() => requireManagerUnlock(() => { setTxType("in"); setTxForm({ productId: String(p.id), quantity: "", note: "", by: "" }); setShowModal("tx"); })}
+                            title="รับเข้า (เฉพาะผู้จัดการ)" style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", color: "#059669", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer", marginRight: 4, fontWeight: 700 }}>📥</button>
+                          <button onClick={() => requireManagerUnlock(() => { setTxType("out"); setTxForm({ productId: String(p.id), quantity: "", note: "", by: "" }); setShowModal("tx"); })}
+                            title="เบิกออก (เฉพาะผู้จัดการ)" style={{ background: "#FEF2F2", border: "1px solid #FECACA", color: "#DC2626", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer", marginRight: 4, fontWeight: 700 }}>📤</button>
                           <button onClick={() => setHistoryProduct(p)}
                             title="ดูประวัติ" style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer", marginRight: 4 }}>🕘</button>
                           <button onClick={() => openEdit(p)}
@@ -6405,6 +6439,28 @@ export default function WarehouseApp() {
                 {savingOutBatch ? "⏳ กำลังบันทึก..." : `✅ เบิกออก ${outBatchItems.filter(it => it.quantity > 0).length} รายการ`}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── MODAL: ล็อกรับเข้า/เบิกออก/แก้ไขจำนวน หน้าคลังสินค้า — เฉพาะผู้จัดการ ─── */}
+      {showInvGate && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 250, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(6px)" }}
+          onClick={() => { setShowInvGate(false); setPendingInvAction(null); }}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 32, width: "100%", maxWidth: 340, textAlign: "center", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
+            <div style={{ fontWeight: 700, fontSize: 15, color: "#111827", marginBottom: 4 }}>รับเข้า/เบิกออก/แก้ไขจำนวน — เฉพาะผู้จัดการ</div>
+            <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 16 }}>กรุณากรอกรหัสผ่านผู้จัดการก่อนทำรายการนี้</div>
+            <input className="inp" type="password" inputMode="numeric" placeholder="รหัสผ่าน"
+              value={invGatePasswordInput}
+              onChange={e => { setInvGatePasswordInput(e.target.value); setInvGatePasswordError(""); }}
+              onKeyDown={e => { if (e.key === "Enter") handleUnlockInvActions(); }}
+              style={{ textAlign: "center", letterSpacing: 4, marginBottom: 8 }} autoFocus />
+            {invGatePasswordError && <div style={{ color: "#DC2626", fontSize: 12, marginBottom: 8 }}>{invGatePasswordError}</div>}
+            <button onClick={handleUnlockInvActions}
+              style={{ width: "100%", background: "#7C3AED", color: "#fff", border: "none", borderRadius: 10, padding: "10px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+              ยืนยัน
+            </button>
           </div>
         </div>
       )}
