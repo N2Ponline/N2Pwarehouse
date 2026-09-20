@@ -2639,6 +2639,13 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   const closePick = async () => {
     const p = pickRef.current; if (!p) return;
     if (!allDone) { showToast(unmapped.length > 0 ? "มีรายการยังไม่จับคู่ SKU — จับคู่ให้ครบก่อนปิดใบ" : "ยิงยังไม่ครบ — กด \"ของขาด +1\" ระบุจำนวนที่ขาดจริงก่อน ถึงจะปิดใบได้", "error"); return; }
+    // กันสต็อกติดลบ — เช็คทุกไลน์ก่อนตัดจริง ถ้ามีตัวไหนของไม่พอ ไม่ตัดเลยสักตัว (all-or-nothing) กันปิดใบครึ่งๆ กลางๆ
+    const shortages = linesRef.current.filter(l => l.scanned > 0 && qtyOf(productById.get(l.pid) || l.product) < l.scanned);
+    if (shortages.length) {
+      const detail = shortages.map(l => { const cur = qtyOf(productById.get(l.pid) || l.product); return `${l.product.name} (คงเหลือ ${cur} แต่จะตัด ${l.scanned})`; }).join(", ");
+      showToast(`สต็อกไม่พอ ปิดใบไม่ได้ — จะทำให้ติดลบ: ${detail}`, "error");
+      return;
+    }
     setClosing(true);
     try {
       let cutTotal = 0;
