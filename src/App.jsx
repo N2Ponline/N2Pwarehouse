@@ -2238,7 +2238,7 @@ function ReturnMyorderPanel({ focusOrderNo, onFocusHandled }) {
   );
 }
 
-function ReturnCheckerTab() {
+function ReturnCheckerTab({ onOpenReturnReceive }) {
   const [subTab, setSubTab] = useState(() => localStorage.getItem("returnSubTab") || "summary");
   const [myorderFocusOrder, setMyorderFocusOrder] = useState(null); // order_no ที่จะ scroll/highlight ไปหา เมื่อกดลิงก์จากหน้าสรุป
   const setAndSave = (v) => { setSubTab(v); localStorage.setItem("returnSubTab", v); };
@@ -2248,13 +2248,19 @@ function ReturnCheckerTab() {
   };
   return (
     <div>
-      <div style={{ display: "flex", gap: 8, marginBottom: 28, flexWrap: "wrap" }}>
-        {[["summary","📊 สรุปรวม"],["admin","🗂 ตีกลับในระบบ"],["staff","📦 ตีกลับถึงคลัง"],["myorder","📋 ตีกลับ myorder"]].map(([v,l]) => (
-          <button key={v} onClick={() => setAndSave(v)}
-            style={{ background: subTab === v ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#fff", color: subTab === v ? "#fff" : "#6B7280", border: subTab === v ? "none" : "1px solid #E5E7EB", borderRadius: 10, padding: "9px 20px", fontSize: 14, fontWeight: subTab === v ? 700 : 400, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", transition: "all 0.2s", boxShadow: subTab === v ? "0 4px 12px rgba(124,58,237,0.3)" : "none" }}>
-            {l}
-          </button>
-        ))}
+      <div style={{ display: "flex", gap: 8, marginBottom: 28, flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {[["summary","📊 สรุปรวม"],["admin","🗂 ตีกลับในระบบ"],["staff","📦 ตีกลับถึงคลัง"],["myorder","📋 ตีกลับ myorder"]].map(([v,l]) => (
+            <button key={v} onClick={() => setAndSave(v)}
+              style={{ background: subTab === v ? "linear-gradient(135deg,#7C3AED,#3B82F6)" : "#fff", color: subTab === v ? "#fff" : "#6B7280", border: subTab === v ? "none" : "1px solid #E5E7EB", borderRadius: 10, padding: "9px 20px", fontSize: 14, fontWeight: subTab === v ? 700 : 400, cursor: "pointer", fontFamily: "'Sarabun', sans-serif", transition: "all 0.2s", boxShadow: subTab === v ? "0 4px 12px rgba(124,58,237,0.3)" : "none" }}>
+              {l}
+            </button>
+          ))}
+        </div>
+        <button onClick={onOpenReturnReceive}
+          style={{ background: "#FFF7ED", color: "#C2410C", border: "1px solid #FED7AA", borderRadius: 10, padding: "9px 18px", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "'Sarabun', sans-serif" }}>
+          📮 รับเข้าสินค้าตีกลับ
+        </button>
       </div>
       {subTab === "summary" ? <ReturnSummaryPanel onGoToMyorder={goToMyorder} />
         : subTab === "admin" ? <ReturnAdminPanel />
@@ -4372,7 +4378,6 @@ export default function WarehouseApp() {
   const [returnBatchSearch, setReturnBatchSearch] = useState("");
   const [returnBatchBy, setReturnBatchBy] = useState("");
   const [returnBatchItems, setReturnBatchItems] = useState([]); // [{productId, name, sku, unit, quantity}]
-  const [returnBatchIsReturn, setReturnBatchIsReturn] = useState(false); // ติ๊ก = รับเข้าแบบ "ตีกลับ" (บันทึกหมายเหตุอัตโนมัติ), ไม่ติ๊ก = รับเข้าปกติ
   const [returnBatchSelectedIds, setReturnBatchSelectedIds] = useState(new Set()); // เลือกจากผลค้นหาไว้เพิ่มพร้อมกันหลายตัว
   const [savingReturnBatch, setSavingReturnBatch] = useState(false);
 
@@ -5074,7 +5079,6 @@ export default function WarehouseApp() {
     setReturnBatchItems([]);
     setReturnBatchSearch("");
     setReturnBatchBy("");
-    setReturnBatchIsReturn(false);
     setReturnBatchSelectedIds(new Set());
     setShowReturnBatchModal(true);
   };
@@ -5137,7 +5141,7 @@ export default function WarehouseApp() {
           product_id: item.productId,
           quantity: item.quantity,
           date: today,
-          note: returnBatchIsReturn ? "ตีกลับ" : null,
+          note: "ตีกลับ", // บังคับเป็น "ตีกลับ" เสมอ — ปุ่มนี้ย้ายมาไว้เฉพาะหน้า "พัสดุตีกลับ" แล้ว ไม่ใช่ตัวรับเข้าสต็อกทั่วไปอีกต่อไป
           by: returnBatchBy.trim(),
         });
         newTxList.push(dbToTx(newTx));
@@ -5147,7 +5151,7 @@ export default function WarehouseApp() {
       setShowReturnBatchModal(false);
       setReturnBatchItems([]);
       setReturnBatchBy("");
-      showToast(`รับเข้า${returnBatchIsReturn ? "ตีกลับ" : ""}สำเร็จ ${validItems.length} รายการ — เพิ่มสต็อกเรียบร้อย`);
+      showToast(`รับเข้าตีกลับสำเร็จ ${validItems.length} รายการ — เพิ่มสต็อกเรียบร้อย`);
     } catch (e) { showToast(e.message, "error"); }
     setSavingReturnBatch(false);
   };
@@ -5616,10 +5620,7 @@ export default function WarehouseApp() {
                 )}
                 {tab === "stockcheck" && stockSub === "adjust" && (
                   <>
-                    <button onClick={openReturnBatchModal}
-                      style={{ background: "#FFF7ED", color: "#C2410C", border: "1px solid #FED7AA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
-                      📦 รับเข้าหลายรายการ
-                    </button>
+                    {/* "รับเข้าหลายรายการ" ย้ายไปเป็น "รับเข้าสินค้าตีกลับ" ในหน้า "พัสดุตีกลับ" แล้ว (บังคับหมายเหตุ "ตีกลับ") */}
                     <button onClick={openOutBatchModal}
                       style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
                       📤 เบิกออก (หลายรายการ)
@@ -5894,10 +5895,7 @@ export default function WarehouseApp() {
                     ✕ ล้างตัวกรอง
                   </button>
                 )}
-                <button onClick={openReturnBatchModal}
-                  style={{ background: "#FFF7ED", color: "#C2410C", border: "1px solid #FED7AA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
-                  📦 รับเข้าหลายรายการ
-                </button>
+                {/* "รับเข้าหลายรายการ" ย้ายไปเป็น "รับเข้าสินค้าตีกลับ" ในหน้า "พัสดุตีกลับ" แล้ว (บังคับหมายเหตุ "ตีกลับ") */}
                 <button onClick={openOutBatchModal}
                   style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
                   📤 เบิกออก (หลายรายการ)
@@ -5957,7 +5955,7 @@ export default function WarehouseApp() {
         )}
 
         {/* ─── RETURNS ─── */}
-        {tab === "returns" && <ReturnCheckerTab />}
+        {tab === "returns" && <ReturnCheckerTab onOpenReturnReceive={openReturnBatchModal} />}
 
         {/* ─── DISPOSE ─── */}
         {tab === "stockcheck" && scansUnlocked && stockSub === "dispose" && !disposeMode && (
@@ -6538,14 +6536,8 @@ export default function WarehouseApp() {
           onClick={() => { if (!savingReturnBatch) setShowReturnBatchModal(false); }}>
           <div onClick={e => e.stopPropagation()}
             style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, width: "100%", maxWidth: 620, maxHeight: "90vh", overflowY: "auto", padding: 24, boxShadow: "0 24px 60px rgba(0,0,0,0.15)" }}>
-            <h3 style={{ fontSize: 18, fontWeight: 700, color: "#C2410C", marginBottom: 4 }}>📦 รับเข้าหลายรายการ</h3>
-            <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 14 }}>เลือกสินค้าที่จะรับเข้าคลัง — ระบบจะเพิ่มสต็อกให้อัตโนมัติ</p>
-
-            <label style={{ display: "flex", alignItems: "center", gap: 8, background: "#FFFBF5", border: "1.5px solid #FED7AA", borderRadius: 10, padding: "9px 12px", marginBottom: 14, cursor: "pointer" }}>
-              <input type="checkbox" checked={returnBatchIsReturn} onChange={e => setReturnBatchIsReturn(e.target.checked)}
-                style={{ width: 16, height: 16, cursor: "pointer" }} />
-              <span style={{ fontSize: 13, color: "#C2410C", fontWeight: 600 }}>📮 เป็นการรับเข้าตีกลับ (บันทึกหมายเหตุ "ตีกลับ" ให้อัตโนมัติ)</span>
-            </label>
+            <h3 style={{ fontSize: 18, fontWeight: 700, color: "#C2410C", marginBottom: 4 }}>📮 รับเข้าสินค้าตีกลับ</h3>
+            <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 14 }}>เลือกสินค้าที่ตีกลับเข้าคลัง — ระบบจะเพิ่มสต็อกและบันทึกหมายเหตุ "ตีกลับ" ให้อัตโนมัติทุกรายการ</p>
 
             <input className="inp" style={{ marginBottom: 10 }} placeholder="🔍 ค้นหาสินค้าเพื่อเพิ่มลงรายการ..."
               value={returnBatchSearch} onChange={e => setReturnBatchSearch(e.target.value)} />
@@ -6579,7 +6571,7 @@ export default function WarehouseApp() {
             )}
 
             <div style={{ border: "1.5px solid #FED7AA", borderRadius: 12, padding: 12, marginBottom: 14, background: "#FFFBF5" }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: "#C2410C", marginBottom: 8 }}>รายการที่จะรับเข้า ({returnBatchItems.length})</div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#C2410C", marginBottom: 8 }}>รายการที่ตีกลับเข้าคลัง ({returnBatchItems.length})</div>
               {returnBatchItems.length === 0 && <div style={{ fontSize: 13, color: "#9CA3AF", textAlign: "center", padding: 12 }}>ยังไม่มีรายการ — ค้นหาแล้วกดเพิ่มด้านบน</div>}
               {returnBatchItems.map(it => (
                 <div key={it.productId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid #FDEBD8" }}>
@@ -6608,7 +6600,7 @@ export default function WarehouseApp() {
                 style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", color: "#6B7280", borderRadius: 10, padding: "11px 18px", fontSize: 14, cursor: "pointer" }}>ยกเลิก</button>
               <button onClick={handleConfirmReturnBatch} disabled={savingReturnBatch || returnBatchItems.filter(it => it.quantity > 0).length === 0}
                 style={{ background: savingReturnBatch ? "#F3F4F6" : "#C2410C", color: savingReturnBatch ? "#9CA3AF" : "#fff", border: "none", borderRadius: 10, padding: "11px 22px", fontSize: 14, fontWeight: 700, cursor: savingReturnBatch ? "not-allowed" : "pointer" }}>
-                {savingReturnBatch ? "⏳ กำลังบันทึก..." : `✅ รับเข้า${returnBatchIsReturn ? "ตีกลับ" : ""} ${returnBatchItems.filter(it => it.quantity > 0).length} รายการ`}
+                {savingReturnBatch ? "⏳ กำลังบันทึก..." : `✅ รับเข้าตีกลับ ${returnBatchItems.filter(it => it.quantity > 0).length} รายการ`}
               </button>
             </div>
           </div>
