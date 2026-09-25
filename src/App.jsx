@@ -45,6 +45,8 @@ const sbAll = async (path) => {
 const api = {
   getProducts: () => sbAll("products?select=*&order=name.asc"),
   addProduct: (p) => sb("products", { method: "POST", body: JSON.stringify(p) }),
+  // ดึงยอดคงเหลือสดล่าสุดแค่ตัวเดียว — ใช้เช็คก่อนบันทึกแก้ไขสินค้า กันหน้าจอที่ค้างไว้นานบันทึกทับข้อมูลใหม่กว่า
+  getProduct: (id) => sb(`products?id=eq.${id}&select=quantity`).then(rows => (rows && rows[0]) || null),
   updateProduct: (id, p) => sb(`products?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(p) }),
   deleteProduct: (id) => sb(`products?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
   getTransactions: () => sbAll("transactions?select=*&order=created_at.desc"),
@@ -4992,12 +4994,33 @@ export default function WarehouseApp() {
     }
   };
 
-  const handleEditProduct = () => {
+  const handleEditProduct = async () => {
     const conflict = findSkuConflict(form.sku, selectedProduct.id);
     if (conflict) return showToast(`SKU "${form.sku}" ซ้ำกับ "${conflict.name}" (id ${conflict.id}) อยู่แล้ว — กรุณาใช้เลขอื่น`, "error");
-    const oldQ = Number(selectedProduct.quantity) || 0;
+    // เช็คยอดคงเหลือสดจาก DB ก่อนบันทึกทุกครั้ง — กันเคสหน้าจอค้างไว้นาน (ไม่ได้รีเฟรช) แล้วมีคนอื่น
+    // ทำรายการเปลี่ยนสต็อกจริงไปแล้วระหว่างนั้น ถ้าเทียบกับข้อมูลเก่าที่ค้างอยู่บนจอเฉยๆ จะเข้าใจผิดว่า "ไม่มีอะไรเปลี่ยน"
+    // แล้วบันทึกทับเงียบๆ โดยไม่รู้ตัวและไม่มี log (ต้นตอของยอดที่ "โผล่ขึ้นมาเอง")
+    setSaving(true);
+    let live;
+    try {
+      live = await api.getProduct(selectedProduct.id);
+    } catch (e) {
+      setSaving(false);
+      return showToast("เช็คยอดคงเหลือล่าสุดไม่สำเร็จ: " + e.message, "error");
+    }
+    setSaving(false);
+    if (!live) return showToast("ไม่พบสินค้านี้แล้ว (อาจถูกลบไปแล้ว) — กรุณาปิดหน้าต่างนี้แล้วโหลดหน้าใหม่", "error");
+    const liveQ = Number(live.quantity) || 0;
+    const staleQ = Number(selectedProduct.quantity) || 0;
+    if (liveQ !== staleQ) {
+      setRawProducts(prev => prev.map(p => p.id === selectedProduct.id ? { ...p, quantity: liveQ } : p));
+      setSelectedProduct(prev => (prev ? { ...prev, quantity: liveQ } : prev));
+      setForm(prev => ({ ...prev, quantity: String(liveQ) }));
+      showToast(`ยอดคงเหลือถูกเปลี่ยนไปแล้วระหว่างที่เปิดหน้านี้ค้างไว้ (เห็นอยู่ ${staleQ} แต่ตอนนี้จริงคือ ${liveQ}) — อัปเดตให้แล้ว กรุณาตรวจข้อมูลอีกครั้งแล้วกดบันทึกซ้ำ`, "error");
+      return;
+    }
     const newQ = parseInt(form.quantity) || 0;
-    if (newQ !== oldQ) { requireManagerUnlock(doSaveEditProduct); return; } // เปลี่ยนจำนวนคงเหลือ = ต้องรหัสผ่านผู้จัดการ เหมือนรับเข้า/เบิกออก
+    if (newQ !== liveQ) { requireManagerUnlock(doSaveEditProduct); return; } // เปลี่ยนจำนวนคงเหลือ = ต้องรหัสผ่านผู้จัดการ เหมือนรับเข้า/เบิกออก
     doSaveEditProduct();
   };
 
@@ -5955,7 +5978,8 @@ export default function WarehouseApp() {
         )}
 
         {/* ─── RETURNS ─── */}
-        {tab === "returns" && <ReturnCheckerTab onOpenReturnReceive={openReturnBatchModal} />}
+        {/* รับเข้าสินค้าตีกลับ = เพิ่มสต็อกจริง เหมือน 📥/📤 อื่นๆ จึงต้องรหัสผู้จัดการเหมือนกัน (เดิมไม่มีล็อกเลย ใครก็เพิ่มสต็อกสินค้าไหนก็ได้จำนวนเท่าไหร่ก็ได้) */}
+        {tab === "returns" && <ReturnCheckerTab onOpenReturnReceive={() => requireManagerUnlock(openReturnBatchModal)} />}
 
         {/* ─── DISPOSE ─── */}
         {tab === "stockcheck" && scansUnlocked && stockSub === "dispose" && !disposeMode && (
