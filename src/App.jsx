@@ -5978,8 +5978,8 @@ export default function WarehouseApp() {
         )}
 
         {/* ─── RETURNS ─── */}
-        {/* รับเข้าสินค้าตีกลับ = เพิ่มสต็อกจริง เหมือน 📥/📤 อื่นๆ จึงต้องรหัสผู้จัดการเหมือนกัน (เดิมไม่มีล็อกเลย ใครก็เพิ่มสต็อกสินค้าไหนก็ได้จำนวนเท่าไหร่ก็ได้) */}
-        {tab === "returns" && <ReturnCheckerTab onOpenReturnReceive={() => requireManagerUnlock(openReturnBatchModal)} />}
+        {/* รับเข้าสินค้าตีกลับ เป็นงานประจำของพนักงานคลังเอง ไม่ใช่งานผู้จัดการ จึงไม่ล็อกรหัส (ตัดสินใจย้อนกลับหลังผู้ใช้ทักท้วง) — ยังมี note "ตีกลับ" บังคับติดทุกรายการเสมอ ตามรอยย้อนหลังได้อยู่แล้ว */}
+        {tab === "returns" && <ReturnCheckerTab onOpenReturnReceive={openReturnBatchModal} />}
 
         {/* ─── DISPOSE ─── */}
         {tab === "stockcheck" && scansUnlocked && stockSub === "dispose" && !disposeMode && (
