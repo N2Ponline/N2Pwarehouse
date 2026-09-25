@@ -1,7 +1,14 @@
 import { useState, useEffect, useCallback, useRef, useMemo, Fragment } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = "https://slwbzbnomsugffyzjyuv.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNsd2J6Ym5vbXN1Z2ZmeXpqeXV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk3MjIxMDcsImV4cCI6MjA5NTI5ODEwN30.qG3CPT6J_evddK8qmpF7P3bVswn_Du43MEHo33bUnqA";
+
+// ใช้เฉพาะ Realtime (รับสัญญาณเมื่อมีรายการเคลื่อนไหวใหม่จากเครื่องอื่น) — อ่าน/เขียนข้อมูลยังผ่าน sb() เหมือนเดิม
+// ต้องรัน sql/realtime-transactions.sql ก่อน ไม่งั้นไม่มีสัญญาณมา (แอปยังใช้งานได้ปกติ แค่ไม่อัปเดตเอง)
+const realtime = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+// คอลัมน์สินค้าทั้งหมดยกเว้นรูป (รูปเก็บเป็น base64 รวมกันหลายสิบ MB) — ใช้ตอนอัปเดตตัวเลขตามเครื่องอื่น ไม่ต้องโหลดรูปซ้ำ
+const PRODUCT_LITE_COLS = "id,sku,name,category,quantity,min_stock,price,location,unit";
 
 // รหัสเข้าดูทั้งแท็บ "เช็คสต็อก" (ทุกเมนูย่อย) — เฉพาะผู้จัดการ (กันคนทั่วไปกดเข้าไปโดยไม่ตั้งใจ ไม่ใช่ระบบ auth จริง)
 const ORDER_SCANS_PASSWORD = "168168";
@@ -54,6 +61,10 @@ const api = {
   getRecentTxs: (productId, n) => sb(`transactions?product_id=eq.${productId}&select=id,type,quantity,balance_after&order=id.desc&limit=${n}`),
   deleteProduct: (id) => sb(`products?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
   getTransactions: () => sbAll("transactions?select=*&order=created_at.desc"),
+  getTransactionsAfter: (id) => sbAll(`transactions?select=*&id=gt.${id}&order=id.asc`),
+  getProductLite: (id) => sb(`products?id=eq.${id}&select=${PRODUCT_LITE_COLS}`).then(rows => (rows && rows[0]) || null),
+  getProductsLite: () => sbAll(`products?select=${PRODUCT_LITE_COLS}`),
+  getProductFull: (id) => sb(`products?id=eq.${id}&select=*`).then(rows => (rows && rows[0]) || null),
   addTransaction: (t) => sb("transactions", { method: "POST", body: JSON.stringify(t) }),
   getOrderScans: () => sbAll("order_scans?select=*&order=created_at.desc"),
   // ตารางของระบบใบสั่ง (n2p-order.netlify.app) — อยู่ Supabase project เดียวกัน อ่านอย่างเดียว ไม่เขียนกลับ
@@ -102,6 +113,8 @@ const dbToProduct = (r) => ({
   quantity: r.quantity, minStock: r.min_stock, price: Number(r.price),
   location: r.location || "-", unit: r.unit, imageUrl: r.image_url,
 });
+// รวมข้อมูลสินค้าที่ดึงแบบไม่มีรูปเข้ากับของเดิมบนจอ โดยคงรูปเดิมไว้
+const mergeLite = (p, r) => ({ ...p, ...dbToProduct(r), imageUrl: p.imageUrl });
 const productToDb = (p) => ({
   sku: p.sku, name: p.name, category: p.category,
   quantity: parseInt(p.quantity) || 0,
@@ -4637,7 +4650,17 @@ export default function WarehouseApp() {
   // ── ยิงตัดสต๊อกจากใบหยิบ: panel ยิง API เอง แล้วส่งผลกลับมาให้ state หลักตรงกัน ──
   const applyPickCut = (productId, newQty, txRow) => {
     setRawProducts(prev => prev.map(p => p.id === productId ? { ...p, quantity: newQty } : p));
-    if (txRow) setTransactions(prev => [dbToTx(txRow), ...prev]);
+    if (txRow) addTxRows([txRow]);
+  };
+  // เพิ่มแถว transaction จาก DB เข้า state แบบกันซ้ำ — รายการที่เครื่องนี้บันทึกเองจะมาซ้ำอีกรอบทาง Realtime
+  const addTxRows = (rows) => {
+    const list = (rows || []).filter(Boolean);
+    if (!list.length) return;
+    setTransactions(prev => {
+      const have = new Set(prev.map(t => t.id));
+      const fresh = list.filter(r => !have.has(r.id)).map(dbToTx);
+      return fresh.length ? [...fresh.sort((a, b) => b.id - a.id), ...prev] : prev;
+    });
   };
   const openAddProductNamed = (name) => { setForm({ name: stripPromo(name) || name }); setShowModal("add"); };
   // ให้หน้า "รับสินค้าเข้า"/"รับเข้ารออนุมัติ" อัปเดต state ตัวนี้ทันทีที่บันทึก/อนุมัติ ไม่งั้นคอลัมน์ "รอเข้า" จะค้างเลขเก่าจนกว่าจะโหลดหน้าใหม่
@@ -4699,6 +4722,61 @@ export default function WarehouseApp() {
   }, []);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+
+  // ═══ อัปเดตทุกหน้าจอที่เปิดอยู่อัตโนมัติ เมื่อเครื่องอื่นทำรายการ (Supabase Realtime) ═══
+  // อัปเดตเฉพาะตัวเลข/ประวัติ ไม่รีเฟรชทั้งหน้า — กันฟอร์มหรือใบหยิบที่กำลังทำอยู่หาย และไม่ต้องโหลดรูปใหม่
+  const [liveStatus, setLiveStatus] = useState("connecting");
+  const rawRef = useRef([]);
+  const txMaxRef = useRef(0);
+  useEffect(() => { rawRef.current = rawProducts; }, [rawProducts]);
+  useEffect(() => { txMaxRef.current = transactions.reduce((m, t) => Math.max(m, Number(t.id) || 0), 0); }, [transactions]);
+  const refreshTimers = useRef(new Map());
+  const refreshProduct = useCallback((productId) => {
+    const timers = refreshTimers.current;
+    clearTimeout(timers.get(productId));
+    timers.set(productId, setTimeout(async () => { // รวมหลายสัญญาณของสินค้าเดียวกันที่มาติดๆ กันเป็นการดึงครั้งเดียว
+      timers.delete(productId);
+      if (!rawRef.current.length) return; // ยังโหลดข้อมูลแรกไม่เสร็จ — loadAll จะได้ข้อมูลล่าสุดอยู่แล้ว
+      try {
+        if (rawRef.current.some(p => p.id === productId)) {
+          const r = await api.getProductLite(productId);
+          if (r) setRawProducts(prev => prev.map(p => p.id === r.id ? mergeLite(p, r) : p));
+        } else {
+          const full = await api.getProductFull(productId); // สินค้าใหม่ที่เครื่องอื่นเพิ่งเพิ่ม
+          if (full) setRawProducts(prev => prev.some(p => p.id === full.id) ? prev : [...prev, dbToProduct(full)].sort((a, b) => a.name.localeCompare(b.name, "th")));
+        }
+      } catch { /* เน็ตหลุดชั่วคราว — resync ตอนต่อกลับจะเก็บตกให้ */ }
+    }, 300));
+  }, []);
+  // เก็บตกสิ่งที่พลาดไประหว่างหลุดการเชื่อมต่อ/พับจอ/สลับแท็บ: ดึงยอดทุกสินค้า (ไม่เอารูป) + รายการเคลื่อนไหวที่ใหม่กว่าที่มีอยู่
+  const resync = useCallback(async () => {
+    if (!rawRef.current.length) return;
+    try {
+      const [lite, newTx] = await Promise.all([api.getProductsLite(), txMaxRef.current ? api.getTransactionsAfter(txMaxRef.current) : Promise.resolve([])]);
+      const byId = new Map((lite || []).map(r => [r.id, r]));
+      setRawProducts(prev => prev.filter(p => byId.has(p.id)).map(p => mergeLite(p, byId.get(p.id))));
+      const known = new Set(rawRef.current.map(p => p.id));
+      (lite || []).filter(r => !known.has(r.id)).forEach(r => refreshProduct(r.id));
+      addTxRows(newTx);
+    } catch { /* ลองใหม่รอบหน้า */ }
+  }, [refreshProduct]);
+  useEffect(() => {
+    let first = true;
+    const ch = realtime.channel("stock-sync")
+      // ต่อ channel ได้แต่ตารางยังไม่ได้เปิด Realtime (ยังไม่รัน sql/realtime-transactions.sql) — Supabase แจ้งผ่าน system message ไม่ใช่ status
+      .on("system", {}, (m) => { if (m?.extension === "postgres_changes" && m?.status === "error") setLiveStatus("off"); })
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "transactions" }, ({ new: row }) => {
+        addTxRows([row]);
+        if (row?.product_id != null) refreshProduct(row.product_id);
+      })
+      .subscribe((status) => {
+        setLiveStatus(status === "SUBSCRIBED" ? "live" : status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED" ? "off" : "connecting");
+        if (status === "SUBSCRIBED") { if (!first) resync(); first = false; }
+      });
+    const onVisible = () => { if (document.visibilityState === "visible") resync(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { document.removeEventListener("visibilitychange", onVisible); realtime.removeChannel(ch); };
+  }, [refreshProduct, resync]);
   useEffect(() => { if (tab === "stockcheck" && stockSub === "dispose" && scansUnlocked) loadDisposeRecords(); }, [tab, stockSub, scansUnlocked]);
   useEffect(() => { if (tab === "stockcheck" && stockSub === "orders" && scansUnlocked) loadOrderScans(); }, [tab, stockSub, scansUnlocked]);
   // เมนูย่อยของ "เช็คสต็อก" เป็นตัวกำหนดโหมดของตารางสินค้า — ออกจากแท็บเมื่อไหร่โหมดดับ · "จำหน่ายออก" เข้ามาก่อนเห็นเป็นหน้าประวัติ ต้องกดปุ่ม "+ จำหน่ายออกเพิ่ม" เองถึงเข้าโหมดเลือกรายการ (ไม่บังคับอัตโนมัติเหมือนก่อน)
@@ -5070,7 +5148,9 @@ export default function WarehouseApp() {
   };
 
   // txs จาก commitStockChange เรียงเก่า→ใหม่ — state เก็บใหม่สุดไว้ก่อน
-  const pushTxs = (txs) => { if (txs && txs.length) setTransactions(prev => [...[...txs].reverse().map(dbToTx), ...prev]); };
+  const pushTxs = (txs) => addTxRows(txs);
+  // หน้าต่างประวัติใช้ยอดล่าสุดของสินค้า (อัปเดตตาม Realtime) ไม่ใช่ค่าที่จำไว้ตอนกดเปิด
+  const historyLive = historyProduct ? (products.find(p => p.id === historyProduct.id) || historyProduct) : null;
   const applyEditStale = (liveQ, staleQ) => {
     setRawProducts(prev => prev.map(p => p.id === selectedProduct.id ? { ...p, quantity: liveQ } : p));
     setSelectedProduct(prev => (prev ? { ...prev, quantity: liveQ } : prev));
@@ -5575,7 +5655,13 @@ export default function WarehouseApp() {
             <div style={{ width: 38, height: 38, borderRadius: 10, background: "linear-gradient(135deg,#7C3AED,#3B82F6)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 19 }}>📦</div>
             <div>
               <div style={{ fontWeight: 700, fontSize: 17, color: "#111827" }}>StockMaster</div>
-              <div style={{ fontSize: 11, color: "#9CA3AF" }}>ระบบจัดการคลังสินค้า N2P</div>
+              <div style={{ fontSize: 11, color: "#9CA3AF" }}>
+                ระบบจัดการคลังสินค้า N2P
+                <span title={liveStatus === "live" ? "ยอดคงเหลือและประวัติอัปเดตเองทันทีเมื่อเครื่องอื่นทำรายการ" : "ยังไม่ได้เชื่อมต่อการอัปเดตอัตโนมัติ — ตัวเลขบนจออาจไม่ล่าสุด (ตอนกดบันทึกยังใช้ยอดจริงเสมอ)"}
+                  style={{ marginLeft: 8, color: liveStatus === "live" ? "#059669" : "#9CA3AF", fontWeight: 600 }}>
+                  {liveStatus === "live" ? "● อัปเดตอัตโนมัติ" : liveStatus === "connecting" ? "○ กำลังเชื่อมต่อ..." : "○ ไม่ได้อัปเดตอัตโนมัติ"}
+                </span>
+              </div>
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -6720,7 +6806,7 @@ export default function WarehouseApp() {
           <div onClick={e => e.stopPropagation()}
             style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, width: "100%", maxWidth: 520, maxHeight: "85vh", overflowY: "auto", padding: 24, boxShadow: "0 24px 60px rgba(0,0,0,0.15)" }}>
             <h3 style={{ fontSize: 17, fontWeight: 700, color: "#111827", marginBottom: 2 }}>🕘 ประวัติ: {historyProduct.name}</h3>
-            <p style={{ fontSize: 12, color: "#9CA3AF", fontFamily: "monospace", marginBottom: 14 }}>{historyProduct.sku} · คงเหลือ {historyProduct.quantity} {historyProduct.unit}</p>
+            <p style={{ fontSize: 12, color: "#9CA3AF", fontFamily: "monospace", marginBottom: 14 }}>{historyLive.sku} · คงเหลือ {historyLive.quantity} {historyLive.unit}</p>
             {transactions.filter(tx => tx.productId === historyProduct.id).length === 0 && (
               <div style={{ color: "#9CA3AF", fontSize: 13, textAlign: "center", padding: 24 }}>ยังไม่มีประวัติการเคลื่อนไหว</div>
             )}
@@ -6728,7 +6814,7 @@ export default function WarehouseApp() {
               // ใหม่สุดก่อน — รายการที่มี balance_after ใช้ยอดที่บันทึกไว้จริงตอนเกิดรายการ
               // รายการเก่าก่อนมีคอลัมน์นี้ไม่มียอดจริงเก็บไว้ → ไล่ย้อนคำนวณจากรายการถัดไปแทน (ขึ้น "≈" กำกับว่าเป็นค่าประมาณ)
               const txs = [...transactions.filter(tx => tx.productId === historyProduct.id)].sort((a, b) => b.id - a.id);
-              let running = historyProduct.quantity;
+              let running = historyLive.quantity;
               const withBalance = txs.map(tx => {
                 const delta = tx.type === "out" ? -tx.quantity : tx.quantity;
                 const recorded = tx.balanceAfter != null;
