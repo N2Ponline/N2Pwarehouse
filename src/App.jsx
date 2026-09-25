@@ -115,6 +115,37 @@ const dbToProduct = (r) => ({
 });
 // รวมข้อมูลสินค้าที่ดึงแบบไม่มีรูปเข้ากับของเดิมบนจอ โดยคงรูปเดิมไว้
 const mergeLite = (p, r) => ({ ...p, ...dbToProduct(r), imageUrl: p.imageUrl });
+// ย่อรูปสินค้าก่อนเก็บ — รูปเก็บเป็น base64 ในตาราง products และต้องโหลดทั้งหมดทุกครั้งที่เปิดเว็บ
+// เดิมเก็บไฟล์ต้นฉบับเต็มขนาด (บางรูป 2.6 MB รวม 21 MB) จนโหลดไม่ทัน statement timeout
+// 600px ยังคมพอสำหรับรูปใหญ่ในหน้ายิงตัดสต๊อก (แสดงสูงสุด 400px) · พื้นขาวแทนส่วนโปร่งใสของ PNG เพราะ JPEG ไม่มีช่องโปร่งใส
+const IMAGE_MAX_PX = 600;
+const resizeImageFile = (file) => new Promise((resolve, reject) => {
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    URL.revokeObjectURL(url);
+    const scale = Math.min(1, IMAGE_MAX_PX / Math.max(img.naturalWidth, img.naturalHeight));
+    const outW = Math.max(1, Math.round(img.naturalWidth * scale)), outH = Math.max(1, Math.round(img.naturalHeight * scale));
+    let w = img.naturalWidth, h = img.naturalHeight;
+    let src = img;
+    // ย่อทีละครึ่งก่อนถ้าต้องย่อมาก — ย่อทีเดียวจากรูปใหญ่มากในเบราว์เซอร์ภาพจะแตก
+    while (w / 2 >= outW && h / 2 >= outH) {
+      const c = document.createElement("canvas");
+      c.width = Math.round(w / 2); c.height = Math.round(h / 2);
+      c.getContext("2d").drawImage(src, 0, 0, c.width, c.height);
+      src = c; w = c.width; h = c.height;
+    }
+    const out = document.createElement("canvas");
+    out.width = outW; out.height = outH;
+    const ctx = out.getContext("2d");
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, out.width, out.height);
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(src, 0, 0, out.width, out.height);
+    resolve(out.toDataURL("image/jpeg", 0.8));
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("เปิดไฟล์รูปไม่ได้ — ต้องเป็นไฟล์รูป (jpg/png/webp)")); };
+  img.src = url;
+});
 const productToDb = (p) => ({
   sku: p.sku, name: p.name, category: p.category,
   quantity: parseInt(p.quantity) || 0,
@@ -5199,7 +5230,8 @@ export default function WarehouseApp() {
       if ((form.unit || "") !== (before.unit || "")) changes.push("หน่วย");
       if ((form.location || "") !== (before.location || "")) changes.push("ที่เก็บ");
 
-      const { quantity: _q, ...otherFields } = productToDb(form);
+      // ไม่ส่งรูปไปด้วย — รูปเปลี่ยนได้ทางปุ่มอัปโหลดเท่านั้น (หน้าจอที่เปิดค้างอาจถือรูปเวอร์ชันเก่าอยู่ ถ้าส่งไปจะเขียนทับรูปใหม่)
+      const { quantity: _q, image_url: _img, ...otherFields } = productToDb(form);
       const res = await commitStockChange({
         productId: selectedProduct.id,
         extraPatch: otherFields,
@@ -5413,16 +5445,12 @@ export default function WarehouseApp() {
   };
 
   const handleImageUpload = async (product, file) => {
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      const dataUrl = e.target.result;
-      try {
-        await api.updateProduct(product.id, { image_url: dataUrl });
-        setRawProducts(prev => prev.map(p => p.id === product.id ? { ...p, imageUrl: dataUrl } : p));
-        showToast("อัปโหลดรูปสำเร็จ");
-      } catch (err) { showToast(err.message, "error"); }
-    };
-    reader.readAsDataURL(file);
+    try {
+      const dataUrl = await resizeImageFile(file);
+      await api.updateProduct(product.id, { image_url: dataUrl });
+      setRawProducts(prev => prev.map(p => p.id === product.id ? { ...p, imageUrl: dataUrl } : p));
+      showToast("อัปโหลดรูปสำเร็จ");
+    } catch (err) { showToast(err.message, "error"); }
   };
 
   const statusOf = (p) => p.quantity <= 0 ? "หมด" : (p.minStock > 0 && p.quantity <= p.minStock) ? "ใกล้หมด" : "ปกติ";
