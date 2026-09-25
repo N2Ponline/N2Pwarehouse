@@ -47,7 +47,11 @@ const api = {
   addProduct: (p) => sb("products", { method: "POST", body: JSON.stringify(p) }),
   // ดึงยอดคงเหลือสดล่าสุดแค่ตัวเดียว — ใช้เช็คก่อนบันทึกแก้ไขสินค้า กันหน้าจอที่ค้างไว้นานบันทึกทับข้อมูลใหม่กว่า
   getProduct: (id) => sb(`products?id=eq.${id}&select=quantity`).then(rows => (rows && rows[0]) || null),
+  getProductsQty: (ids) => sb(`products?id=in.(${ids.join(",")})&select=id,quantity`),
   updateProduct: (id, p) => sb(`products?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(p) }),
+  // เขียนเฉพาะเมื่อยอดใน DB ยังเท่ากับที่อ่านมา — ถ้ามีคนเปลี่ยนไปก่อนจะได้ [] กลับมา (ไม่เขียนทับ)
+  updateProductIf: (id, expectedQty, p) => sb(`products?id=eq.${id}&quantity=eq.${expectedQty}`, { method: "PATCH", body: JSON.stringify(p) }),
+  getRecentTxs: (productId, n) => sb(`transactions?product_id=eq.${productId}&select=id,type,quantity,balance_after&order=id.desc&limit=${n}`),
   deleteProduct: (id) => sb(`products?id=eq.${id}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
   getTransactions: () => sbAll("transactions?select=*&order=created_at.desc"),
   addTransaction: (t) => sb("transactions", { method: "POST", body: JSON.stringify(t) }),
@@ -109,8 +113,81 @@ const productToDb = (p) => ({
 const dbToTx = (r) => ({
   id: r.id, type: r.type, productId: r.product_id,
   quantity: r.quantity, date: r.date, note: r.note, by: r.by,
-  createdAt: r.created_at,
+  createdAt: r.created_at, balanceAfter: r.balance_after ?? null,
 });
+
+// ═══════════ เปลี่ยนสต็อกแบบปลอดภัย + บันทึกยอดคงเหลือจริง (balance_after) + ตรวจจับ "ยอดผี" ═══════════
+// ทุกจุดที่เพิ่ม/ลดสต็อกต้องผ่าน commitStockChange เท่านั้น:
+//  1) อ่านยอดสดจาก DB (ไม่เชื่อตัวเลขที่ค้างอยู่บนจอ)  2) เขียนแบบมีเงื่อนไข "ยอดต้องยังเท่าเดิม" ถ้ามีคนทำพร้อมกันจะอ่านใหม่แล้วคำนวณซ้ำ
+//  3) เทียบยอดจริงกับ balance_after ของรายการล่าสุด ไม่ตรง = มีอะไรเปลี่ยนสต็อกโดยไม่ผ่าน log → บันทึกรายการเตือนอัตโนมัติ (ไม่บล็อกงาน)
+//  4) บันทึก transaction พร้อมยอดคงเหลือหลังรายการจริง ณ ตอนนั้น
+// ต้องรัน sql/transactions-balance-after.sql ก่อน — ถ้ายังไม่รัน ข้อ 1-2 ยังทำงาน แค่ข้าม 3-4
+let balanceColMissing = false;
+const isBalanceColError = (e) => /balance_after/i.test(String(e?.message || e));
+const GAP_BY = "ระบบตรวจจับอัตโนมัติ";
+
+const insertTx = async (row) => {
+  let payload = row;
+  if (balanceColMissing) { const { balance_after, ...rest } = row; payload = rest; }
+  try {
+    return (await api.addTransaction(payload))[0];
+  } catch (e) {
+    if (!balanceColMissing && isBalanceColError(e)) { balanceColMissing = true; return insertTx(row); }
+    if (row.type !== "adjust") throw e;
+    const q = Number(row.quantity) || 0; // DB บางชุดไม่รับ type "adjust" → บันทึกเป็น in/out แทน
+    return insertTx({ ...row, type: q >= 0 ? "in" : "out", quantity: Math.abs(q), note: `[ปรับสต็อก] ${row.note || ""}` });
+  }
+};
+
+const findUnloggedGap = async (productId, liveQty) => {
+  if (balanceColMissing) return null;
+  const check = async () => {
+    try {
+      // ยอดที่ควรเป็น = balance_after ของรายการล่าสุดที่มีบันทึก + ผลรวมรายการหลังจากนั้นที่ไม่มี balance_after
+      // (เขียนโดยเครื่องที่ยังเปิดเวอร์ชันเก่าค้างอยู่) — ถ้ายังไม่เคยมีรายการไหนมี balance_after เลย = เทียบไม่ได้ ข้ามไป
+      const rows = await api.getRecentTxs(productId, 50);
+      let pending = 0, expected = null;
+      for (const r of rows || []) {
+        if (r.balance_after != null) { expected = Number(r.balance_after) + pending; break; }
+        pending += r.type === "out" ? -Number(r.quantity) : Number(r.quantity);
+      }
+      if (expected == null || expected === liveQty) return null;
+      return { expected, actual: liveQty };
+    } catch (e) {
+      if (isBalanceColError(e)) { balanceColMissing = true; return null; }
+      throw e;
+    }
+  };
+  if (!(await check())) return null;
+  // อาจเป็นอีกเครื่องที่อัปเดตสต็อกไปแล้วแต่ log ยังเขียนไม่เสร็จ — รอแป๊บแล้วเช็คซ้ำก่อนสรุปว่าผิดปกติจริง
+  await new Promise(r => setTimeout(r, 1500));
+  return check();
+};
+
+const commitStockChange = async ({ productId, next, makeTx, extraPatch }) => {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const live = await api.getProduct(productId);
+    if (!live) throw new Error("ไม่พบสินค้านี้ในระบบแล้ว (อาจถูกลบไปแล้ว)");
+    const liveQty = Number(live.quantity) || 0;
+    const newQty = next(liveQty);
+    const updated = await api.updateProductIf(productId, liveQty, { ...(extraPatch || {}), quantity: newQty });
+    if (!updated || updated.length === 0) continue;
+    const txs = [];
+    const gap = await findUnloggedGap(productId, liveQty);
+    if (gap) {
+      const d = gap.actual - gap.expected;
+      txs.push(await insertTx({
+        type: "adjust", product_id: productId, quantity: d, date: localDateStr(), by: GAP_BY, balance_after: gap.actual,
+        note: `⚠️ ตรวจพบยอดเปลี่ยนโดยไม่มีบันทึก: ควรเหลือ ${gap.expected} แต่ในระบบเป็น ${gap.actual} (${d > 0 ? "+" : ""}${d})`,
+      }));
+    }
+    const row = makeTx ? makeTx(liveQty, newQty) : null;
+    if (row) txs.push(await insertTx({ date: localDateStr(), ...row, product_id: productId, balance_after: newQty }));
+    return { liveQty, newQty, product: updated[0], gap, txs };
+  }
+  throw new Error("มีคนทำรายการสินค้านี้พร้อมกันอยู่ กรุณาลองใหม่อีกครั้ง");
+};
+const gapWarning = (name, gap) => `⚠️ "${name}" ยอดในระบบเปลี่ยนโดยไม่มีบันทึก (ควรเหลือ ${gap.expected} แต่เป็น ${gap.actual}) — บันทึกไว้ในประวัติแล้ว`;
 
 // ═══════════ จับคู่ "ของรอเข้า" จากระบบใบสั่ง (n2p_backlog) กับสินค้าในคลัง ═══════════
 // ชื่อสินค้าสองระบบพิมพ์กันคนละที เช่น "ดินสอเขียนคิ้วแท่งทอง(สีน้ำตาลเข้ม)" ในใบสั่ง
@@ -2647,29 +2724,37 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   const closePick = async () => {
     const p = pickRef.current; if (!p) return;
     if (!allDone) { showToast(unmapped.length > 0 ? "มีรายการยังไม่จับคู่ SKU — จับคู่ให้ครบก่อนปิดใบ" : "ยิงยังไม่ครบ — กด \"ของขาด +1\" ระบุจำนวนที่ขาดจริงก่อน ถึงจะปิดใบได้", "error"); return; }
-    // กันสต็อกติดลบ — เช็คทุกไลน์ก่อนตัดจริง ถ้ามีตัวไหนของไม่พอ ไม่ตัดเลยสักตัว (all-or-nothing) กันปิดใบครึ่งๆ กลางๆ
-    const shortages = linesRef.current.filter(l => l.scanned > 0 && qtyOf(productById.get(l.pid) || l.product) < l.scanned);
-    if (shortages.length) {
-      const detail = shortages.map(l => { const cur = qtyOf(productById.get(l.pid) || l.product); return `${l.product.name} (คงเหลือ ${cur} แต่จะตัด ${l.scanned})`; }).join(", ");
-      showToast(`สต็อกไม่พอ ปิดใบไม่ได้ — จะทำให้ติดลบ: ${detail}`, "error");
-      return;
-    }
+    const toCut = linesRef.current.filter(l => l.scanned > 0);
     setClosing(true);
     try {
+      // กันสต็อกติดลบ — เช็คทุกไลน์ด้วยยอดสดจาก DB ก่อนตัดจริง ถ้ามีตัวไหนของไม่พอ ไม่ตัดเลยสักตัว (all-or-nothing) กันปิดใบครึ่งๆ กลางๆ
+      const liveRows = toCut.length ? await api.getProductsQty([...new Set(toCut.map(l => Number(l.pid)))]) : [];
+      const liveById = new Map((liveRows || []).map(r => [Number(r.id), Number(r.quantity) || 0]));
+      const shortages = toCut.filter(l => (liveById.get(Number(l.pid)) ?? 0) < l.scanned);
+      if (shortages.length) {
+        const detail = shortages.map(l => `${l.product.name} (คงเหลือ ${liveById.get(Number(l.pid)) ?? 0} แต่จะตัด ${l.scanned})`).join(", ");
+        showToast(`สต็อกไม่พอ ปิดใบไม่ได้ — จะทำให้ติดลบ: ${detail}`, "error");
+        setClosing(false);
+        return;
+      }
       let cutTotal = 0;
-      for (const line of linesRef.current) {
-        if (line.scanned <= 0) continue;
+      const gapNames = [];
+      for (const line of toCut) {
         const product = productById.get(line.pid) || line.product;
-        const cur = qtyOf(product);
-        const newQty = cur - line.scanned;
-        await api.updateProduct(product.id, { quantity: newQty });
-        localQty.current[product.id] = newQty;
-        const [tx] = await api.addTransaction({ type: "out", product_id: product.id, quantity: line.scanned, date: localDateStr(), note: `ใบหยิบ PK${p.id}`, by: staffRef.current.trim() || p.picked_by || "" });
-        onStockCut(product.id, newQty, tx);
+        const res = await commitStockChange({
+          productId: product.id,
+          next: (live) => live - line.scanned,
+          makeTx: () => ({ type: "out", quantity: line.scanned, note: `ใบหยิบ PK${p.id}`, by: staffRef.current.trim() || p.picked_by || "" }),
+        });
+        localQty.current[product.id] = res.newQty;
+        res.txs.forEach(tx => onStockCut(product.id, res.newQty, tx));
+        if (res.gap) gapNames.push(product.name);
         cutTotal += line.scanned;
       }
       await api.updateOrderScan(p.id, { pick_progress: progressRef.current, pick_status: "closed", pick_closed_at: new Date().toISOString(), picked_by: staffRef.current || p.picked_by || null });
-      showToast(`ปิดใบหยิบ PK${p.id} แล้ว — ตัดสต็อก ${cutTotal} ชิ้น`);
+      showToast(gapNames.length
+        ? `ปิดใบหยิบ PK${p.id} แล้ว — ⚠️ พบยอดเปลี่ยนโดยไม่มีบันทึกที่: ${gapNames.join(", ")} (บันทึกไว้ในประวัติแล้ว)`
+        : `ปิดใบหยิบ PK${p.id} แล้ว — ตัดสต็อก ${cutTotal} ชิ้น`, gapNames.length ? "error" : "success");
       applyPick(null); setLast(null); loadRecent();
     } catch (e) { if (!handleSetupError(e)) showToast(e.message, "error"); }
     setClosing(false);
@@ -4116,13 +4201,12 @@ function ReceivingApprovalPanel({ products, onStockChange, onReceivingLogChange,
         const product = products.find(p => String(p.id) === String(e.productId));
         if (!product) return showToast("กรุณาเลือกสินค้าให้ถูกต้องก่อนยืนยัน", "error");
         if (qty <= 0) return showToast("จำนวนต้องมากกว่า 0", "error");
-        const newQty = product.quantity + qty;
-        await api.updateProduct(product.id, { quantity: newQty });
-        const [newTx] = await api.addTransaction({
-          type: "in", product_id: product.id, quantity: qty, date: new Date().toISOString().split("T")[0],
-          note: `รับเข้าจากใบสั่งซื้อ (${row.backlog_item_name})${row.note ? " - " + row.note : ""}`, by: approverBy.trim(),
+        const res = await commitStockChange({
+          productId: product.id,
+          next: (live) => live + qty,
+          makeTx: () => ({ type: "in", quantity: qty, note: `รับเข้าจากใบสั่งซื้อ (${row.backlog_item_name})${row.note ? " - " + row.note : ""}`, by: approverBy.trim() }),
         });
-        onStockChange(product.id, newQty, newTx);
+        res.txs.forEach(tx => onStockChange(product.id, res.newQty, tx));
         try {
           await syncApprovalToOrderSystem(row, qty);
         } catch (syncErr) {
@@ -4134,7 +4218,8 @@ function ReceivingApprovalPanel({ products, onStockChange, onReceivingLogChange,
         });
         if (onReceivingLogChange && updated) onReceivingLogChange(updated);
         if (updated) setAllLogs(prev => prev.map(r => r.id === updated[0].id ? updated[0] : r));
-        showToast(`เพิ่มเข้าสต็อก "${product.name}" +${qty} สำเร็จ · ตัดยอดในใบสั่งซื้อให้แล้ว`);
+        if (res.gap) showToast(gapWarning(product.name, res.gap), "error");
+        else showToast(`เพิ่มเข้าสต็อก "${product.name}" +${qty} สำเร็จ · ตัดยอดในใบสั่งซื้อให้แล้ว`);
       }
     } catch (err) { showToast(err.message, "error"); }
     setBusyId(null);
@@ -4542,9 +4627,11 @@ export default function WarehouseApp() {
   };
   const [saving, setSaving] = useState(false);
 
+  const toastTimer = useRef(null);
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 3000);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), type === "error" ? 7000 : 3000); // ข้อความเตือนยาว ต้องค้างให้อ่านทัน
   };
 
   // ── ยิงตัดสต๊อกจากใบหยิบ: panel ยิง API เอง แล้วส่งผลกลับมาให้ state หลักตรงกัน ──
@@ -4970,9 +5057,9 @@ export default function WarehouseApp() {
       // สินค้าใหม่ที่ใส่จำนวนเริ่มต้น > 0 ให้บันทึก log "รับเข้า" ไว้ด้วย จะได้มีวันที่ตั้งต้นในประวัติ
       const initialQty = parseInt(form.quantity) || 0;
       if (initialQty > 0) {
-        const [newTx] = await api.addTransaction({
-          type: "in", product_id: product.id, quantity: initialQty,
-          date: new Date().toISOString().split("T")[0], note: "เพิ่มสินค้าใหม่ (ยอดเริ่มต้น)", by: "ระบบ",
+        const newTx = await insertTx({
+          type: "in", product_id: product.id, quantity: initialQty, balance_after: initialQty,
+          date: localDateStr(), note: "เพิ่มสินค้าใหม่ (ยอดเริ่มต้น)", by: "ระบบ",
         });
         setTransactions(prev => [dbToTx(newTx), ...prev]);
       }
@@ -4982,16 +5069,13 @@ export default function WarehouseApp() {
     setSaving(false);
   };
 
-  // บันทึก log การปรับสต็อก — พยายามใช้ type "adjust" ก่อน ถ้า DB ไม่รองรับจะ fallback เป็น in/out
-  const logAdjustTx = async ({ productId, delta, note, by }) => {
-    const base = { product_id: productId, date: new Date().toISOString().split("T")[0], note, by: by || "ระบบ" };
-    try {
-      const [tx] = await api.addTransaction({ ...base, type: "adjust", quantity: delta });
-      return tx;
-    } catch {
-      const [tx] = await api.addTransaction({ ...base, type: delta >= 0 ? "in" : "out", quantity: Math.abs(delta), note: `[ปรับสต็อก] ${note}` });
-      return tx;
-    }
+  // txs จาก commitStockChange เรียงเก่า→ใหม่ — state เก็บใหม่สุดไว้ก่อน
+  const pushTxs = (txs) => { if (txs && txs.length) setTransactions(prev => [...[...txs].reverse().map(dbToTx), ...prev]); };
+  const applyEditStale = (liveQ, staleQ) => {
+    setRawProducts(prev => prev.map(p => p.id === selectedProduct.id ? { ...p, quantity: liveQ } : p));
+    setSelectedProduct(prev => (prev ? { ...prev, quantity: liveQ } : prev));
+    setForm(prev => ({ ...prev, quantity: String(liveQ) }));
+    showToast(`ยอดคงเหลือถูกเปลี่ยนไปแล้วระหว่างที่เปิดหน้านี้ค้างไว้ (เห็นอยู่ ${staleQ} แต่ตอนนี้จริงคือ ${liveQ}) — อัปเดตให้แล้ว กรุณาตรวจข้อมูลอีกครั้งแล้วกดบันทึกซ้ำ`, "error");
   };
 
   const handleEditProduct = async () => {
@@ -5012,13 +5096,7 @@ export default function WarehouseApp() {
     if (!live) return showToast("ไม่พบสินค้านี้แล้ว (อาจถูกลบไปแล้ว) — กรุณาปิดหน้าต่างนี้แล้วโหลดหน้าใหม่", "error");
     const liveQ = Number(live.quantity) || 0;
     const staleQ = Number(selectedProduct.quantity) || 0;
-    if (liveQ !== staleQ) {
-      setRawProducts(prev => prev.map(p => p.id === selectedProduct.id ? { ...p, quantity: liveQ } : p));
-      setSelectedProduct(prev => (prev ? { ...prev, quantity: liveQ } : prev));
-      setForm(prev => ({ ...prev, quantity: String(liveQ) }));
-      showToast(`ยอดคงเหลือถูกเปลี่ยนไปแล้วระหว่างที่เปิดหน้านี้ค้างไว้ (เห็นอยู่ ${staleQ} แต่ตอนนี้จริงคือ ${liveQ}) — อัปเดตให้แล้ว กรุณาตรวจข้อมูลอีกครั้งแล้วกดบันทึกซ้ำ`, "error");
-      return;
-    }
+    if (liveQ !== staleQ) { applyEditStale(liveQ, staleQ); return; }
     const newQ = parseInt(form.quantity) || 0;
     if (newQ !== liveQ) { requireManagerUnlock(doSaveEditProduct); return; } // เปลี่ยนจำนวนคงเหลือ = ต้องรหัสผ่านผู้จัดการ เหมือนรับเข้า/เบิกออก
     doSaveEditProduct();
@@ -5041,25 +5119,23 @@ export default function WarehouseApp() {
       if ((form.unit || "") !== (before.unit || "")) changes.push("หน่วย");
       if ((form.location || "") !== (before.location || "")) changes.push("ที่เก็บ");
 
-      const [updated] = await api.updateProduct(selectedProduct.id, productToDb(form));
-      setRawProducts(prev => prev.map(p => p.id === selectedProduct.id ? dbToProduct(updated) : p));
-
-      // บันทึก log เมื่อมีการเปลี่ยนแปลงจริง
-      if (changes.length) {
-        try {
-          const tx = await logAdjustTx({
-            productId: selectedProduct.id,
-            delta,
-            note: `แก้ไขสินค้า: ${changes.join(", ")}`,
-            by: form.editBy || "แก้ไขในระบบ",
-          });
-          if (tx) setTransactions(prev => [dbToTx(tx), ...prev]);
-        } catch (logErr) { console.warn("บันทึก log การแก้ไขไม่สำเร็จ:", logErr); }
-      }
+      const { quantity: _q, ...otherFields } = productToDb(form);
+      const res = await commitStockChange({
+        productId: selectedProduct.id,
+        extraPatch: otherFields,
+        // ยอดใน DB ต้องยังเป็นยอดที่ตรวจไว้ตอนกดบันทึก (ระหว่างรอใส่รหัสผู้จัดการอาจมีคนทำรายการแทรก)
+        next: (live) => { if (live !== oldQ) { const err = new Error("stale"); err.staleLive = live; throw err; } return newQ; },
+        makeTx: () => changes.length ? { type: "adjust", quantity: delta, note: `แก้ไขสินค้า: ${changes.join(", ")}`, by: form.editBy || "แก้ไขในระบบ" } : null,
+      });
+      setRawProducts(prev => prev.map(p => p.id === selectedProduct.id ? dbToProduct(res.product) : p));
+      pushTxs(res.txs);
 
       setShowModal(null); setForm({}); setSelectedProduct(null);
-      showToast("แก้ไขสินค้าสำเร็จ");
-    } catch (e) { showToast(e.message, "error"); }
+      showToast(res.gap ? gapWarning(before.name, res.gap) : "แก้ไขสินค้าสำเร็จ", res.gap ? "error" : "success");
+    } catch (e) {
+      if (e.staleLive != null) applyEditStale(e.staleLive, Number(selectedProduct.quantity) || 0);
+      else showToast(e.message, "error");
+    }
     setSaving(false);
   };
 
@@ -5084,15 +5160,20 @@ export default function WarehouseApp() {
     }
     setSaving(true);
     try {
-      const newQty = txType === "in" ? product.quantity + qty : product.quantity - qty;
       // ไม่แตะยอด "รอเข้า" ที่นี่ — ยอดจริงอยู่ที่ระบบใบสั่ง จะลดลงเมื่อพนักงานติ๊กรับในหน้าสินค้ารอสั่ง
-      await api.updateProduct(pid, { quantity: newQty });
-      const [newTx] = await api.addTransaction({ type: txType, product_id: pid, quantity: qty, date: new Date().toISOString().split("T")[0], note: txForm.note || null, by: txForm.by });
-      setRawProducts(prev => prev.map(p => p.id === pid ? { ...p, quantity: newQty } : p));
-      setTransactions(prev => [dbToTx(newTx), ...prev]);
+      const res = await commitStockChange({
+        productId: pid,
+        next: (live) => {
+          if (txType === "out" && qty > live) throw new Error(`เบิกออกไม่ได้ — สต็อกคงเหลือจริงตอนนี้มีแค่ ${live} ${product.unit}`);
+          return txType === "in" ? live + qty : live - qty;
+        },
+        makeTx: () => ({ type: txType, quantity: qty, note: txForm.note || null, by: txForm.by }),
+      });
+      setRawProducts(prev => prev.map(p => p.id === pid ? { ...p, quantity: res.newQty } : p));
+      pushTxs(res.txs);
       setTxForm({ productId: "", quantity: "", note: "", by: "" });
       setShowModal(null);
-      showToast(txType === "in" ? "รับสินค้าเข้าคลังสำเร็จ" : "เบิกสินค้าออกสำเร็จ");
+      showToast(res.gap ? gapWarning(product.name, res.gap) : (txType === "in" ? "รับสินค้าเข้าคลังสำเร็จ" : "เบิกสินค้าออกสำเร็จ"), res.gap ? "error" : "success");
     } catch (e) { showToast(e.message, "error"); }
     setSaving(false);
   };
@@ -5148,33 +5229,28 @@ export default function WarehouseApp() {
     if (!returnBatchBy.trim()) return showToast("กรุณากรอกชื่อผู้ดำเนินการ", "error");
     setSavingReturnBatch(true);
     try {
-      const today = new Date().toISOString().split("T")[0];
-      const updatedProducts = [...rawProducts];
-      const newTxList = [];
+      const allTxs = [];
+      const newQtyById = new Map();
+      const gapNames = [];
       for (const item of validItems) {
-        const idx = updatedProducts.findIndex(p => p.id === item.productId);
-        if (idx === -1) continue;
-        const newQty = updatedProducts[idx].quantity + item.quantity;
-        // 1. เพิ่มยอดสต็อกเข้าคลังอัตโนมัติ
-        await api.updateProduct(item.productId, { quantity: newQty });
-        updatedProducts[idx] = { ...updatedProducts[idx], quantity: newQty };
-        // 2. บันทึกรายการเคลื่อนไหว — ใส่หมายเหตุ "ตีกลับ" อัตโนมัติเฉพาะตอนติ๊กตัวเลือกไว้
-        const [newTx] = await api.addTransaction({
-          type: "in",
-          product_id: item.productId,
-          quantity: item.quantity,
-          date: today,
-          note: "ตีกลับ", // บังคับเป็น "ตีกลับ" เสมอ — ปุ่มนี้ย้ายมาไว้เฉพาะหน้า "พัสดุตีกลับ" แล้ว ไม่ใช่ตัวรับเข้าสต็อกทั่วไปอีกต่อไป
-          by: returnBatchBy.trim(),
+        const res = await commitStockChange({
+          productId: item.productId,
+          next: (live) => live + item.quantity,
+          // บังคับหมายเหตุ "ตีกลับ" เสมอ — ปุ่มนี้อยู่เฉพาะหน้า "พัสดุตีกลับ" ไม่ใช่ตัวรับเข้าสต็อกทั่วไป
+          makeTx: () => ({ type: "in", quantity: item.quantity, note: "ตีกลับ", by: returnBatchBy.trim() }),
         });
-        newTxList.push(dbToTx(newTx));
+        newQtyById.set(item.productId, res.newQty);
+        allTxs.push(...res.txs);
+        if (res.gap) gapNames.push(item.name);
       }
-      setRawProducts(updatedProducts);
-      setTransactions(prev => [...newTxList, ...prev]);
+      setRawProducts(prev => prev.map(p => newQtyById.has(p.id) ? { ...p, quantity: newQtyById.get(p.id) } : p));
+      pushTxs(allTxs);
       setShowReturnBatchModal(false);
       setReturnBatchItems([]);
       setReturnBatchBy("");
-      showToast(`รับเข้าตีกลับสำเร็จ ${validItems.length} รายการ — เพิ่มสต็อกเรียบร้อย`);
+      showToast(gapNames.length
+        ? `รับเข้าตีกลับแล้ว — ⚠️ พบยอดเปลี่ยนโดยไม่มีบันทึกที่: ${gapNames.join(", ")}`
+        : `รับเข้าตีกลับสำเร็จ ${validItems.length} รายการ — เพิ่มสต็อกเรียบร้อย`, gapNames.length ? "error" : "success");
     } catch (e) { showToast(e.message, "error"); }
     setSavingReturnBatch(false);
   };
@@ -5217,32 +5293,35 @@ export default function WarehouseApp() {
     if (!outBatchBy.trim()) return showToast("กรุณากรอกชื่อผู้ดำเนินการ", "error");
     setSavingOutBatch(true);
     try {
-      const today = new Date().toISOString().split("T")[0];
-      const updatedProducts = [...rawProducts];
-      const newTxList = [];
+      const allTxs = [];
+      const newQtyById = new Map();
+      const gapNames = [];
+      const skipped = [];
       for (const item of validItems) {
-        const idx = updatedProducts.findIndex(p => p.id === item.productId);
-        if (idx === -1) continue;
-        const newQty = updatedProducts[idx].quantity - item.quantity;
-        if (newQty < 0) continue; // กันสต็อกติดลบ
-        await api.updateProduct(item.productId, { quantity: newQty });
-        updatedProducts[idx] = { ...updatedProducts[idx], quantity: newQty };
-        const [newTx] = await api.addTransaction({
-          type: "out",
-          product_id: item.productId,
-          quantity: item.quantity,
-          date: today,
-          note: null,
-          by: outBatchBy.trim(),
-        });
-        newTxList.push(dbToTx(newTx));
+        try {
+          const res = await commitStockChange({
+            productId: item.productId,
+            next: (live) => { if (live - item.quantity < 0) throw Object.assign(new Error("short"), { short: live }); return live - item.quantity; }, // กันสต็อกติดลบ (เช็คกับยอดสด)
+            makeTx: () => ({ type: "out", quantity: item.quantity, note: null, by: outBatchBy.trim() }),
+          });
+          newQtyById.set(item.productId, res.newQty);
+          allTxs.push(...res.txs);
+          if (res.gap) gapNames.push(item.name);
+        } catch (err) {
+          if (err.short == null) throw err;
+          skipped.push(`${item.name} (เหลือจริง ${err.short})`);
+        }
       }
-      setRawProducts(updatedProducts);
-      setTransactions(prev => [...newTxList, ...prev]);
+      setRawProducts(prev => prev.map(p => newQtyById.has(p.id) ? { ...p, quantity: newQtyById.get(p.id) } : p));
+      pushTxs(allTxs);
       setShowOutBatchModal(false);
       setOutBatchItems([]);
       setOutBatchBy("");
-      showToast(`เบิกออกสำเร็จ ${validItems.length} รายการ — ตัดสต็อกเรียบร้อย`);
+      const warn = [
+        skipped.length ? `ข้าม ${skipped.length} รายการเพราะสต็อกไม่พอ: ${skipped.join(", ")}` : "",
+        gapNames.length ? `⚠️ พบยอดเปลี่ยนโดยไม่มีบันทึกที่: ${gapNames.join(", ")}` : "",
+      ].filter(Boolean).join(" · ");
+      showToast(warn ? `เบิกออก ${newQtyById.size} รายการ — ${warn}` : `เบิกออกสำเร็จ ${validItems.length} รายการ — ตัดสต็อกเรียบร้อย`, warn ? "error" : "success");
     } catch (e) { showToast(e.message, "error"); }
     setSavingOutBatch(false);
   };
@@ -5294,19 +5373,19 @@ export default function WarehouseApp() {
         [""],
         [
           { v: "ประเภท", s: HEADER }, { v: "SKU", s: HEADER }, { v: "สินค้า", s: HEADER },
-          { v: "จำนวน", s: HEADER }, { v: "หน่วย", s: HEADER }, { v: "วันที่", s: HEADER }, { v: "ผู้ทำรายการ", s: HEADER }, { v: "หมายเหตุ", s: HEADER },
+          { v: "จำนวน", s: HEADER }, { v: "หน่วย", s: HEADER }, { v: "วันที่", s: HEADER }, { v: "ผู้ทำรายการ", s: HEADER }, { v: "หมายเหตุ", s: HEADER }, { v: "คงเหลือหลังรายการ", s: HEADER },
         ],
         ...filteredTx.map(tx => {
           const p = products.find(x => x.id === tx.productId);
           const v = txView(tx, productUnit(tx.productId));
           const signedQty = tx.type === "out" ? -tx.quantity : tx.quantity; // "in"/"adjust" เก็บค่าที่มีเครื่องหมายอยู่แล้ว, "out" เก็บเป็นค่าบวกจึงต้องใส่ลบเพื่อให้ sum ได้ถูกต้อง
-          return [v.label, p?.sku || "-", productName(tx.productId), { v: signedQty }, productUnit(tx.productId), tx.date, tx.by || "-", tx.note || "-"];
+          return [v.label, p?.sku || "-", productName(tx.productId), { v: signedQty }, productUnit(tx.productId), tx.date, tx.by || "-", tx.note || "-", tx.balanceAfter ?? "-"];
         }),
         [""],
         [{ v: "รวม", s: { font: { bold: true } } }, "", "",
          { v: filteredTx.reduce((s, tx) => s + (tx.type === "out" ? -tx.quantity : tx.quantity), 0), s: { font: { bold: true } } }],
       ]);
-      ws["!cols"] = [{ wch: 14 }, { wch: 14 }, { wch: 30 }, { wch: 10 }, { wch: 8 }, { wch: 12 }, { wch: 14 }, { wch: 30 }];
+      ws["!cols"] = [{ wch: 14 }, { wch: 14 }, { wch: 30 }, { wch: 10 }, { wch: 8 }, { wch: 12 }, { wch: 14 }, { wch: 30 }, { wch: 14 }];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "รายการเคลื่อนไหว");
       const suffix = txDateFilter.mode === "all" ? "" : `_${txDateFilter.rangeFrom || ""}_${txDateFilter.rangeTo || ""}`;
@@ -5330,21 +5409,24 @@ export default function WarehouseApp() {
     if (!confirm(`ยืนยันปรับสต็อก ${stockCheckDiffs.length} รายการให้ตรงกับที่นับจริง?`)) return;
     setSavingStockCheck(true);
     try {
-      const newTxs = [];
+      const allTxs = [];
+      const gapNames = [];
       for (const d of stockCheckDiffs) {
-        await api.updateProduct(d.prod.id, { quantity: d.counted });
-        const tx = await logAdjustTx({
+        const res = await commitStockChange({
           productId: d.prod.id,
-          delta: d.delta,
-          note: `เช็คสต็อก: ระบบ ${d.prod.quantity} → นับจริง ${d.counted}`,
-          by: checkerName || "ตรวจนับ",
+          next: () => d.counted,
+          // "ระบบ X" ใช้ยอดสดจาก DB ตอนกดยืนยัน ไม่ใช่เลขที่ค้างบนจอตอนเริ่มนับ
+          makeTx: (live, counted) => live === counted ? null : { type: "adjust", quantity: counted - live, note: `เช็คสต็อก: ระบบ ${live} → นับจริง ${counted}`, by: checkerName || "ตรวจนับ" },
         });
-        if (tx) newTxs.push(dbToTx(tx));
-        setRawProducts(prev => prev.map(p => p.id === d.prod.id ? { ...p, quantity: d.counted } : p));
+        allTxs.push(...res.txs);
+        if (res.gap) gapNames.push(d.prod.name);
+        setRawProducts(prev => prev.map(p => p.id === d.prod.id ? { ...p, quantity: res.newQty } : p));
       }
-      setTransactions(prev => [...newTxs.reverse(), ...prev]);
+      pushTxs(allTxs);
       setStockCounts({}); setCheckerName(""); setStockCheckMode(false);
-      showToast(`ปรับสต็อก ${stockCheckDiffs.length} รายการสำเร็จ`);
+      showToast(gapNames.length
+        ? `ปรับสต็อก ${stockCheckDiffs.length} รายการแล้ว — ⚠️ พบยอดเปลี่ยนโดยไม่มีบันทึกที่: ${gapNames.join(", ")}`
+        : `ปรับสต็อก ${stockCheckDiffs.length} รายการสำเร็จ`, gapNames.length ? "error" : "success");
     } catch (e) { showToast(e.message, "error"); }
     setSavingStockCheck(false);
   };
@@ -6643,24 +6725,28 @@ export default function WarehouseApp() {
               <div style={{ color: "#9CA3AF", fontSize: 13, textAlign: "center", padding: 24 }}>ยังไม่มีประวัติการเคลื่อนไหว</div>
             )}
             {(() => {
-              // transactions มาเรียง created_at.desc อยู่แล้ว (ใหม่สุดก่อน) — ไล่ย้อนคำนวณสต็อกก่อน/หลังแต่ละรายการจากยอดคงเหลือปัจจุบัน
-              const txs = transactions.filter(tx => tx.productId === historyProduct.id);
+              // ใหม่สุดก่อน — รายการที่มี balance_after ใช้ยอดที่บันทึกไว้จริงตอนเกิดรายการ
+              // รายการเก่าก่อนมีคอลัมน์นี้ไม่มียอดจริงเก็บไว้ → ไล่ย้อนคำนวณจากรายการถัดไปแทน (ขึ้น "≈" กำกับว่าเป็นค่าประมาณ)
+              const txs = [...transactions.filter(tx => tx.productId === historyProduct.id)].sort((a, b) => b.id - a.id);
               let running = historyProduct.quantity;
               const withBalance = txs.map(tx => {
                 const delta = tx.type === "out" ? -tx.quantity : tx.quantity;
-                const after = running;
+                const recorded = tx.balanceAfter != null;
+                const after = recorded ? tx.balanceAfter : running;
                 const before = after - delta;
                 running = before;
-                return { tx, before, after };
+                return { tx, before, after, recorded };
               });
-              return withBalance.map(({ tx, before, after }) => (
-                <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #F3F4F6", fontSize: 13 }}>
+              return withBalance.map(({ tx, before, after, recorded }) => (
+                <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 6px", borderBottom: "1px solid #F3F4F6", fontSize: 13, ...(tx.by === GAP_BY ? { background: "#FEF2F2", borderRadius: 8 } : {}) }}>
                   <div>
-                    <div style={{ color: "#111827" }}>{tx.type === "in" ? "📥 รับเข้า" : tx.type === "adjust" ? "⚖️ ปรับสต็อก" : "📤 เบิกออก"}{tx.note ? ` · ${tx.note}` : ""}</div>
+                    <div style={{ color: tx.by === GAP_BY ? "#B91C1C" : "#111827", fontWeight: tx.by === GAP_BY ? 700 : 400 }}>{tx.type === "in" ? "📥 รับเข้า" : tx.type === "adjust" ? "⚖️ ปรับสต็อก" : "📤 เบิกออก"}{tx.note ? ` · ${tx.note}` : ""}</div>
                     <div style={{ fontSize: 11, color: "#9CA3AF" }}>
                       {tx.createdAt ? new Date(tx.createdAt).toLocaleString("th-TH", { dateStyle: "medium", timeStyle: "short" }) : tx.date} · โดย {tx.by || "-"}
                     </div>
-                    <div style={{ fontSize: 11, color: "#9CA3AF" }}>คงเหลือ {before} → {after} {historyProduct.unit}</div>
+                    <div style={{ fontSize: 11, color: "#9CA3AF" }} title={recorded ? "ยอดคงเหลือที่บันทึกไว้จริงตอนทำรายการ" : "รายการเก่า ไม่มียอดจริงบันทึกไว้ — คำนวณย้อนจากรายการถัดไป"}>
+                      คงเหลือ {recorded ? "" : "≈ "}{before} → {after} {historyProduct.unit}
+                    </div>
                   </div>
                   <span style={{ fontWeight: 700, color: txView(tx).color }}>{txView(tx).amount.trim()}</span>
                 </div>
