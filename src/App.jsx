@@ -3109,7 +3109,8 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
 // ═══════════ วางรายการจาก MyOrder — parser เดียวกับเครื่องมือ backlog-check (แยกเก็บ scanDate + วันที่สั่งซื้อจริงต่อรายการ) ═══════════
 function parseBacklogPaste(text) {
   const pad2n = (n) => String(n).padStart(2, "0");
-  const lines = String(text || "").split(/\r?\n/).map(s => s.replace(/^[\s•\-–·📦🚚💳💵📄🗓️*]+/, "").trim()).filter(Boolean);
+  // วางหลายชุดต่อกัน บรรทัดสุดท้ายของชุดก่อนมักติดกับ "วันที่สแกน:" ของชุดถัดไป (ไม่มีขึ้นบรรทัดใหม่) — แยกออกก่อน ไม่งั้นรายการนั้นหายไปทั้งบรรทัด
+  const lines = String(text || "").replace(/([^\n])(วันที่สแกน)/g, "$1\n$2").split(/\r?\n/).map(s => s.replace(/^[\s•\-–·📦🚚💳💵📄🗓️*]+/, "").trim()).filter(Boolean);
   const map = new Map(); // name -> { qty, orderDate:'YYYY-MM-DD'|null }
   let pending = null, scanDate = null;
   const isNoise = (l) => /ออเดอร์|บาท|รวม\s*\d|ทั้งหมด|COD|Bank|โอนเงิน|การชำระ|ขนส่ง|นับจาก|วันที่สแกน/i.test(l);
