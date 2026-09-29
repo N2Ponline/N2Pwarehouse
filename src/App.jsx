@@ -3395,6 +3395,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
   const savedItemsAll = saved?.items || [];
   const savedOver = useMemo(() => savedItemsAll.filter(it => it.matched && Number(it.stock) > 0), [saved]);
   const savedShort = useMemo(() => savedItemsAll.filter(it => Number(it.myQty) > Number(it.stock || 0)), [saved]);
+  const savedLack = useMemo(() => savedItemsAll.filter(it => (Number(it.myQty) || 0) > (Number(it.stock) || 0) + (Number(it.incQty) || 0)), [saved]);
   const toggleSavedSort = (col) => { if (savedSortCol === col) setSavedSortDir(d => d === "asc" ? "desc" : "asc"); else { setSavedSortCol(col); setSavedSortDir(col === "name" ? "asc" : "desc"); } };
   const savedArrow = (col) => savedSortCol === col ? (savedSortDir === "asc" ? " ▲" : " ▼") : "";
   // อายุสด ณ วันนี้ (ไม่ใช้ it.age ที่ค้างมาจากตอนกด "เทียบข้อมูล" ครั้งล่าสุด) ให้ตรงกับตัวเลขที่แสดงในตารางเป๊ะเวลาเรียงคอลัมน์ "ค้างมา"
@@ -3592,6 +3593,12 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
               ))}
             </div>
             <input className="inp" value={savedSearch} onChange={e => setSavedSearch(e.target.value)} placeholder="🔍 กรองชื่อสินค้า..." style={{ maxWidth: 220, padding: "8px 12px" }} />
+            {savedLack.length > 0 && (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, color: "#9F1239", background: "#FFE4E6", border: "1px solid #FDA4AF", borderRadius: 10, padding: "6px 10px" }}>
+                <span style={{ width: 10, height: 10, borderRadius: 3, background: "#E11D48" }} />
+                แถวสีแดง = ค้างส่งมากกว่าสต็อก+รอเข้า ({savedLack.length} รายการ)
+              </span>
+            )}
           </div>
           {selectedIds.size > 0 && (
             <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 12, padding: "8px 14px", marginBottom: 10 }}>
@@ -3618,23 +3625,29 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
                 {savedShown.length === 0 && (
                   <tr><td colSpan={9} style={{ textAlign: "center", padding: 24, color: "#9CA3AF", background: "#FAFBFC" }}>ไม่มีรายการในกลุ่มนี้</td></tr>
                 )}
-                {savedShown.map((it, i) => (
+                {savedShown.map((it, i) => {
+                  // ไฮไลท์แถวที่ค้างส่งมากกว่า สต็อกคงเหลือ + สินค้ารอเข้า รวมกัน (ของที่มี+ที่กำลังมา ยังไม่พอส่ง) — ยอดที่ไม่มีข้อมูล (—) นับเป็น 0
+                  const lackQty = (Number(it.myQty) || 0) - (Number(it.stock) || 0) - (Number(it.incQty) || 0);
+                  const lack = lackQty > 0;
+                  const cellBg = selectedIds.has(it.id) ? "#FEF2F2" : lack ? "#FFE4E6" : "#FAFBFC";
+                  return (
                   <tr key={it.id} style={{ background: selectedIds.has(it.id) ? "#FEF2F2" : undefined }}>
-                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC", borderRadius: "12px 0 0 12px" }}>
+                    <td style={{ padding: 10, textAlign: "center", background: cellBg, borderRadius: "12px 0 0 12px", boxShadow: lack ? "inset 4px 0 0 #E11D48" : undefined }}>
                       <input type="checkbox" checked={selectedIds.has(it.id)} onChange={() => toggleSelect(it.id)} style={{ cursor: "pointer" }} />
                     </td>
-                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC" }}>
+                    <td style={{ padding: 10, textAlign: "center", background: cellBg }}>
                       <div style={{ width: 30, height: 30, borderRadius: "50%", background: "#3B82F6", color: "#fff", fontWeight: 800, fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto" }}>{i + 1}</div>
                     </td>
-                    <td style={{ padding: 10, background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC", textAlign: "left" }}>
+                    <td style={{ padding: 10, background: cellBg, textAlign: "left" }}>
                       <b style={{ fontSize: 13.5 }}>{it.name}</b>
                       {it.matched
                         ? <span style={{ display: "block", fontFamily: "monospace", color: "#6B7280", fontSize: 11.5 }}>{it.sku || ""}</span>
                         : <span style={{ display: "inline-block", marginTop: 2, fontSize: 10.5, padding: "2px 8px", borderRadius: 99, background: "#FFFBEB", color: "#B45309", fontWeight: 700 }}>ไม่พบใน StockMaster</span>}
+                      {lack && <span style={{ display: "inline-block", marginTop: 3, fontSize: 10.5, padding: "2px 8px", borderRadius: 99, background: "#E11D48", color: "#fff", fontWeight: 700 }}>⚠️ ขาดอีก {lackQty.toLocaleString("th-TH")} ชิ้น (สต็อก+รอเข้าไม่พอ)</span>}
                     </td>
-                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC" }}>{numChip(it.myQty, "#FEE2E2", "#DC2626")}</td>
-                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC" }}>{numChip(it.stock, "#FEF3C7", "#B45309")}</td>
-                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC" }}>
+                    <td style={{ padding: 10, textAlign: "center", background: cellBg }}>{numChip(it.myQty, "#FEE2E2", "#DC2626")}</td>
+                    <td style={{ padding: 10, textAlign: "center", background: cellBg }}>{numChip(it.stock, "#FEF3C7", "#B45309")}</td>
+                    <td style={{ padding: 10, textAlign: "center", background: cellBg }}>
                       {it.matched ? numChip(it.incQty, "#D1FAE5", "#047857") : (
                         <button onClick={() => editIncQty(it)} title="กรอกจำนวนรอเข้าเอง (ไม่มี SKU ให้ดึงยอดจริงอัตโนมัติ)"
                           style={{ display: "inline-block", borderRadius: 10, padding: "6px 14px", fontWeight: 800, fontSize: 15, fontFamily: "monospace", cursor: "pointer", background: it.incQty != null ? "#D1FAE5" : "#F1F5F9", color: it.incQty != null ? "#047857" : "#94A3B8", border: "1.5px dashed " + (it.incQty != null ? "#6EE7B7" : "#CBD5E1") }}>
@@ -3642,7 +3655,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
                         </button>
                       )}
                     </td>
-                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC" }}>
+                    <td style={{ padding: 10, textAlign: "center", background: cellBg }}>
                       {it.firstSeen == null ? <span style={{ color: "#9CA3AF", fontSize: 11.5 }}>— (บันทึกก่อนหน้า)</span> : (
                         <span title={`สั่งซื้อวันที่ ${it.firstSeen}${it.dateIsReal ? " (วันที่สั่งซื้อจริง)" : " (ประมาณจากวันที่สแกน)"}`}
                           style={{ display: "inline-flex", alignItems: "center", gap: 3, background: backlogAgeBg(liveAgeOf(it)), color: backlogAgeTone(liveAgeOf(it)), borderRadius: 99, padding: "3px 9px", fontWeight: 800, fontSize: 12, fontFamily: "monospace" }}>
@@ -3650,10 +3663,10 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
                         </span>
                       )}
                     </td>
-                    <td style={{ padding: 10, textAlign: "left", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC", fontSize: 12, color: "#111827", maxWidth: 160 }}>
+                    <td style={{ padding: 10, textAlign: "left", background: cellBg, fontSize: 12, color: "#111827", maxWidth: 160 }}>
                       {it.itemNote ? it.itemNote : <span style={{ color: "#9CA3AF" }}>—</span>}
                     </td>
-                    <td style={{ padding: 10, textAlign: "center", background: selectedIds.has(it.id) ? "#FEF2F2" : "#FAFBFC", borderRadius: "0 12px 12px 0" }}>
+                    <td style={{ padding: 10, textAlign: "center", background: cellBg, borderRadius: "0 12px 12px 0" }}>
                       <div style={{ display: "flex", gap: 4, justifyContent: "center" }}>
                         {it.matched && onViewHistory && (
                           <button onClick={() => onViewHistory(byId.get(String(it.id)))} title="ดูรายการเคลื่อนไหว" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>🕘</button>
@@ -3664,7 +3677,8 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
