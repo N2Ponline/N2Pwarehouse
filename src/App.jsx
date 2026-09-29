@@ -3113,10 +3113,14 @@ function parseBacklogPaste(text) {
   const lines = String(text || "").replace(/([^\n])(วันที่สแกน)/g, "$1\n$2").split(/\r?\n/).map(s => s.replace(/^[\s•\-–·📦🚚💳💵📄🗓️*]+/, "").trim()).filter(Boolean);
   const map = new Map(); // name -> { qty, orderDate:'YYYY-MM-DD'|null }
   let pending = null, scanDate = null;
+  // ยอดรวมแยกต่อชุดที่วาง (แต่ละชุดขึ้นต้นด้วย "วันที่สแกน") — ไว้เทียบกับตัวเลขใน popup ของ extension ว่าวางครบทุกชุด/ทุกบรรทัดไหม
+  const blocks = [];
   const isNoise = (l) => /ออเดอร์|บาท|รวม\s*\d|ทั้งหมด|COD|Bank|โอนเงิน|การชำระ|ขนส่ง|นับจาก|วันที่สแกน/i.test(l);
   const add = (name, qty, orderDate) => {
     name = name.replace(/\s+/g, " ").trim(); if (!name || !(qty > 0)) return;
     const cur = map.get(name) || { qty: 0, orderDate: null };
+    const blk = blocks[blocks.length - 1];
+    if (blk) { blk.gotPieces += qty; blk.gotLines += 1; }
     cur.qty += qty;
     if (orderDate && (!cur.orderDate || orderDate < cur.orderDate)) cur.orderDate = orderDate;
     map.set(name, cur);
@@ -3124,7 +3128,10 @@ function parseBacklogPaste(text) {
   for (const l of lines) {
     let m;
     if ((m = l.match(/วันที่สแกน\s*[:：]?\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/))) {
-      const [, dd, mm, yyyy] = m; scanDate = `${yyyy}-${pad2n(mm)}-${pad2n(dd)}`; pending = null; continue;
+      const [, dd, mm, yyyy] = m; scanDate = `${yyyy}-${pad2n(mm)}-${pad2n(dd)}`; pending = null;
+      const time = (l.match(/\d{1,2}\/\d{1,2}\/\d{4}\s+(\d{1,2}:\d{2})/) || [])[1] || "";
+      blocks.push({ time, gotPieces: 0, gotLines: 0 });
+      continue;
     }
     if ((m = l.match(/^(.+?)\t\s*([\d,]+)\s*ชิ้น\s*\t\s*(\d{1,2})\/(\d{1,2})\/(\d{4})\s*$/))) {
       const orderDate = `${m[5]}-${pad2n(m[4])}-${pad2n(m[3])}`; add(m[1], parseInt(m[2].replace(/,/g, ""), 10), orderDate); pending = null; continue;
@@ -3135,7 +3142,7 @@ function parseBacklogPaste(text) {
     if (isNoise(l) || /^[\d,.\s]+$/.test(l)) { pending = null; continue; }
     pending = l;
   }
-  return { items: [...map.entries()].map(([name, v]) => ({ name, qty: v.qty, orderDate: v.orderDate })), scanDate };
+  return { items: [...map.entries()].map(([name, v]) => ({ name, qty: v.qty, orderDate: v.orderDate })), scanDate, blocks };
 }
 
 // การจับคู่เอง + ประวัติ "ค้างมากี่วัน" — เก็บ localStorage ของเครื่อง/เบราว์เซอร์นี้เท่านั้น (เป็นแค่ตัวช่วยเดา ไม่ใช่ข้อมูลที่ต้องแชร์กันทุกคน)
@@ -3151,6 +3158,7 @@ const backlogAgeBg = (age) => age >= 14 ? "#FEE2E2" : age >= 5 ? "#FEF3C7" : "#F
 function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, onSetAlias }) {
   const [paste, setPaste] = useState("");
   const [parseInfo, setParseInfo] = useState("");
+  const [pasteBlocks, setPasteBlocks] = useState([]); // ยอดรวมต่อชุดที่วาง — ไว้เทียบกับ popup ของ extension ว่าวางครบ
   const [aliases, setAliases] = useState(null); // Map(myorder_name -> components[]) | null ระหว่างโหลด
   const [rows, setRows] = useState(null); // null = ยังไม่เคยกดเทียบรอบนี้ — ทุกแถวที่จับคู่ได้ (my>0) ไม่ว่าสต็อกจะเหลือหรือไม่
   const [unmatched, setUnmatched] = useState([]);
@@ -3184,7 +3192,8 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
 
   const doCompare = () => {
     if (!aliases) return;
-    const { items, scanDate: pasteScanDate } = parseBacklogPaste(paste);
+    const { items, scanDate: pasteScanDate, blocks } = parseBacklogPaste(paste);
+    setPasteBlocks(blocks);
     const scanDate = pasteScanDate || todayStr();
     setParseInfo(items.length ? `อ่านได้ ${items.length} ชื่อ รวม ${items.reduce((s, i) => s + i.qty, 0).toLocaleString("th-TH")} ชิ้น` : "ยังอ่านชื่อสินค้าไม่ได้ — ตรวจว่าบรรทัดลงท้ายด้วย 'ชิ้น'");
     if (!items.length) { setRows(null); setUnmatched([]); return; }
@@ -3437,6 +3446,27 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
           )}
           <span style={{ fontSize: 12, color: "#6B7280" }}>{parseInfo}</span>
         </div>
+        {pasteBlocks.length > 0 && (
+          <div style={{ marginTop: 10, border: "1px solid #E5E7EB", background: "#F8FAFC", borderRadius: 12, padding: "10px 12px" }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800, color: "#111827", marginBottom: 2 }}>
+              🧮 ยอดรวมที่อ่านได้ — {pasteBlocks.length} ชุด · {pasteBlocks.reduce((t, b2) => t + b2.gotLines, 0).toLocaleString("th-TH")} รายการ · {pasteBlocks.reduce((t, b2) => t + b2.gotPieces, 0).toLocaleString("th-TH")} ชิ้น
+            </div>
+            <div style={{ fontSize: 11.5, color: "#6B7280", marginBottom: 6 }}>เทียบกับ popup ของ extension แต่ละชุด: "📦 สินค้า (รวม N ชิ้น)" และปุ่ม "คัดลอกรายการสินค้า (N รายการ)" — ตัวเลขตรงกันแปลว่าวางครบ</div>
+            <table style={{ fontSize: 12 }}>
+              <thead><tr><th>ชุดที่</th><th>เวลาสแกน</th><th>รายการ</th><th>ชิ้น</th></tr></thead>
+              <tbody>
+                {pasteBlocks.map((b2, i) => (
+                  <tr key={i}>
+                    <td>{i + 1}</td>
+                    <td>{b2.time || "—"}</td>
+                    <td style={{ fontFamily: "monospace" }}>{b2.gotLines.toLocaleString("th-TH")}</td>
+                    <td style={{ fontFamily: "monospace", fontWeight: 700 }}>{b2.gotPieces.toLocaleString("th-TH")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {rows != null && (
