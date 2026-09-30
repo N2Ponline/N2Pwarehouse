@@ -3158,7 +3158,7 @@ const backlogAgeBg = (age) => age >= 14 ? "#FEE2E2" : age >= 5 ? "#FEF3C7" : "#F
 // เก็บที่ตาราง backlog_notes แถวเดียว id=1 (jsonb) ให้ทุกคน/ทุกเครื่องเห็นตรงกัน (ต้องรัน backlog-notes-setup.sql ก่อนถึงจะใช้ได้)
 // บันทึกอัตโนมัติทุกครั้งที่กด "เทียบข้อมูลสินค้า" สำเร็จ (ไม่ต้องกดปุ่ม "บันทึก" แยกอีกต่อไป — ปุ่มยังอยู่ไว้กดบันทึกซ้ำเองได้เผื่อบันทึกอัตโนมัติล้มเหลว)
 // แก้ไข/ลบ/ใส่หมายเหตุทีละรายการได้โดยไม่กระทบวันที่บันทึกล่าสุด, การบันทึกซ้ำ (อัตโนมัติหรือกดเอง) จะไม่ทับหมายเหตุ/จำนวนรอเข้าที่กรอกเองไว้ (merge จาก saved.items เดิมเสมอ)
-function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, onSetAlias }) {
+function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, onSetAlias, incomingRows }) {
   const [paste, setPaste] = useState("");
   const [parseInfo, setParseInfo] = useState("");
   const [pasteBlocks, setPasteBlocks] = useState([]); // ยอดรวมต่อชุดที่วาง — ไว้เทียบกับ popup ของ extension ว่าวางครบ
@@ -3405,10 +3405,24 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
   )) : <span style={{ color: "#D1D5DB", fontSize: 11 }}>—</span>;
 
   // แท็บย่อยของ "ตารางบันทึก" ด้านล่าง — ของมีแต่ยังไม่ส่ง = มีสต็อก (ไม่ว่าจะพอส่งหรือไม่) · ค้างส่ง = ค้างจาก MyOrder มากกว่าสต็อกที่มี (รวมรายการจับคู่ไม่ได้ทั้งหมดด้วย เพราะไม่มีสต็อกอ้างอิง)
+  // "สินค้ารอเข้า" ในตารางบันทึก ใช้ยอดสดจากระบบใบสั่ง (n2p_backlog) เสมอ ไม่ใช้ตัวเลขที่ค้างไว้ตอนกดเทียบข้อมูล —
+  // จับคู่ได้ = ยอดรอเข้าของสินค้านั้น (qtyOnOrder) · จับคู่ไม่ได้ (ไม่มีในคลัง) = หาในระบบใบสั่งจากชื่อตรงกัน
+  // ไม่เจอในระบบใบสั่งเลยค่อยใช้ตัวเลขที่กรอกเอง (manual) แบบเดิม
+  const incByName = useMemo(() => {
+    const mp = new Map();
+    (incomingRows || []).forEach(r => { const k = normName(r.name); mp.set(k, (mp.get(k) || 0) + (Number(r.inTransit) || 0)); });
+    return mp;
+  }, [incomingRows]);
+  const incInfo = (it) => {
+    if (it.matched) { const p = byId.get(String(it.id)); return p ? { qty: Number(p.qtyOnOrder) || 0, src: "live" } : { qty: it.incQty, src: "saved" }; }
+    const k = normName(it.name);
+    if (incByName.has(k)) return { qty: incByName.get(k), src: "order" };
+    return { qty: it.incQty, src: "manual" };
+  };
   const savedItemsAll = saved?.items || [];
   const savedOver = useMemo(() => savedItemsAll.filter(it => it.matched && Number(it.stock) > 0), [saved]);
   const savedShort = useMemo(() => savedItemsAll.filter(it => Number(it.myQty) > Number(it.stock || 0)), [saved]);
-  const savedLack = useMemo(() => savedItemsAll.filter(it => (Number(it.myQty) || 0) > (Number(it.stock) || 0) + (Number(it.incQty) || 0)), [saved]);
+  const savedLack = useMemo(() => savedItemsAll.filter(it => (Number(it.myQty) || 0) > (Number(it.stock) || 0) + (Number(incInfo(it).qty) || 0)), [saved, incByName, byId]);
   const toggleSavedSort = (col) => { if (savedSortCol === col) setSavedSortDir(d => d === "asc" ? "desc" : "asc"); else { setSavedSortCol(col); setSavedSortDir(col === "name" ? "asc" : "desc"); } };
   const savedArrow = (col) => savedSortCol === col ? (savedSortDir === "asc" ? " ▲" : " ▼") : "";
   // อายุสด ณ วันนี้ (ไม่ใช้ it.age ที่ค้างมาจากตอนกด "เทียบข้อมูล" ครั้งล่าสุด) ให้ตรงกับตัวเลขที่แสดงในตารางเป๊ะเวลาเรียงคอลัมน์ "ค้างมา"
@@ -3423,10 +3437,12 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
         ? dir * a.name.localeCompare(b.name, "th")
         : savedSortCol === "age"
         ? ((liveAgeOf(a) - liveAgeOf(b)) * dir || a.name.localeCompare(b.name, "th"))
+        : savedSortCol === "incQty"
+        ? (((Number(incInfo(a).qty) || 0) - (Number(incInfo(b).qty) || 0)) * dir || a.name.localeCompare(b.name, "th"))
         : (((Number(a[savedSortCol]) || 0) - (Number(b[savedSortCol]) || 0)) * dir || a.name.localeCompare(b.name, "th")));
     }
     return base;
-  }, [saved, savedFilter, savedSearch, savedOver, savedShort, savedSortCol, savedSortDir]);
+  }, [saved, savedFilter, savedSearch, savedOver, savedShort, savedSortCol, savedSortDir, incByName, byId]);
 
   return (
     <div>
@@ -3661,7 +3677,8 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
                 )}
                 {savedShown.map((it, i) => {
                   // ไฮไลท์แถวที่ค้างส่งมากกว่า สต็อกคงเหลือ + สินค้ารอเข้า รวมกัน (ของที่มี+ที่กำลังมา ยังไม่พอส่ง) — ยอดที่ไม่มีข้อมูล (—) นับเป็น 0
-                  const lackQty = (Number(it.myQty) || 0) - (Number(it.stock) || 0) - (Number(it.incQty) || 0);
+                  const inc = incInfo(it);
+                  const lackQty = (Number(it.myQty) || 0) - (Number(it.stock) || 0) - (Number(inc.qty) || 0);
                   const lack = lackQty > 0;
                   const cellBg = selectedIds.has(it.id) ? "#FEF2F2" : lack ? "#FFE4E6" : "#FAFBFC";
                   return (
@@ -3682,7 +3699,12 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
                     <td style={{ padding: 10, textAlign: "center", background: cellBg }}>{numChip(it.myQty, "#FEE2E2", "#DC2626")}</td>
                     <td style={{ padding: 10, textAlign: "center", background: cellBg }}>{numChip(it.stock, "#FEF3C7", "#B45309")}</td>
                     <td style={{ padding: 10, textAlign: "center", background: cellBg }}>
-                      {it.matched ? numChip(it.incQty, "#D1FAE5", "#047857") : (
+                      {inc.src === "live" || inc.src === "saved" ? numChip(inc.qty, "#D1FAE5", "#047857") : inc.src === "order" ? (
+                        <span title="ไม่มีในคลัง StockMaster — ดึงยอดรอเข้าจากระบบใบสั่ง (ชื่อสินค้าตรงกัน)">
+                          {numChip(inc.qty, "#D1FAE5", "#047857")}
+                          <span style={{ display: "block", fontSize: 10, color: "#047857", marginTop: 2 }}>จากระบบใบสั่ง</span>
+                        </span>
+                      ) : (
                         <button onClick={() => editIncQty(it)} title="กรอกจำนวนรอเข้าเอง (ไม่มี SKU ให้ดึงยอดจริงอัตโนมัติ)"
                           style={{ display: "inline-block", borderRadius: 10, padding: "6px 14px", fontWeight: 800, fontSize: 15, fontFamily: "monospace", cursor: "pointer", background: it.incQty != null ? "#D1FAE5" : "#F1F5F9", color: it.incQty != null ? "#047857" : "#94A3B8", border: "1.5px dashed " + (it.incQty != null ? "#6EE7B7" : "#CBD5E1") }}>
                           {it.incQty != null ? Number(it.incQty).toLocaleString("th-TH") : "+ กรอก"}
@@ -5801,7 +5823,7 @@ export default function WarehouseApp() {
 
         {/* ─── บันทึกค้างส่ง — ย้ายออกมาเป็นแท็บหลัก ไม่ล็อกรหัสผู้จัดการอีกต่อไป ─── */}
         {tab === "backlog" && (
-          <BacklogNotesPanel products={products} showToast={showToast} onViewHistory={setHistoryProduct} incomingAlias={incomingAlias} onSetAlias={setAlias} />
+          <BacklogNotesPanel products={products} showToast={showToast} onViewHistory={setHistoryProduct} incomingAlias={incomingAlias} onSetAlias={setAlias} incomingRows={incoming.rows} />
         )}
 
         {/* ─── DASHBOARD ─── */}
