@@ -4195,7 +4195,8 @@ function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange
             const pendingItems = doc.items.filter(it => it.pendingQty > 0);
             const pendingCount = pendingItems.length;
             const unmatchedCount = pendingItems.filter(it => !it.productId).length;
-            const itemNames = pendingItems.map(it => it.name).join(", ");
+            const itemNames = pendingItems.map(it => `${it.name} ×${Number(it.pendingQty).toLocaleString("th-TH")}`).join(", ");
+            const pendingPieces = pendingItems.reduce((s, it) => s + (Number(it.pendingQty) || 0), 0);
             return (
               <div key={doc.docKey} onClick={() => openDocFor(doc)}
                 style={{ border: "1px solid #E5E7EB", borderRadius: 12, padding: "12px 14px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}
@@ -4209,7 +4210,7 @@ function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange
                   <div style={{ fontSize: 13, color: "#374151", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{itemNames}</div>
                   <div style={{ fontSize: 11.5, color: "#6B7280", marginTop: 2 }}>
                     {doc.channel ? `หมายเลขพัสดุ ${doc.channel} · ` : <span style={{ color: "#DC2626", fontWeight: 700 }}>กรุณาใส่หมายเลขพัสดุ · </span>}
-                    {pendingCount} รายการรอรับ{unmatchedCount > 0 ? ` · ⚠️ ${unmatchedCount} รายการยังไม่พบสินค้าที่ตรงกัน` : ""}
+                    {pendingCount} รายการรอรับ · รวม {pendingPieces.toLocaleString("th-TH")} ชิ้น{unmatchedCount > 0 ? ` · ⚠️ ${unmatchedCount} รายการยังไม่พบสินค้าที่ตรงกัน` : ""}
                   </div>
                 </div>
                 <span style={{ fontSize: 12, fontWeight: 700, color: "#7C3AED", flexShrink: 0 }}>เปิดดู →</span>
