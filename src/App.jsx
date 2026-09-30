@@ -94,6 +94,9 @@ const api = {
   // แก้ไข/ลบ/ใส่หมายเหตุทีละรายการ — ไม่แตะ saved_at (ไม่ใช่การบันทึกใหม่ แค่แก้ของเดิม)
   patchBacklogNoteItems: (items) => sb("backlog_notes?id=eq.1", { method: "PATCH", body: JSON.stringify({ items }) }),
   // โน้ตข้อความเดียวอยู่บนสุดของหน้า (ฝากถึงฝ่ายอื่น) แยกจากรายการสินค้า — ต้องรัน sql/backlog-notes-add-note-column.sql ก่อน
+  // ติ๊ก "กำลังจะเข้า" ในหน้ารับสินค้าเข้า — ยืมตาราง backlog_notes แถว id=2 เก็บเป็น jsonb [docKey,...] (ไม่ต้องสร้างตารางใหม่ ทุกเครื่องเห็นตรงกัน)
+  getArrivingFlags: () => sb("backlog_notes?id=eq.2&select=items").then(rows => (rows && rows[0] && Array.isArray(rows[0].items)) ? rows[0].items : []),
+  saveArrivingFlags: (items) => sb("backlog_notes?on_conflict=id", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ id: 2, items }) }),
   updateBacklogNote: (note) => sb("backlog_notes?id=eq.1", { method: "PATCH", body: JSON.stringify({ note }) }),
   // ── รับสินค้าเข้า (แทนใบพิมพ์กระดาษ) — ฝ่ายคลังบันทึกก่อน (pending) ผู้จัดการอนุมัติทีหลังถึงเข้าสต็อกจริง ต้องรัน receiving-logs-setup.sql ก่อน ──
   getReceivingLogs: () => sbAll("receiving_logs?select=*&order=created_at.desc"),
@@ -3994,6 +3997,25 @@ function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange
   const [by, setBy] = useState("");
   const [search, setSearch] = useState("");
   const [saving, setSaving] = useState(false);
+  const [arriving, setArriving] = useState(() => new Set()); // docKey ที่ติ๊กไว้ว่า "กำลังจะเข้า" — ไฮไลท์ + ดันขึ้นบนสุด
+
+  useEffect(() => { api.getArrivingFlags().then(items => setArriving(new Set(items))).catch(() => {}); }, []);
+  const toggleArriving = async (docKey) => {
+    const on = !arriving.has(docKey);
+    setArriving(prev => { const n = new Set(prev); on ? n.add(docKey) : n.delete(docKey); return n; });
+    try {
+      // ดึงล่าสุดก่อนเขียน กันทับที่คนอื่นเพิ่งติ๊ก + ล้าง key ของใบที่รับครบไปแล้ว (ไม่อยู่ในรายการรอรับ)
+      const latest = new Set(await api.getArrivingFlags());
+      on ? latest.add(docKey) : latest.delete(docKey);
+      const live = new Set(pendingDocs.map(d => d.docKey));
+      const next = [...latest].filter(k => live.has(k));
+      await api.saveArrivingFlags(next);
+      setArriving(new Set(next));
+    } catch (e) {
+      showToast("บันทึกการติ๊กไม่สำเร็จ: " + e.message, "error");
+      setArriving(prev => { const n = new Set(prev); on ? n.delete(docKey) : n.add(docKey); return n; });
+    }
+  };
 
   const load = async () => {
     setLoading(true);
@@ -4057,7 +4079,9 @@ function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange
   }, [orders, backlog, products, incomingAlias, receivingLogsAll]);
 
   const kw = search.trim().toLowerCase();
-  const shownDocs = kw ? pendingDocs.filter(d => (d.docNo || "").toLowerCase().includes(kw) || d.items.some(it => it.name.toLowerCase().includes(kw))) : pendingDocs;
+  const filteredDocs = kw ? pendingDocs.filter(d => (d.docNo || "").toLowerCase().includes(kw) || d.items.some(it => it.name.toLowerCase().includes(kw))) : pendingDocs;
+  const shownDocs = [...filteredDocs.filter(d => arriving.has(d.docKey)), ...filteredDocs.filter(d => !arriving.has(d.docKey))];
+  const arrivingCount = pendingDocs.filter(d => arriving.has(d.docKey)).length;
   const openDoc = pendingDocs.find(d => d.docKey === openDocId) || null;
   const myPending = receivingLogsAll.filter(r => r.status === "pending");
 
@@ -4188,7 +4212,11 @@ function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 14, marginBottom: 14 }}>
         <input className="inp" style={{ width: "100%", marginBottom: 12 }} placeholder="🔍 ค้นหาเลขที่ใบสั่งซื้อ / ชื่อสินค้า..."
           value={search} onChange={e => setSearch(e.target.value)} />
-        <div style={{ fontSize: 12, fontWeight: 700, color: "#6B7280", marginBottom: 6 }}>ใบสั่งซื้อที่ยังรอรับ ({shownDocs.length})</div>
+        <div style={{ fontSize: 12, fontWeight: 700, color: "#6B7280", marginBottom: 6 }}>
+          ใบสั่งซื้อที่ยังรอรับ ({shownDocs.length})
+          {arrivingCount > 0 && <span style={{ marginLeft: 8, color: "#A16207", background: "#FEF9C3", borderRadius: 999, padding: "1px 8px" }}>🚚 กำลังจะเข้า {arrivingCount} ใบ</span>}
+          <span style={{ marginLeft: 8, fontWeight: 400, color: "#9CA3AF" }}>ติ๊กช่องหน้าใบ = ของกำลังจะเข้า (ทุกเครื่องเห็นตรงกัน)</span>
+        </div>
         {shownDocs.length === 0 && <div style={{ textAlign: "center", padding: 24, color: "#9CA3AF", fontSize: 13 }}>{kw ? "ไม่พบใบสั่งซื้อที่ตรงกับคำค้นหา" : "ไม่มีใบสั่งซื้อที่รอรับ 🎉"}</div>}
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {shownDocs.map(doc => {
@@ -4197,14 +4225,21 @@ function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange
             const unmatchedCount = pendingItems.filter(it => !it.productId).length;
             const itemNames = pendingItems.map(it => `${it.name} ×${Number(it.pendingQty).toLocaleString("th-TH")}`).join(", ");
             const pendingPieces = pendingItems.reduce((s, it) => s + (Number(it.pendingQty) || 0), 0);
+            const isArriving = arriving.has(doc.docKey);
+            const baseBg = isArriving ? "#FEF9C3" : "transparent";
             return (
               <div key={doc.docKey} onClick={() => openDocFor(doc)}
-                style={{ border: "1px solid #E5E7EB", borderRadius: 12, padding: "12px 14px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}
-                onMouseEnter={e => e.currentTarget.style.background = "#F9FAFB"} onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                <div style={{ minWidth: 0 }}>
+                style={{ border: isArriving ? "1.5px solid #FACC15" : "1px solid #E5E7EB", borderLeft: isArriving ? "5px solid #EAB308" : "1px solid #E5E7EB", borderRadius: 12, padding: "12px 14px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, background: baseBg }}
+                onMouseEnter={e => e.currentTarget.style.background = isArriving ? "#FEF08A" : "#F9FAFB"} onMouseLeave={e => e.currentTarget.style.background = baseBg}>
+                <label onClick={e => e.stopPropagation()} title="ติ๊กไว้ = ของใบนี้กำลังจะเข้า"
+                  style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 32, height: 32, flexShrink: 0, cursor: "pointer" }}>
+                  <input type="checkbox" checked={isArriving} onChange={() => toggleArriving(doc.docKey)} style={{ width: 20, height: 20, cursor: "pointer", accentColor: "#CA8A04" }} />
+                </label>
+                <div style={{ minWidth: 0, flex: 1 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 14, fontWeight: 700, color: "#111827" }}>{doc.docNo || "⚠️ ไม่พบใบสั่งซื้ออ้างอิง"}</span>
                     {doc.docId != null && <span style={{ fontSize: 10.5, fontWeight: 700, color: "#7C3AED", background: "#F5F3FF", borderRadius: 999, padding: "1px 8px" }}>⚡ จากสินค้ารอสั่ง</span>}
+                    {isArriving && <span style={{ fontSize: 10.5, fontWeight: 800, color: "#fff", background: "#CA8A04", borderRadius: 999, padding: "1px 8px" }}>🚚 กำลังจะเข้า</span>}
                   </div>
                   <div style={{ fontSize: 11.5, color: "#9CA3AF", marginTop: 1 }}>{doc.supplier ? `#${doc.supplier} · ` : ""}{dateLabel(doc.orderDate)}</div>
                   <div style={{ fontSize: 13, color: "#374151", marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{itemNames}</div>
