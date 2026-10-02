@@ -4514,6 +4514,7 @@ export default function WarehouseApp() {
   const [dbError, setDbError] = useState(null);
   const [tab, setTab] = useState("dashboard");
   const [search, setSearch] = useState("");
+  const [searchTags, setSearchTags] = useState([]); // คีย์เวิร์ดที่กด Enter แล้ว — กรองซ้อนกันทุกคำ
   const [categoryFilter, setCategoryFilter] = useState("ทั้งหมด");
   const [statusFilter, setStatusFilter] = useState("ทั้งหมด");
   const [showModal, setShowModal] = useState(null);
@@ -4981,8 +4982,11 @@ export default function WarehouseApp() {
   const filteredProducts = useMemo(() => {
     const cutoff15 = new Date(); cutoff15.setDate(cutoff15.getDate() - 15);
     const recentIds15 = new Set(transactions.filter(tx => new Date(tx.date) >= cutoff15).map(tx => tx.productId));
+    // กรองซ้อน: คีย์เวิร์ดที่กด Enter แล้ว + คำที่กำลังพิมพ์ (คั่นด้วย + ได้) ต้องเจอครบทุกคำ ในชื่อหรือ SKU
+    const terms = [...searchTags, ...search.split("+")].map(t => t.trim().toLowerCase()).filter(Boolean);
     let arr = products.filter(p => {
-      const matchSearch = p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.toLowerCase().includes(search.toLowerCase());
+      const hay = (p.name + " " + p.sku).toLowerCase();
+      const matchSearch = terms.every(t => hay.includes(t));
       const matchStatus = (() => {
         if (statusFilter === "ทั้งหมด") return true;
         if (statusFilter === "ปกติ") return p.quantity > 0 && !(p.minStock > 0 && p.quantity <= p.minStock);
@@ -5003,7 +5007,7 @@ export default function WarehouseApp() {
     const pinned = arr.filter(p => pinnedIds.includes(String(p.id)));
     const rest   = arr.filter(p => !pinnedIds.includes(String(p.id)));
     return [...pinned, ...rest];
-  }, [products, search, statusFilter, sortCol, sortDir, pinnedIds, transactions]);
+  }, [products, search, searchTags, statusFilter, sortCol, sortDir, pinnedIds, transactions]);
 
   const lowStock = products.filter(p => p.minStock > 0 && p.quantity <= p.minStock);
   const totalValue = products.reduce((s, p) => s + Math.max(0, p.quantity) * p.price, 0);
@@ -5720,7 +5724,7 @@ export default function WarehouseApp() {
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Sarabun', sans-serif; }
     .inp { width: 100%; background: #F9FAFB; border: 1.5px solid #E5E7EB; border-radius: 10px; padding: 10px 14px; color: #111827; font-size: 14px; outline: none; font-family: 'Sarabun', sans-serif; }
-    .inp:focus { border-color: #7C3AED; }
+    .inp:focus, .inp:focus-within { border-color: #7C3AED; }
     table { width: 100%; border-collapse: collapse; font-family: 'Sarabun', sans-serif; }
     thead th { background: linear-gradient(135deg,#7C3AED,#3B82F6); color: rgba(255,255,255,0.88); font-size: 12px; font-weight: 600; text-align: left; padding: 10px 12px; white-space: nowrap; }
     tbody td { padding: 9px 12px; border-bottom: 1px solid #F3F4F6; font-size: 13px; color: #374151; vertical-align: middle; }
@@ -5992,8 +5996,28 @@ export default function WarehouseApp() {
             )}
 
             <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-              <input className="inp" style={{ flex: 1, minWidth: 220 }} placeholder="🔍 ค้นหาชื่อสินค้า / SKU..."
-                value={search} onChange={e => setSearch(e.target.value)} />
+              <div className="inp" style={{ flex: 1, minWidth: 220, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, padding: "6px 10px", cursor: "text" }}
+                onClick={e => e.currentTarget.querySelector("input")?.focus()}>
+                {searchTags.map((t, i) => (
+                  <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "#EDE9FE", color: "#5B21B6", borderRadius: 8, padding: "3px 8px", fontSize: 13, fontWeight: 600 }}>
+                    {t}
+                    <span onClick={e => { e.stopPropagation(); setSearchTags(searchTags.filter((_, j) => j !== i)); }}
+                      style={{ cursor: "pointer", color: "#7C3AED", fontWeight: 700 }} title="ลบคำนี้">×</span>
+                  </span>
+                ))}
+                <input style={{ flex: 1, minWidth: 160, border: "none", outline: "none", background: "transparent", fontSize: 14, fontFamily: "inherit", padding: "4px 0" }}
+                  placeholder={searchTags.length ? "พิมพ์คำถัดไป แล้วกด Enter เพื่อกรองซ้อน..." : "🔍 ค้นหาชื่อสินค้า / SKU... (กด Enter เพื่อล็อกคำ แล้วพิมพ์คำถัดไปกรองซ้อน)"}
+                  value={search} onChange={e => setSearch(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && search.trim()) { e.preventDefault(); setSearchTags([...searchTags, search.trim()]); setSearch(""); }
+                    else if (e.key === "Backspace" && !search && searchTags.length) setSearchTags(searchTags.slice(0, -1));
+                    else if (e.key === "Escape") { setSearch(""); setSearchTags([]); }
+                  }} />
+                {(searchTags.length > 0 || search) && (
+                  <span onClick={e => { e.stopPropagation(); setSearch(""); setSearchTags([]); }}
+                    style={{ cursor: "pointer", color: "#9CA3AF", fontSize: 12, whiteSpace: "nowrap" }} title="ล้างทั้งหมด">ล้าง ✕</span>
+                )}
+              </div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 {["ทั้งหมด","ปกติ","ใกล้หมด","หมด","ไม่เคลื่อนไหว"].map(s => (
                   <button key={s} onClick={() => setStatusFilter(s)}
