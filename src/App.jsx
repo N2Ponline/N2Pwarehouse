@@ -3777,25 +3777,27 @@ function thermalBarcode(text, dpi = 203) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${modules * dots * 25.4 / dpi}mm" height="8mm" viewBox="0 0 ${modules} 80" preserveAspectRatio="none" shape-rendering="crispEdges"><g fill="#000">${rects}</g></svg>`;
 }
 
-function thermalLabelHtml(labels, notes, { dpi = 203, gap = 0 } = {}) {
+function thermalLabelHtml(labels, notes, { dpi = 203, gap = 0, rotate = 0 } = {}) {
   const width = 96 + gap * 2;
   const rows = [];
   for (let i = 0; i < labels.length; i += 3) {
-    rows.push(`<div class="row">${labels.slice(i, i + 3).map(p => `<div class="label">
+    rows.push(`${rotate ? '<div class="page">' : ""}<div class="row">${labels.slice(i, i + 3).map(p => `<div class="label">
       <div class="name">${escHtml(p.name)}</div>
       <div class="barcode">${thermalBarcode(p.sku, dpi)}</div>
       <div class="sku">${escHtml(p.sku)}</div>
       <div class="detail">${escHtml([p.location && p.location !== "-" ? "ช่อง " + p.location : "", (notes[p.id] || "").trim()].filter(Boolean).join(" · "))}</div>
-    </div>`).join("")}</div>`);
+    </div>`).join("")}</div>${rotate ? "</div>" : ""}`);
   }
   return `<!doctype html><html lang="th"><head><meta charset="utf-8"><title>TSC 32×25 — ${labels.length} ดวง</title><style>
-    /* ไม่กำหนด size: กระดาษ 96×25 กว้างกว่าสูง ถ้าใส่ size Chrome จะส่งงานเป็นแนวนอน (landscape) แล้วไดรเวอร์หมุนภาพ 90° พิมพ์ตะแคง
-       ให้เลือกกระดาษ 96×25 + แนวตั้ง (Portrait) ในหน้าต่างพิมพ์แทน */
-    @page { margin: 0; }
+    /* Chrome ถือว่ากระดาษ 96×25 (กว้างกว่าสูง) เป็น 25×96 เสมอ แล้วหมุนภาพ 90° เองตอนส่งเข้าไดรเวอร์ ป้ายเลยออกตะแคง
+       rotate = หมุนหน้าสวนไว้ก่อนบนหน้า 25×96 ให้ Chrome หมุนกลับมาตรง (90 หรือ 270 แล้วแต่เครื่อง/ไดรเวอร์ ผู้ใช้เลือกในตั้งค่า) */
+    ${rotate ? `@page { size: 25mm ${width}mm; margin: 0; }` : "@page { margin: 0; }"}
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html, body { width: ${width}mm; background: #fff; color: #000; font-family: Tahoma, sans-serif; color-scheme: light; }
-    .row { width: ${width}mm; height: 25mm; display: flex; gap: ${gap}mm; break-inside: avoid; break-after: page; page-break-after: always; overflow: hidden; }
-    .row:last-child { break-after: auto; page-break-after: auto; }
+    html, body { width: ${rotate ? 25 : width}mm; background: #fff; color: #000; font-family: Tahoma, sans-serif; color-scheme: light; }
+    .page { width: 25mm; height: ${width}mm; overflow: hidden; break-after: page; page-break-after: always; }
+    .page:last-child { break-after: auto; page-break-after: auto; }
+    .row { width: ${width}mm; height: 25mm; display: flex; gap: ${gap}mm; break-inside: avoid; overflow: hidden; }
+    ${rotate ? `.row { transform-origin: 0 0; transform: ${rotate === 90 ? "translateX(25mm) rotate(90deg)" : `translateY(${width}mm) rotate(-90deg)`}; }` : `.row { break-after: page; page-break-after: always; } .row:last-child { break-after: auto; page-break-after: auto; }`}
     .label { flex: 0 0 32mm; width: 32mm; height: 25mm; padding: 1mm; text-align: center; overflow: hidden; }
     .name { height: 7mm; font-size: 8pt; font-weight: bold; line-height: 3.5mm; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
     .barcode { height: 8mm; display: flex; justify-content: center; }
@@ -3821,6 +3823,7 @@ function readLabelPrintSettings() {
     layout: Object.prototype.hasOwnProperty.call(LABEL_PRINT_PRESETS, saved?.layout) ? saved.layout : "roll32x25",
     dpi: profile?.dpi === 300 ? 300 : 203,
     gap: typeof profile?.gap === "number" && Number.isFinite(profile.gap) ? Math.max(0, Math.min(5, profile.gap)) : 0,
+    rotate: [0, 90, 270].includes(profile?.rotate) ? profile.rotate : 90,
   };
 }
 
@@ -3831,14 +3834,15 @@ function LabelSheetPanel({ products }) {
   const [layout, setLayout] = useState(initialPrintSettings.layout);
   const [thermalDpi, setThermalDpi] = useState(initialPrintSettings.dpi);
   const [thermalGap, setThermalGap] = useState(initialPrintSettings.gap);
+  const [thermalRotate, setThermalRotate] = useState(initialPrintSettings.rotate);
   const [printSettingsOpen, setPrintSettingsOpen] = useState(false);
   const [printSettingsSaved, setPrintSettingsSaved] = useState(true);
   useEffect(() => {
     try {
-      localStorage.setItem(LABEL_PRINT_KEY, JSON.stringify({ layout, profiles: { roll32x25: { dpi: thermalDpi, gap: thermalGap } } }));
+      localStorage.setItem(LABEL_PRINT_KEY, JSON.stringify({ layout, profiles: { roll32x25: { dpi: thermalDpi, gap: thermalGap, rotate: thermalRotate } } }));
       setPrintSettingsSaved(true);
     } catch { setPrintSettingsSaved(false); }
-  }, [layout, thermalDpi, thermalGap]);
+  }, [layout, thermalDpi, thermalGap, thermalRotate]);
   const [copies, setCopies] = useState(1);
   const [notes, setNotes] = useState({}); // { [productId]: "รายละเอียดเพิ่มเติม เช่น ไซส์" } — พิมพ์ลงบนป้ายด้วยถ้ามี ไม่บันทึกลง DB แค่ใช้ตอนพิมพ์รอบนี้
   const kw = q.trim().toLowerCase();
@@ -3853,7 +3857,7 @@ function LabelSheetPanel({ products }) {
     if (missingImage.length > 0) { alert(`มีสินค้า ${missingImage.length} รายการยังไม่มีรูป กรุณาเพิ่มรูปก่อนพิมพ์:\n${missingImage.slice(0, 15).map(p => "• " + p.name).join("\n")}${missingImage.length > 15 ? `\n...และอีก ${missingImage.length - 15} รายการ` : ""}\n\nไปที่หน้า "คลังสินค้า" แล้วคลิกที่รูปสินค้าเพื่ออัปโหลด`); return; }
     if (layout === "roll32x25") {
       const labels = selected.flatMap(p => Array.from({ length: copies }, () => p));
-      try { printHtmlInPlace(thermalLabelHtml(labels, notes, { dpi: thermalDpi, gap: thermalGap })); }
+      try { printHtmlInPlace(thermalLabelHtml(labels, notes, { dpi: thermalDpi, gap: thermalGap, rotate: thermalRotate })); }
       catch (e) { alert(e.message); }
       return;
     }
@@ -3944,7 +3948,7 @@ function LabelSheetPanel({ products }) {
         </div>
         <div style={{ color: printSettingsSaved ? "#64748B" : "#B45309", fontSize: 12 }} role="status">{printSettingsSaved ? "จำแบบกระดาษและค่าพิมพ์ไว้ในเบราว์เซอร์นี้แล้ว" : "เบราว์เซอร์ไม่อนุญาตให้บันทึกค่า — ค่าที่เลือกยังใช้พิมพ์ครั้งนี้ได้"}</div>
         <div style={{ color: "#64748B", fontSize: 12 }}>{layout === "roll32x25"
-          ? <>ในหน้าต่างพิมพ์ → More settings: กระดาษ <b>96×25 มม.</b> · Layout <b>Portrait (แนวตั้ง)</b> · Margins <b>None</b> · สเกล 100%</>
+          ? <>ในหน้าต่างพิมพ์: Layout <b>Portrait</b> · More settings → กระดาษ <b>96×25 มม.</b> · Margins <b>None</b> · สเกล 100% (ตัวอย่างจะเห็นเป็นแถบยาวตะแคง เป็นปกติ){thermalRotate ? "" : " · ถ้าป้ายออกตะแคงให้เปิด ⚙ ตั้งค่าการพิมพ์ แล้วเลือกหมุนภาพ"}</>
           : "ในหน้าต่างพิมพ์ เลือกเครื่องและกระดาษให้ตรงกับแบบนี้ · ขนาดจริง 100%"}</div>
       {layout === "roll32x25" && printSettingsOpen && (
         <div id="tsc-print-settings" style={{ borderTop: "1px solid #E2E8F0", paddingTop: 10, marginTop: 8 }}>
@@ -3952,6 +3956,7 @@ function LabelSheetPanel({ products }) {
           <div>บันทึกอัตโนมัติในเบราว์เซอร์นี้ และเรียกใช้เมื่อเลือก TSC อีกครั้ง · ไม่กระทบแบบ A4</div>
           <div style={{ display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", margin: "8px 0" }}>
             <label>ความละเอียดเครื่อง <select className="inp" aria-label="ความละเอียด TSC" value={thermalDpi} onChange={e => setThermalDpi(Number(e.target.value))} style={{ width: 110, padding: 6 }}><option value={203}>203 DPI</option><option value={300}>300 DPI</option></select></label>
+            <label>หมุนภาพ (แก้ป้ายออกตะแคง/กลับหัว) <select className="inp" aria-label="หมุนภาพ" value={thermalRotate} onChange={e => setThermalRotate(Number(e.target.value))} style={{ width: 150, padding: 6 }}><option value={90}>หมุน 90° (ค่าเริ่มต้น)</option><option value={270}>หมุน 270° (ถ้ากลับหัว)</option><option value={0}>ไม่หมุน</option></select></label>
             <label>ช่องว่างระหว่างดวงแนวนอน <input className="inp" aria-label="ช่องว่างระหว่างดวงแนวนอน" type="number" min={0} max={5} step={0.1} value={thermalGap} onChange={e => setThermalGap(Math.max(0, Math.min(5, Number(e.target.value) || 0)))} style={{ width: 70, padding: 6 }} /> มม.</label>
           </div>
           <div>ตั้งขนาดกระดาษในไดรเวอร์ TSC: <b>{Number((96 + thermalGap * 2).toFixed(1))} × 25 มม.</b> · สเกล 100% · ขอบ 0 · ปิดหัว/ท้ายกระดาษ</div>
