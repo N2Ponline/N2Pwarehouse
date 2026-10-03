@@ -3789,7 +3789,9 @@ function thermalLabelHtml(labels, notes, { dpi = 203, gap = 0 } = {}) {
     </div>`).join("")}</div>`);
   }
   return `<!doctype html><html lang="th"><head><meta charset="utf-8"><title>TSC 32×25 — ${labels.length} ดวง</title><style>
-    @page { size: ${width}mm 25mm; margin: 0; }
+    /* ไม่กำหนด size: กระดาษ 96×25 กว้างกว่าสูง ถ้าใส่ size Chrome จะส่งงานเป็นแนวนอน (landscape) แล้วไดรเวอร์หมุนภาพ 90° พิมพ์ตะแคง
+       ให้เลือกกระดาษ 96×25 + แนวตั้ง (Portrait) ในหน้าต่างพิมพ์แทน */
+    @page { margin: 0; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { width: ${width}mm; background: #fff; color: #000; font-family: Tahoma, sans-serif; color-scheme: light; }
     .row { width: ${width}mm; height: 25mm; display: flex; gap: ${gap}mm; break-inside: avoid; break-after: page; page-break-after: always; overflow: hidden; }
@@ -3941,7 +3943,9 @@ function LabelSheetPanel({ products }) {
           {layout === "roll32x25" && <button type="button" onClick={() => setPrintSettingsOpen(v => !v)} aria-expanded={printSettingsOpen} aria-controls="tsc-print-settings" style={{ background: "#fff", border: "1px solid #CBD5E1", borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: "#475569", fontSize: 12 }}>⚙ ตั้งค่าการพิมพ์</button>}
         </div>
         <div style={{ color: printSettingsSaved ? "#64748B" : "#B45309", fontSize: 12 }} role="status">{printSettingsSaved ? "จำแบบกระดาษและค่าพิมพ์ไว้ในเบราว์เซอร์นี้แล้ว" : "เบราว์เซอร์ไม่อนุญาตให้บันทึกค่า — ค่าที่เลือกยังใช้พิมพ์ครั้งนี้ได้"}</div>
-        <div style={{ color: "#64748B", fontSize: 12 }}>ในหน้าต่างพิมพ์ เลือกเครื่องและกระดาษให้ตรงกับแบบนี้ · ขนาดจริง 100%</div>
+        <div style={{ color: "#64748B", fontSize: 12 }}>{layout === "roll32x25"
+          ? <>ในหน้าต่างพิมพ์ → More settings: กระดาษ <b>96×25 มม.</b> · Layout <b>Portrait (แนวตั้ง)</b> · Margins <b>None</b> · สเกล 100%</>
+          : "ในหน้าต่างพิมพ์ เลือกเครื่องและกระดาษให้ตรงกับแบบนี้ · ขนาดจริง 100%"}</div>
       {layout === "roll32x25" && printSettingsOpen && (
         <div id="tsc-print-settings" style={{ borderTop: "1px solid #E2E8F0", paddingTop: 10, marginTop: 8 }}>
           <b>ตั้งค่าเฉพาะ TSC · ปรับครั้งแรกหรือเมื่อเปลี่ยนเครื่อง/ม้วนกระดาษ</b>
