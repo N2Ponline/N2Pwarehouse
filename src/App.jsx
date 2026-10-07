@@ -4380,6 +4380,23 @@ function ReceivingApprovalPanel({ products, onStockChange, onReceivingLogChange,
     return { ...prev, [id]: { ...current, ...patch } };
   });
 
+  // ยกเลิกรายการที่ฝ่ายคลังกดรับเข้าผิด — ไม่ลบทิ้ง แค่ตั้ง status='cancelled' (เก็บไว้ดูในประวัติ)
+  // ยอดจะกลับไปเป็น "รอรับ" ในหน้า 📥 รับสินค้าเข้า / ช่องรอเข้า เองอัตโนมัติ เพราะที่นั่นหักเฉพาะรายการ status='pending'
+  const cancelRow = async (row) => {
+    if (!approverBy.trim()) return showToast("กรุณากรอกชื่อผู้อนุมัติก่อน", "error");
+    if (!window.confirm(`ยกเลิกรายการรับเข้า "${row.backlog_item_name}" ${row.received_qty} ชิ้น${row.doc_no ? ` (${row.doc_no})` : ""}?
+
+ไม่เพิ่มเข้าสต็อก — ยอดจะกลับไปรอรับในหน้า "รับสินค้าเข้า" ให้ฝ่ายคลังบันทึกใหม่`)) return;
+    setBusyId(row.id);
+    try {
+      const updated = await api.updateReceivingLog(row.id, { status: "cancelled", approved_by: approverBy.trim(), approved_at: new Date().toISOString() });
+      if (onReceivingLogChange && updated) onReceivingLogChange(updated);
+      if (updated) setAllLogs(prev => prev.map(r => r.id === updated[0].id ? updated[0] : r));
+      showToast("ยกเลิกแล้ว — ยอดกลับไปรอรับในหน้ารับสินค้าเข้า");
+    } catch (err) { showToast(err.message, "error"); }
+    setBusyId(null);
+  };
+
   const confirmRow = async (row) => {
     const e = getEdit(row);
     if (!approverBy.trim()) return showToast("กรุณากรอกชื่อผู้อนุมัติก่อน", "error");
@@ -4504,6 +4521,10 @@ function ReceivingApprovalPanel({ products, onStockChange, onReceivingLogChange,
                       style={{ width: "100%", background: e.skip ? "#F9FAFB" : "#059669", color: e.skip ? "#6B7280" : "#fff", border: e.skip ? "1px solid #E5E7EB" : "none", borderRadius: 10, padding: "9px 12px", fontSize: 13, fontWeight: 700, cursor: busyId === row.id ? "not-allowed" : "pointer" }}>
                       {busyId === row.id ? "⏳..." : e.skip ? "🚫 ยืนยันไม่บันทึกลงคลัง" : "✅ ยืนยันเพิ่มเข้าสต็อก"}
                     </button>
+                    <button onClick={() => cancelRow(row)} disabled={busyId === row.id}
+                      style={{ width: "100%", marginTop: 6, background: "#fff", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 10, padding: "7px 12px", fontSize: 12.5, fontWeight: 700, cursor: busyId === row.id ? "not-allowed" : "pointer" }}>
+                      ↩️ ยกเลิก (รับเข้าผิด) — คืนไปรอรับ
+                    </button>
                   </div>
                 </div>
               </div>
@@ -4536,8 +4557,8 @@ function ReceivingApprovalPanel({ products, onStockChange, onReceivingLogChange,
                     <td style={{ fontFamily: "monospace" }}>{r.received_qty}</td>
                     <td style={{ fontSize: 12, color: "#6B7280" }}>{r.doc_no || "-"}</td>
                     <td>
-                      <span style={{ background: r.status === "approved" ? "#D1FAE5" : "#F3F4F6", color: r.status === "approved" ? "#059669" : "#6B7280", borderRadius: 6, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>
-                        {r.status === "approved" ? "✅ เข้าสต็อกแล้ว" : "🚫 ไม่บันทึกลงคลัง"}
+                      <span style={{ background: r.status === "approved" ? "#D1FAE5" : r.status === "cancelled" ? "#FEE2E2" : "#F3F4F6", color: r.status === "approved" ? "#059669" : r.status === "cancelled" ? "#B91C1C" : "#6B7280", borderRadius: 6, padding: "2px 10px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>
+                        {r.status === "approved" ? "✅ เข้าสต็อกแล้ว" : r.status === "cancelled" ? "↩️ ยกเลิก (คืนไปรอรับ)" : "🚫 ไม่บันทึกลงคลัง"}
                       </span>
                     </td>
                     <td>{r.received_by || "-"}</td>
