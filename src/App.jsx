@@ -252,6 +252,22 @@ const normName = (s) => String(s || "").toLowerCase()
   .replace(/size\s*/g, "size")
   .replace(/[\s\u200B\-_/\\.,'"+*#!?]/g, "");
 
+// \u0E01\u0E31\u0E19\u0E08\u0E31\u0E1A\u0E04\u0E39\u0E48\u0E1C\u0E34\u0E14\u0E2A\u0E35 \u2014 \u0E14\u0E36\u0E07\u0E04\u0E33\u0E17\u0E35\u0E48\u0E15\u0E32\u0E21\u0E2B\u0E25\u0E31\u0E07 "\u0E2A\u0E35" \u0E43\u0E19\u0E0A\u0E37\u0E48\u0E2D (\u0E40\u0E0A\u0E48\u0E19 "\u0E41\u0E1B\u0E23\u0E07\u0E02\u0E31\u0E14\u0E1E\u0E37\u0E49\u0E19 \u0E2A\u0E35\u0E02\u0E32\u0E27" \u2192 \u0E02\u0E32\u0E27, "(\u0E2A\u0E35\u0E19\u0E49\u0E33\u0E15\u0E32\u0E25\u0E40\u0E02\u0E49\u0E21)" \u2192 \u0E19\u0E49\u0E33\u0E15\u0E32\u0E25\u0E40\u0E02\u0E49\u0E21)
+// \u0E40\u0E04\u0E22\u0E40\u0E01\u0E34\u0E14\u0E08\u0E23\u0E34\u0E07 5\u20137 \u0E15.\u0E04. 2026: "\u0E41\u0E1B\u0E23\u0E07\u0E02\u0E31\u0E14\u0E1E\u0E37\u0E49\u0E19 \u0E2A\u0E35\u0E40\u0E02\u0E35\u0E22\u0E27" \u0E16\u0E39\u0E01\u0E08\u0E31\u0E1A\u0E04\u0E39\u0E48\u0E01\u0E31\u0E1A\u0E2A\u0E35\u0E02\u0E32\u0E27 \u0E41\u0E25\u0E30\u0E23\u0E31\u0E1A\u0E40\u0E02\u0E49\u0E32 "\u0E2A\u0E35\u0E02\u0E32\u0E27" 566 \u0E0A\u0E34\u0E49\u0E19\u0E25\u0E07\u0E2A\u0E35\u0E40\u0E02\u0E35\u0E22\u0E27
+const RE_COLOR_WORD = new RegExp("\u0E2A\u0E35(?![" + THAI_TONES + "])\\s*([\u0E01-\u0E2Ea-z\u0E30-\u0E4C]+)", "gi");
+const colorWordsOf = (name) => [...String(name || "").toLowerCase().matchAll(RE_COLOR_WORD)].map(m => m[1]);
+// \u0E04\u0E37\u0E19\u0E02\u0E49\u0E2D\u0E04\u0E27\u0E32\u0E21\u0E40\u0E15\u0E37\u0E2D\u0E19\u0E16\u0E49\u0E32\u0E0A\u0E37\u0E48\u0E2D\u0E17\u0E31\u0E49\u0E07\u0E2A\u0E2D\u0E07\u0E1D\u0E31\u0E48\u0E07\u0E23\u0E30\u0E1A\u0E38\u0E2A\u0E35\u0E41\u0E25\u0E30\u0E44\u0E21\u0E48\u0E21\u0E35\u0E2A\u0E35\u0E44\u0E2B\u0E19\u0E15\u0E23\u0E07\u0E01\u0E31\u0E19\u0E40\u0E25\u0E22 (\u0E2A\u0E35\u0E01\u0E27\u0E49\u0E32\u0E07/\u0E2A\u0E35\u0E25\u0E30\u0E40\u0E2D\u0E35\u0E22\u0E14\u0E16\u0E37\u0E2D\u0E27\u0E48\u0E32\u0E15\u0E23\u0E07 \u0E40\u0E0A\u0E48\u0E19 \u0E19\u0E49\u0E33\u0E15\u0E32\u0E25 \u2194 \u0E19\u0E49\u0E33\u0E15\u0E32\u0E25\u0E40\u0E02\u0E49\u0E21) \u2014 \u0E44\u0E21\u0E48\u0E23\u0E30\u0E1A\u0E38\u0E2A\u0E35\u0E1D\u0E31\u0E48\u0E07\u0E43\u0E14\u0E1D\u0E31\u0E48\u0E07\u0E2B\u0E19\u0E36\u0E48\u0E07 = \u0E44\u0E21\u0E48\u0E40\u0E15\u0E37\u0E2D\u0E19
+const colorMismatch = (name, productName) => {
+  const a = colorWordsOf(name), b = colorWordsOf(productName);
+  if (!a.length || !b.length) return null;
+  if (a.some(x => b.some(y => x.startsWith(y) || y.startsWith(x)))) return null;
+  return `\u0E2A\u0E35\u0E44\u0E21\u0E48\u0E15\u0E23\u0E07\u0E01\u0E31\u0E19: "${name}" (\u0E2A\u0E35${a.join("/")}) \u0E41\u0E15\u0E48\u0E40\u0E25\u0E37\u0E2D\u0E01 "${productName}" (\u0E2A\u0E35${b.join("/")})`;
+};
+const confirmColorMatch = (name, product) => {
+  const msg = product ? colorMismatch(name, product.name) : null;
+  return !msg || window.confirm(`\u26A0\uFE0F ${msg}\n\n\u0E41\u0E19\u0E48\u0E43\u0E08\u0E2B\u0E23\u0E37\u0E2D\u0E44\u0E21\u0E48\u0E27\u0E48\u0E32\u0E08\u0E30\u0E08\u0E31\u0E1A\u0E04\u0E39\u0E48\u0E41\u0E1A\u0E1A\u0E19\u0E35\u0E49? (\u0E2A\u0E48\u0E27\u0E19\u0E43\u0E2B\u0E0D\u0E48\u0E40\u0E1B\u0E47\u0E19\u0E01\u0E32\u0E23\u0E40\u0E25\u0E37\u0E2D\u0E01\u0E1C\u0E34\u0E14\u0E15\u0E31\u0E27)`);
+};
+
 // แยกชื่อออกเป็น "ชื่อหลัก" กับ "คุณสมบัติในวงเล็บ"
 const splitAttrs = (name) => {
   const raw = String(name || "").toLowerCase();
@@ -4196,10 +4212,14 @@ function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange
                         <ProductPicker products={products} value={p ? String(p.id) : "none"}
                           autoLabel={it.productId ? (p ? p.name : "สินค้านี้ถูกลบไปแล้ว") : "— ไม่พบสินค้าที่ตรงกัน —"}
                           onPick={v => {
+                            if (v !== "auto" && v !== "none" && !confirmColorMatch(it.name, products.find(x => String(x.id) === String(v)))) return;
                             updateItem(it.roundKey, { productId: v === "auto" || v === "none" ? null : parseInt(v) });
                             // บันทึกการจับคู่ใหม่เข้า incoming_aliases กลาง (ตารางเดียวกับหน้าคลังสินค้า/บันทึกค้างส่ง) ไม่งั้นแก้ที่นี่แล้วหายตอนโหลดหน้าใหม่/ครั้งหน้า
-                            if (onSetAlias) onSetAlias(String(it.name).trim(), v === "auto" ? "auto" : v === "none" ? null : Number(v));
+                            if (onSetAlias) onSetAlias(String(it.name).trim(), v === "auto" ? "auto" : v === "none" ? null : Number(v), { colorChecked: true });
                           }} />
+                        {p && colorMismatch(it.name, p.name) && (
+                          <div style={{ marginTop: 6, fontSize: 12, fontWeight: 700, color: "#B91C1C", background: "#FEE2E2", borderRadius: 8, padding: "6px 10px" }}>⚠️ {colorMismatch(it.name, p.name)}</div>
+                        )}
                       </div>
                       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
                         <label style={{ fontSize: 12, color: "#6B7280" }}>จำนวนที่รับจริง
@@ -4352,6 +4372,8 @@ function ReceivingApprovalPanel({ products, onStockChange, onReceivingLogChange,
         const product = products.find(p => String(p.id) === String(e.productId));
         if (!product) return showToast("กรุณาเลือกสินค้าให้ถูกต้องก่อนยืนยัน", "error");
         if (qty <= 0) return showToast("จำนวนต้องมากกว่า 0", "error");
+        // ด่านสุดท้ายก่อนบวกสต็อก — ผู้รับอาจกดยืนยันสีไม่ตรงมาแล้ว ให้ผู้อนุมัติเห็นและยืนยันซ้ำอีกครั้ง
+        if (!confirmColorMatch(row.backlog_item_name, product)) { setBusyId(null); return; }
         const res = await commitStockChange({
           productId: product.id,
           next: (live) => live + qty,
@@ -4422,7 +4444,13 @@ function ReceivingApprovalPanel({ products, onStockChange, onReceivingLogChange,
                     <div style={{ fontSize: 11, color: "#9CA3AF", marginBottom: 2 }}>จับคู่กับสินค้าในคลัง</div>
                     <ProductPicker products={products} value={product ? String(product.id) : "none"}
                       autoLabel={e.productId ? "สินค้านี้ถูกลบไปแล้ว" : "— ยังไม่ได้จับคู่ —"}
-                      onPick={v => setEdit(row.id, { productId: v === "auto" || v === "none" ? null : parseInt(v) })} />
+                      onPick={v => {
+                        if (v !== "auto" && v !== "none" && !confirmColorMatch(row.backlog_item_name, products.find(x => String(x.id) === String(v)))) return;
+                        setEdit(row.id, { productId: v === "auto" || v === "none" ? null : parseInt(v) });
+                      }} />
+                    {product && colorMismatch(row.backlog_item_name, product.name) && (
+                      <div style={{ marginTop: 6, fontSize: 12, fontWeight: 700, color: "#B91C1C", background: "#FEE2E2", borderRadius: 8, padding: "6px 10px" }}>⚠️ {colorMismatch(row.backlog_item_name, product.name)}</div>
+                    )}
                     {product && (
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, padding: "8px 10px", background: "#F5F3FF", borderRadius: 10 }}>
                         {product.imageUrl
@@ -4974,7 +5002,8 @@ export default function WarehouseApp() {
   }), [rawProducts, incoming, backlogFromNotes]);
 
   const incomingUnmatched = incoming.rows.filter(r => r.productId == null && (r.inTransit > 0 || r.total > 0));
-  const setAlias = (name, productId) => {
+  const setAlias = (name, productId, { colorChecked = false } = {}) => {
+    if (!colorChecked && typeof productId === "number" && !confirmColorMatch(name, rawProducts.find(p => p.id === productId))) return;
     const next = { ...incomingAlias };
     if (productId === "auto") delete next[name]; else next[name] = productId;
     setIncomingAlias(next); // อัปเดตหน้าจอทันที ไม่ต้องรอ network ตอบกลับ
