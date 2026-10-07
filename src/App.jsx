@@ -107,7 +107,8 @@ const api = {
   // (อันนั้นจับคู่ชื่อตอนขาย/สแกน อันนี้จับคู่ชื่อตอนรอรับเข้า) ต้องรัน incoming-aliases-setup.sql ก่อน
   // เก็บที่ Supabase แทน localStorage เดิม ให้ทุกเครื่อง/ทุกคนเห็นการแก้ตรงกัน
   getIncomingAliases: () => sbAll("incoming_aliases?select=*"),
-  setIncomingAlias: (name, productId) => sb("incoming_aliases?on_conflict=name", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ name, product_id: productId, updated_at: new Date().toISOString() }) }),
+  // updatedBy = หน้าที่กดจับคู่ (+ ชื่อคนถ้ารู้) — ไว้ไล่ย้อนได้ว่าคู่ผิดมาจากไหน (เคยหาไม่ได้ตอนแปรงขัดพื้นสีเขียวถูกจับเป็นสีขาว 5 ต.ค. 2026)
+  setIncomingAlias: (name, productId, updatedBy = null) => sb("incoming_aliases?on_conflict=name", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ name, product_id: productId, updated_by: updatedBy, updated_at: new Date().toISOString() }) }),
   deleteIncomingAlias: (name) => sb(`incoming_aliases?name=eq.${encodeURIComponent(name)}`, { method: "DELETE", headers: { Prefer: "return=minimal" } }),
 };
 
@@ -2528,7 +2529,7 @@ const pickDateRangeForPreset = (preset, customFrom, customTo) => {
 const btnStyle = (bg, fg, extra = {}) => ({ background: bg, color: fg, border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer", ...extra });
 
 // ── ฟอร์มจับคู่ "ชื่อ myorder" → SKU × จำนวน (หลายบรรทัดได้สำหรับเซ็ตที่มีหลาย SKU) ──
-function AliasEditor({ name, products, initial, onSave, onCancel, onAddProduct }) {
+function AliasEditor({ name, products, initial, onSave, onCancel, onAddProduct, orderQty }) {
   const [rows, setRows] = useState(() => {
     if (Array.isArray(initial) && initial.length) return initial.map(c => ({ pid: String(c.product_id), qty: c.qty }));
     const g = guessProduct(name, products);
@@ -2539,6 +2540,26 @@ function AliasEditor({ name, products, initial, onSave, onCancel, onAddProduct }
   const valid = rows.filter(r => r.pid !== "auto" && r.pid !== "none" && Number(r.qty) >= 1);
   const setRow = (i, patch) => setRows(prev => prev.map((r, j) => j === i ? { ...r, ...patch } : r));
   const save = async (comps) => { setSaving(true); try { await onSave(comps); } finally { setSaving(false); } };
+  // ก่อนบันทึก: เช็ค 2 อย่างที่เคยพลาดจริง (4 ต.ค. 2026 "แปรงขัดพื้น" ถูกบันทึกเป็นสีขาว ×3 — ใบนั้นสั่งมา 3 ชิ้นพอดี น่าจะใส่จำนวนหยิบแทนตัวคูณ)
+  // 1) ตัวคูณ > 1 ทั้งที่ชื่อไม่ได้บอกว่าเป็นแพ็ค/โปร  2) สีในชื่อ myorder ไม่ตรงกับสินค้าที่เลือก
+  const confirmSave = (comps) => {
+    const expect = guessMultiplier(name);
+    for (const c of comps) {
+      const p = products.find(x => x.id === c.product_id);
+      if (c.qty > 1 && c.qty !== expect) {
+        const hint = orderQty && c.qty === orderQty ? `
+
+⚠️ ใบนี้สั่งมา ${orderQty} หน่วยพอดี — ช่องนี้ไม่ใช่จำนวนที่ต้องหยิบในใบนี้ ระบบคูณให้เองอยู่แล้ว` : "";
+        if (!window.confirm(`"${name}" ขาย 1 หน่วย = ${p ? p.name : "สินค้า"} ${c.qty} ชิ้น จริงหรือไม่?
+
+ชื่อนี้ไม่ได้บอกว่าเป็นแพ็ค/โปร ปกติควรเป็น ${expect} ชิ้น${hint}
+
+กด OK = ยืนยัน ${c.qty} ชิ้น · กด Cancel = กลับไปแก้`)) return false;
+      }
+      if (!confirmColorMatch(name, p)) return false;
+    }
+    return true;
+  };
   return (
     <div style={{ marginTop: 8, background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 12, padding: "10px 12px" }} data-nofocus>
       <div style={{ fontSize: 12, color: "#92400E", fontWeight: 700, marginBottom: 6 }}>
@@ -2560,7 +2581,7 @@ function AliasEditor({ name, products, initial, onSave, onCancel, onAddProduct }
         <button onClick={() => save([])} disabled={saving} style={btnStyle("#F3F4F6", "#6B7280")}>ไม่ตัดสต็อกตัวนี้</button>
         <div style={{ flex: 1 }} />
         <button onClick={onCancel} style={btnStyle("none", "#6B7280")}>ยกเลิก</button>
-        <button onClick={() => save(valid.map(r => ({ product_id: Number(r.pid), qty: Number(r.qty) })))} disabled={saving || valid.length === 0}
+        <button onClick={() => { const comps = valid.map(r => ({ product_id: Number(r.pid), qty: Number(r.qty) })); if (confirmSave(comps)) save(comps); }} disabled={saving || valid.length === 0}
           style={btnStyle(valid.length ? "#7C3AED" : "#E5E7EB", "#fff", { padding: "7px 14px", cursor: valid.length ? "pointer" : "not-allowed" })}>{saving ? "⏳" : "💾 บันทึกการจับคู่"}</button>
       </div>
     </div>
@@ -2974,7 +2995,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
                       </div>
                       {editingName !== it.name && <button onClick={() => setEditingName(it.name)} style={btnStyle("#7C3AED", "#fff", { padding: "7px 14px" })}>🔗 จับคู่</button>}
                     </div>
-                    {editingName === it.name && <AliasEditor name={it.name} products={products} initial={null} onSave={comps => saveAlias(it.name, comps)} onCancel={() => setEditingName(null)} onAddProduct={onAddProduct} />}
+                    {editingName === it.name && <AliasEditor name={it.name} products={products} initial={null} orderQty={it.orderQty} onSave={comps => saveAlias(it.name, comps)} onCancel={() => setEditingName(null)} onAddProduct={onAddProduct} />}
                   </div>
                 ))}
               </div>
@@ -3014,6 +3035,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
                         </div>
                         {editingName && l.sources.some(s => s.name === editingName) && !isClosed && (
                           <AliasEditor name={editingName} products={products} initial={aliases.get(editingName) || items.find(it => it.name === editingName)?.comps || null}
+                            orderQty={items.find(it => it.name === editingName)?.orderQty}
                             onSave={comps => saveAlias(editingName, comps)} onCancel={() => setEditingName(null)} onAddProduct={onAddProduct} />
                         )}
                         {isBulk && (
@@ -3577,7 +3599,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
                       <td>
                         <ProductPicker products={products}
                           value={pickerValue}
-                          autoLabel="— เลือกสินค้าในคลัง —" onPick={v => onSetAlias(u.name, v === "auto" ? "auto" : v === "none" ? null : Number(v))} />
+                          autoLabel="— เลือกสินค้าในคลัง —" onPick={v => onSetAlias(u.name, v === "auto" ? "auto" : v === "none" ? null : Number(v), { source: "หน้าบันทึกค้างส่ง" })} />
                       </td>
                     </tr>
                     );
@@ -4215,7 +4237,7 @@ function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange
                             if (v !== "auto" && v !== "none" && !confirmColorMatch(it.name, products.find(x => String(x.id) === String(v)))) return;
                             updateItem(it.roundKey, { productId: v === "auto" || v === "none" ? null : parseInt(v) });
                             // บันทึกการจับคู่ใหม่เข้า incoming_aliases กลาง (ตารางเดียวกับหน้าคลังสินค้า/บันทึกค้างส่ง) ไม่งั้นแก้ที่นี่แล้วหายตอนโหลดหน้าใหม่/ครั้งหน้า
-                            if (onSetAlias) onSetAlias(String(it.name).trim(), v === "auto" ? "auto" : v === "none" ? null : Number(v), { colorChecked: true });
+                            if (onSetAlias) onSetAlias(String(it.name).trim(), v === "auto" ? "auto" : v === "none" ? null : Number(v), { colorChecked: true, source: `หน้ารับสินค้าเข้า${by.trim() ? " · " + by.trim() : ""}${openDoc?.docNo ? " · " + openDoc.docNo : ""}` });
                           }} />
                         {p && colorMismatch(it.name, p.name) && (
                           <div style={{ marginTop: 6, fontSize: 12, fontWeight: 700, color: "#B91C1C", background: "#FEE2E2", borderRadius: 8, padding: "6px 10px" }}>⚠️ {colorMismatch(it.name, p.name)}</div>
@@ -5002,14 +5024,14 @@ export default function WarehouseApp() {
   }), [rawProducts, incoming, backlogFromNotes]);
 
   const incomingUnmatched = incoming.rows.filter(r => r.productId == null && (r.inTransit > 0 || r.total > 0));
-  const setAlias = (name, productId, { colorChecked = false } = {}) => {
+  const setAlias = (name, productId, { colorChecked = false, source = null } = {}) => {
     if (!colorChecked && typeof productId === "number" && !confirmColorMatch(name, rawProducts.find(p => p.id === productId))) return;
     const next = { ...incomingAlias };
     if (productId === "auto") delete next[name]; else next[name] = productId;
     setIncomingAlias(next); // อัปเดตหน้าจอทันที ไม่ต้องรอ network ตอบกลับ
     const onFail = () => showToast("บันทึกการจับคู่ไม่สำเร็จ — อาจยังไม่ได้รัน sql/incoming-aliases-setup.sql ในเครื่องเซิร์ฟเวอร์ (เครื่องอื่นจะยังไม่เห็นการแก้นี้)", "error");
     if (productId === "auto") api.deleteIncomingAlias(name).catch(onFail);
-    else api.setIncomingAlias(name, productId).catch(onFail);
+    else api.setIncomingAlias(name, productId, source).catch(onFail);
   };
 
   const filteredProducts = useMemo(() => {
@@ -7104,7 +7126,7 @@ export default function WarehouseApp() {
                             products={rawProducts}
                             value={r.manual ? (r.productId == null ? "none" : String(r.productId)) : "auto"}
                             autoLabel={r.productId != null && !r.manual ? `⚙️ อัตโนมัติ — ${nameOf(r.productId)}` : "⚙️ ให้ระบบจับคู่เอง"}
-                            onPick={v => setAlias(r.name, v === "auto" ? "auto" : v === "none" ? null : Number(v))}
+                            onPick={v => setAlias(r.name, v === "auto" ? "auto" : v === "none" ? null : Number(v), { source: "หน้าคลังสินค้า · 🧾 ของรอเข้า" })}
                           />
                         </td>
                         <td style={{ fontSize: 11.5, color: r.productId == null ? "#B45309" : "#6B7280", whiteSpace: "nowrap" }}>{r.how}</td>
