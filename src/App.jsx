@@ -4052,7 +4052,7 @@ function LabelSheetPanel({ products }) {
 // รายการรอรับทำงานต่อ "ใบสั่งซื้อ" (n2p_orders) แต่ละใบ ไม่ใช่รวมยอดเป็นก้อนเดียวต่อสินค้า —
 // เพราะสินค้าตัวเดียวอาจมาจากหลายใบสั่งซื้อพร้อมกัน (คนละรอบสั่ง) ต้องรู้ว่าของที่รับมาตรงกับใบไหน
 // เหมือนใบพิมพ์กระดาษเดิมที่พิมพ์แยกทีละใบ (ดูภาพหน้าใบสั่งสินค้าจริงที่ผู้ใช้ส่งมาเป็นต้นแบบ)
-function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange, showToast, onSetAlias }) {
+function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange, showToast }) {
   const [orders, setOrders] = useState([]);
   const [receivingLogsAll, setReceivingLogsAll] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -4231,14 +4231,15 @@ function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange
                   {!done && (
                     <>
                       <div style={{ marginBottom: 8 }}>
-                        <ProductPicker products={products} value={p ? String(p.id) : "none"}
-                          autoLabel={it.productId ? (p ? p.name : "สินค้านี้ถูกลบไปแล้ว") : "— ไม่พบสินค้าที่ตรงกัน —"}
-                          onPick={v => {
-                            if (v !== "auto" && v !== "none" && !confirmColorMatch(it.name, products.find(x => String(x.id) === String(v)))) return;
-                            updateItem(it.roundKey, { productId: v === "auto" || v === "none" ? null : parseInt(v) });
-                            // บันทึกการจับคู่ใหม่เข้า incoming_aliases กลาง (ตารางเดียวกับหน้าคลังสินค้า/บันทึกค้างส่ง) ไม่งั้นแก้ที่นี่แล้วหายตอนโหลดหน้าใหม่/ครั้งหน้า
-                            if (onSetAlias) onSetAlias(String(it.name).trim(), v === "auto" ? "auto" : v === "none" ? null : Number(v), { colorChecked: true, source: `หน้ารับสินค้าเข้า${by.trim() ? " · " + by.trim() : ""}${openDoc?.docNo ? " · " + openDoc.docNo : ""}` });
-                          }} />
+                        {/* หน้านี้ "ไม่ให้เปลี่ยน" สินค้า — โชว์อย่างเดียว (ผู้ใช้สั่ง 8 ต.ค. 2026)
+                            เดิมเปลี่ยนที่นี่แล้วถูกบันทึกเป็นคู่ถาวรใน incoming_aliases: สั่งสีเขียวแต่ของมาสีขาว → เลือกสีขาวรอบเดียว
+                            กลายเป็น "ชื่อสีเขียว = สีขาว" ตลอดไป ลามไปหน้าบันทึกค้างส่ง/รอเข้า — ของมาไม่ตรงให้ผู้จัดการเปลี่ยนในหน้าอนุมัติ (เปลี่ยนเฉพาะรายการนั้น ไม่จำคู่) */}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: p ? "#F5F3FF" : "#FFFBEB", borderRadius: 10, fontSize: 13 }}>
+                          <span style={{ fontSize: 11, color: "#9CA3AF", whiteSpace: "nowrap" }}>เข้าสต็อกสินค้า</span>
+                          {p ? <span style={{ fontWeight: 700, color: "#111827" }}>{p.name} <span style={{ fontWeight: 400, color: "#9CA3AF" }}>({p.sku})</span></span>
+                            : <span style={{ fontWeight: 700, color: "#B45309" }}>{it.productId ? "สินค้านี้ถูกลบไปแล้ว" : "— ยังไม่จับคู่สินค้า —"}</span>}
+                        </div>
+                        <div style={{ marginTop: 4, fontSize: 11.5, color: "#6B7280" }}>ของที่มาไม่ตรงกับใบสั่ง (เช่น สั่งสีเขียวแต่มาสีขาว) — บันทึกรับตามปกติแล้วเขียนในหมายเหตุ ผู้จัดการจะเปลี่ยนสินค้าให้ตอนอนุมัติ</div>
                         {p && colorMismatch(it.name, p.name) && (
                           <div style={{ marginTop: 6, fontSize: 12, fontWeight: 700, color: "#B91C1C", background: "#FEE2E2", borderRadius: 8, padding: "6px 10px" }}>⚠️ {colorMismatch(it.name, p.name)}</div>
                         )}
@@ -5877,7 +5878,7 @@ export default function WarehouseApp() {
 
         {/* ─── รับสินค้าเข้า (แทนใบพิมพ์กระดาษ) — ไม่ล็อกรหัส ─── */}
         {tab === "receiving" && (
-          <ReceivingPanel products={products} backlog={backlog} incomingAlias={incomingAlias} onReceivingLogChange={upsertReceivingLogs} showToast={showToast} onSetAlias={setAlias} />
+          <ReceivingPanel products={products} backlog={backlog} incomingAlias={incomingAlias} onReceivingLogChange={upsertReceivingLogs} showToast={showToast} />
         )}
 
         {/* ─── บันทึกค้างส่ง — ย้ายออกมาเป็นแท็บหลัก ไม่ล็อกรหัสผู้จัดการอีกต่อไป ─── */}
