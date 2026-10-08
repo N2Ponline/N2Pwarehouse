@@ -4052,8 +4052,12 @@ function LabelSheetPanel({ products }) {
 // รายการรอรับทำงานต่อ "ใบสั่งซื้อ" (n2p_orders) แต่ละใบ ไม่ใช่รวมยอดเป็นก้อนเดียวต่อสินค้า —
 // เพราะสินค้าตัวเดียวอาจมาจากหลายใบสั่งซื้อพร้อมกัน (คนละรอบสั่ง) ต้องรู้ว่าของที่รับมาตรงกับใบไหน
 // เหมือนใบพิมพ์กระดาษเดิมที่พิมพ์แยกทีละใบ (ดูภาพหน้าใบสั่งสินค้าจริงที่ผู้ใช้ส่งมาเป็นต้นแบบ)
-function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange, showToast }) {
+function ReceivingPanel({ products, backlog: backlogProp, incomingAlias, onReceivingLogChange, showToast }) {
   const [orders, setOrders] = useState([]);
+  // ดึง n2p_backlog สดเองทุกครั้งที่ load — ห้ามใช้ prop ที่โหลดไว้ตอนเปิดแอปอย่างเดียว เพราะพออนุมัติแล้ว log กลายเป็น approved (ไม่ถูกหักแล้ว)
+  // แต่ receivedQty ใน prop ยังเป็นค่าเก่า → รอบที่รับไปแล้วโผล่กลับมาให้รับซ้ำ (เคสจริง 7 ต.ค. รอบ 261006UPUK1JNR รับ 56 สองรอบ = 112)
+  const [freshBacklog, setFreshBacklog] = useState(null);
+  const backlog = freshBacklog || backlogProp;
   const [receivingLogsAll, setReceivingLogsAll] = useState([]);
   const [loading, setLoading] = useState(true);
   const [openDocId, setOpenDocId] = useState(null);
@@ -4084,9 +4088,10 @@ function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange
   const load = async () => {
     setLoading(true);
     try {
-      const [ords, logs] = await Promise.all([api.getOrders(), api.getReceivingLogs()]);
+      const [ords, logs, bl] = await Promise.all([api.getOrders(), api.getReceivingLogs(), api.getBacklog().catch(() => null)]);
       setOrders(ords || []);
       setReceivingLogsAll(logs || []);
+      if (bl) setFreshBacklog(bl);
     } catch { /* เงียบไว้ — ไม่ให้บล็อกหน้าถ้าตารางยังไม่ถูกสร้าง */ }
     setLoading(false);
   };
@@ -4165,6 +4170,21 @@ function ReceivingPanel({ products, backlog, incomingAlias, onReceivingLogChange
     if (!by.trim()) return showToast("กรุณากรอกชื่อผู้รับสินค้า", "error");
     setSaving(true);
     try {
+      // เช็คยอดสดอีกรอบก่อนบันทึก — กันเปิดหน้าค้างไว้นานแล้วมีคน/เครื่องอื่นรับรอบเดียวกันไปแล้ว
+      const [freshLogs, ...freshItems] = await Promise.all([api.getReceivingLogs(), ...[...new Set(valid.map(it => it.backlogItemId))].map(id => api.getBacklogItem(id))]);
+      const stale = valid.filter(it => {
+        const b = freshItems.find(x => x && String(x.id) === String(it.backlogItemId));
+        const r = b && (b.rounds || []).find(x => x && !x.___meta && String(x.id) === String(it.backlogRoundId));
+        if (!r) return true;
+        const logged = (freshLogs || []).filter(l => l.status === "pending" && String(l.backlog_round_id) === String(it.backlogRoundId)).reduce((s, l) => s + (Number(l.received_qty) || 0), 0);
+        return (Number(r.qty) || 0) - (Number(r.receivedQty) || 0) - logged <= 0;
+      });
+      if (stale.length) {
+        showToast(`${stale.map(it => it.name).join(", ")} ถูกรับเข้าไปแล้ว (หรือรอบถูกลบ) — โหลดรายการใหม่ให้แล้ว ตรวจอีกครั้ง`, "error");
+        setOpenDocId(null); setFormItems({}); setSaving(false);
+        load();
+        return;
+      }
       const payload = valid.map(it => {
         const f = formItems[it.roundKey];
         const p = f.productId ? products.find(x => String(x.id) === String(f.productId)) : null;
