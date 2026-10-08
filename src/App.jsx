@@ -4049,6 +4049,27 @@ function LabelSheetPanel({ products }) {
 
 // ═══════════ รับสินค้าเข้า (แทนใบพิมพ์กระดาษ) — ฝ่ายคลังบันทึกที่นี่ ไม่ล็อกรหัส ═══════════
 // บันทึกแล้วเป็นแค่ "pending" ไม่กระทบสต็อกทันที — ผู้จัดการต้องมาอนุมัติในหน้าเช็คสต็อกก่อนถึงจะเข้าสต็อกจริง
+// ดึงข้อมูลใหม่แบบเงียบ (ไม่รีเฟรชทั้งหน้า ฟอร์มที่กรอกค้างไม่หาย) ตอนกลับมาที่แท็บ/ปลดล็อกจอ และทุก ms ระหว่างที่หน้าจอเปิดอยู่
+// ข้ามรอบถ้ารอบก่อนยังไม่เสร็จ และไม่ดึงตอนพับจอ/อยู่แท็บอื่น (ไม่เปลืองเน็ต)
+function useLiveRefresh(fn, ms = 30000) {
+  const fnRef = useRef(fn);
+  useEffect(() => { fnRef.current = fn; });
+  useEffect(() => {
+    let busy = false, last = Date.now(); // นับจากตอน mount — เพิ่งโหลดไปแล้ว ไม่ต้องดึงซ้ำทันที
+    const run = async () => {
+      if (busy || document.visibilityState !== "visible" || Date.now() - last < 5000) return; // focus + visibilitychange มักยิงติดกัน
+      busy = true; last = Date.now();
+      try { await fnRef.current(); } catch { /* เน็ตหลุดชั่วคราว รอบหน้าค่อยดึงใหม่ */ }
+      busy = false;
+    };
+    const onVisible = () => { if (document.visibilityState === "visible") run(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    const t = setInterval(run, ms);
+    return () => { document.removeEventListener("visibilitychange", onVisible); window.removeEventListener("focus", onVisible); clearInterval(t); };
+  }, [ms]);
+}
+
 // รายการรอรับทำงานต่อ "ใบสั่งซื้อ" (n2p_orders) แต่ละใบ ไม่ใช่รวมยอดเป็นก้อนเดียวต่อสินค้า —
 // เพราะสินค้าตัวเดียวอาจมาจากหลายใบสั่งซื้อพร้อมกัน (คนละรอบสั่ง) ต้องรู้ว่าของที่รับมาตรงกับใบไหน
 // เหมือนใบพิมพ์กระดาษเดิมที่พิมพ์แยกทีละใบ (ดูภาพหน้าใบสั่งสินค้าจริงที่ผู้ใช้ส่งมาเป็นต้นแบบ)
@@ -4085,17 +4106,18 @@ function ReceivingPanel({ products, backlog: backlogProp, incomingAlias, onRecei
     }
   };
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       const [ords, logs, bl] = await Promise.all([api.getOrders(), api.getReceivingLogs(), api.getBacklog().catch(() => null)]);
       setOrders(ords || []);
       setReceivingLogsAll(logs || []);
       if (bl) setFreshBacklog(bl);
     } catch { /* เงียบไว้ — ไม่ให้บล็อกหน้าถ้าตารางยังไม่ถูกสร้าง */ }
-    setLoading(false);
+    if (!silent) setLoading(false);
   };
   useEffect(() => { load(); }, []);
+  useLiveRefresh(() => load(true));
 
   // เริ่มจาก "รอบสั่ง" ที่ยังรับไม่ครบใน n2p_backlog เอง (แหล่งเดียวกับคอลัมน์ "รอเข้า" ในหน้าคลังที่ใช้อยู่แล้ว) แล้วค่อยไล่หาว่ามาจากใบสั่งซื้อใบไหน
   // ไม่ไล่จากประวัติใบสั่งซื้อทั้งหมดตรงๆ เพราะใบเก่าจำนวนมาก (800+ ใบ) ไม่เคยอัปเดตสถานะรับเข้าในระบบใบสั่งเลย (เดิมรับด้วยกระดาษ ไม่เคยกดที่นั่น)
@@ -4373,13 +4395,14 @@ function ReceivingApprovalPanel({ products, onStockChange, onReceivingLogChange,
   const [historySearch, setHistorySearch] = useState("");
   const historyDateFilter = useDateFilterState("all");
 
-  const load = async () => {
-    setLoading(true);
+  const load = async (silent = false) => {
+    if (!silent) setLoading(true);
     try { setAllLogs(await api.getReceivingLogs()); }
-    catch (e) { showToast(e.message, "error"); }
-    setLoading(false);
+    catch (e) { if (!silent) showToast(e.message, "error"); }
+    if (!silent) setLoading(false);
   };
   useEffect(() => { load(); }, []);
+  useLiveRefresh(() => { if (busyId == null) return load(true); }); // ไม่ดึงทับตอนกำลังกดอนุมัติอยู่
 
   const pending = useMemo(() => allLogs.filter(r => r.status === "pending"), [allLogs]);
   const history = useMemo(() => {
@@ -4953,6 +4976,27 @@ export default function WarehouseApp() {
   }, []);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+
+  // ยอดรอเข้า (n2p_backlog) / รับเข้ารออนุมัติ / การจับคู่ชื่อ ไม่มี Realtime — ดึงใหม่เงียบๆ ตอนกลับมาที่แท็บ, ทุก 30 วิ, และตอนเปลี่ยนเมนู
+  // เดิมโหลดครั้งเดียวตอนเปิดแอป ทำให้ยอดค้างเก่า (เคส 7 ต.ค. รับรอบเดียวกันซ้ำหลังอนุมัติ)
+  const refreshSideData = useCallback(async () => {
+    const [bl, al, rl, ia] = await Promise.all([
+      api.getBacklog().catch(() => null),
+      api.getAliases().catch(() => null),
+      api.getReceivingLogs().catch(() => null),
+      api.getIncomingAliases().catch(() => null),
+    ]);
+    if (bl) setBacklog(bl);
+    if (al) setAliasMap(aliasRowsToMap(al));
+    if (rl) setReceivingLogs(rl);
+    if (ia) setIncomingAlias(Object.fromEntries(ia.map(r => [r.name, r.product_id])));
+  }, []);
+  useLiveRefresh(refreshSideData);
+  const firstTabRef = useRef(true);
+  useEffect(() => {
+    if (firstTabRef.current) { firstTabRef.current = false; return; } // ตอนเปิดแอป loadAll ดึงให้แล้ว
+    refreshSideData().catch(() => {});
+  }, [tab, stockSub, refreshSideData]);
 
   // ═══ อัปเดตทุกหน้าจอที่เปิดอยู่อัตโนมัติ เมื่อเครื่องอื่นทำรายการ (Supabase Realtime) ═══
   // อัปเดตเฉพาะตัวเลข/ประวัติ ไม่รีเฟรชทั้งหน้า — กันฟอร์มหรือใบหยิบที่กำลังทำอยู่หาย และไม่ต้องโหลดรูปใหม่
