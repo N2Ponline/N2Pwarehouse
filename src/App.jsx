@@ -3215,6 +3215,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
   const [savingNote, setSavingNote] = useState(false);
   const [savedFilter, setSavedFilter] = useState("all"); // "all" | "over" | "short" — แท็บย่อยของตารางบันทึก (คนละอันกับ filterMode ของตารางเทียบข้อมูลด้านบน)
   const [savedSearch, setSavedSearch] = useState("");
+  const [savedLackOnly, setSavedLackOnly] = useState(false); // ติ๊กแล้วกรองเหลือเฉพาะแถวสีแดง (ของขาด ต้องสั่งเพิ่ม) — ใช้ร่วมกับแท็บย่อย/ช่องค้นหาได้
   const [savedSortCol, setSavedSortCol] = useState(null); // เรียงคอลัมน์ในตารางบันทึก — คนละ state กับ sortCol ของตารางเทียบข้อมูลด้านบน
   const [savedSortDir, setSavedSortDir] = useState("desc");
 
@@ -3467,6 +3468,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
   const liveAgeOf = (it) => it.firstSeen == null ? -1 : Math.max(0, Math.floor((new Date(todayStr() + "T00:00:00") - new Date(it.firstSeen + "T00:00:00")) / 86400000));
   const savedShown = useMemo(() => {
     let base = savedFilter === "over" ? savedOver : savedFilter === "short" ? savedShort : savedItemsAll;
+    if (savedLackOnly) { const lackSet = new Set(savedLack); base = base.filter(it => lackSet.has(it)); }
     const kw = savedSearch.trim().toLowerCase();
     if (kw) base = base.filter(it => it.name.toLowerCase().includes(kw));
     if (savedSortCol) {
@@ -3480,7 +3482,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
         : (((Number(a[savedSortCol]) || 0) - (Number(b[savedSortCol]) || 0)) * dir || a.name.localeCompare(b.name, "th")));
     }
     return base;
-  }, [saved, savedFilter, savedSearch, savedOver, savedShort, savedSortCol, savedSortDir, incByName, byId]);
+  }, [saved, savedFilter, savedSearch, savedOver, savedShort, savedLack, savedLackOnly, savedSortCol, savedSortDir, incByName, byId]);
 
   return (
     <div>
@@ -3687,6 +3689,10 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
                 แถวสีแดง = ค้างส่งมากกว่าสต็อก+รอเข้า ({savedLack.length} รายการ)
               </span>
             )}
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, fontWeight: 700, cursor: "pointer", userSelect: "none", color: savedLackOnly ? "#fff" : "#9F1239", background: savedLackOnly ? "#E11D48" : "#fff", border: "1px solid #FDA4AF", borderRadius: 10, padding: "6px 10px" }}>
+              <input type="checkbox" checked={savedLackOnly} onChange={e => setSavedLackOnly(e.target.checked)} style={{ accentColor: "#9F1239", cursor: "pointer" }} />
+              🛒 เฉพาะของขาด ต้องสั่งเพิ่ม ({savedLack.length})
+            </label>
           </div>
           {selectedIds.size > 0 && (
             <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 12, padding: "8px 14px", marginBottom: 10 }}>
