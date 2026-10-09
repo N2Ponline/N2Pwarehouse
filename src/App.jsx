@@ -3218,6 +3218,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
   const [savedLackOnly, setSavedLackOnly] = useState(false); // ติ๊กแล้วกรองเหลือเฉพาะแถวสีแดง (ของขาด ต้องสั่งเพิ่ม) — ใช้ร่วมกับแท็บย่อย/ช่องค้นหาได้
   const [savedSortCol, setSavedSortCol] = useState(null); // เรียงคอลัมน์ในตารางบันทึก — คนละ state กับ sortCol ของตารางเทียบข้อมูลด้านบน
   const [savedSortDir, setSavedSortDir] = useState("desc");
+  const [matchingId, setMatchingId] = useState(null); // id ของรายการ "ไม่พบใน StockMaster" ที่กำลังเปิดตัวเลือกจับคู่อยู่
 
   useEffect(() => {
     api.getAliases().then(rows2 => {
@@ -3387,6 +3388,31 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
     const num = parseInt(trimmed.replace(/[^\d]/g, ""), 10);
     if (!Number.isFinite(num) || num < 0) { window.alert("กรุณาใส่ตัวเลขจำนวนเต็มที่ถูกต้อง"); return; }
     updateSavedItems(saved.items.map(x => x.id === it.id ? { ...x, incQty: num } : x));
+  };
+  // จับคู่รายการที่ชื่อใน MyOrder ไม่ตรงกับ StockMaster จากตารางบันทึกได้เลย — บันทึกเป็นคู่ถาวรใน incoming_aliases (ตัวเดียวกับตาราง "จับคู่เอง" ด้านบน)
+  // ครั้งหน้ากด "เทียบข้อมูลสินค้า" จะจับคู่ให้เองอัตโนมัติ และแปลงแถวในบันทึกตอนนี้เป็นสินค้าในคลังทันที (ถ้ามีแถวของสินค้านั้นอยู่แล้วจะรวมยอดค้างส่งเข้าด้วยกัน)
+  const matchSavedItem = (it, v) => {
+    if (v === "auto" || v === "none") { setMatchingId(null); return; }
+    const p = byId.get(String(v));
+    if (!p) return;
+    if (onSetAlias(it.name, Number(v), { source: "หน้าบันทึกค้างส่ง" }) === false) return;
+    const pid = String(p.id);
+    const rest = saved.items.filter(x => x.id !== it.id);
+    const exist = rest.find(x => x.id === pid);
+    const older = (a, b) => (a && b ? (a < b ? a : b) : a || b);
+    const next = exist
+      ? rest.map(x => x.id !== pid ? x : { ...x, myQty: (Number(x.myQty) || 0) + (Number(it.myQty) || 0),
+          firstSeen: older(x.firstSeen, it.firstSeen), dateIsReal: older(x.firstSeen, it.firstSeen) === x.firstSeen ? x.dateIsReal : it.dateIsReal,
+          itemNote: [x.itemNote, it.itemNote].filter(Boolean).join(" · ") })
+      : [...rest];
+    if (!exist) {
+      const idx = saved.items.findIndex(x => x.id === it.id);
+      next.splice(idx, 0, { id: pid, name: p.name, sku: p.sku, myQty: it.myQty, stock: Number(p.quantity) || 0, incQty: p.qtyOnOrder || 0, matched: true,
+        itemNote: it.itemNote || "", age: it.age, firstSeen: it.firstSeen, dateIsReal: it.dateIsReal });
+    }
+    updateSavedItems(next);
+    setMatchingId(null);
+    showToast(`จับคู่ "${it.name}" → ${p.name} แล้ว${exist ? " (รวมยอดกับรายการเดิม)" : ""}`);
   };
   const editItemNote = (it) => {
     const v = window.prompt(`หมายเหตุสำหรับ "${it.name}"`, it.itemNote || "");
@@ -3737,7 +3763,16 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
                       <b style={{ fontSize: 13.5 }}>{it.name}</b>
                       {it.matched
                         ? <span style={{ display: "block", fontFamily: "monospace", color: "#6B7280", fontSize: 11.5 }}>{it.sku || ""}</span>
-                        : <span style={{ display: "inline-block", marginTop: 2, fontSize: 10.5, padding: "2px 8px", borderRadius: 99, background: "#FFFBEB", color: "#B45309", fontWeight: 700 }}>ไม่พบใน StockMaster</span>}
+                        : <>
+                            <span style={{ display: "inline-block", marginTop: 2, fontSize: 10.5, padding: "2px 8px", borderRadius: 99, background: "#FFFBEB", color: "#B45309", fontWeight: 700 }}>ไม่พบใน StockMaster</span>
+                            <button onClick={() => setMatchingId(matchingId === it.id ? null : it.id)} title="เลือกสินค้าใน StockMaster ที่เป็นตัวเดียวกัน (จำไว้ใช้ครั้งต่อไปด้วย)"
+                              style={{ marginLeft: 4, marginTop: 2, fontSize: 10.5, padding: "2px 8px", borderRadius: 99, background: matchingId === it.id ? "#7C3AED" : "#EDE9FE", color: matchingId === it.id ? "#fff" : "#6D28D9", border: "none", fontWeight: 700, cursor: "pointer" }}>🔗 จับคู่สินค้า</button>
+                            {matchingId === it.id && (
+                              <div style={{ marginTop: 6 }}>
+                                <ProductPicker products={products} value="auto" autoLabel="— เลือกสินค้าในคลังที่ตรงกัน —" onPick={v => matchSavedItem(it, v)} />
+                              </div>
+                            )}
+                          </>}
                       {lack && <span style={{ display: "inline-block", marginTop: 3, fontSize: 10.5, padding: "2px 8px", borderRadius: 99, background: "#E11D48", color: "#fff", fontWeight: 700 }}>⚠️ ขาดอีก {lackQty.toLocaleString("th-TH")} ชิ้น (สต็อก+รอเข้าไม่พอ)</span>}
                     </td>
                     <td style={{ padding: 10, textAlign: "center", background: cellBg }}>{numChip(it.myQty, "#FEE2E2", "#DC2626")}</td>
@@ -5117,13 +5152,14 @@ export default function WarehouseApp() {
 
   const incomingUnmatched = incoming.rows.filter(r => r.productId == null && (r.inTransit > 0 || r.total > 0));
   const setAlias = (name, productId, { colorChecked = false, source = null } = {}) => {
-    if (!colorChecked && typeof productId === "number" && !confirmColorMatch(name, rawProducts.find(p => p.id === productId))) return;
+    if (!colorChecked && typeof productId === "number" && !confirmColorMatch(name, rawProducts.find(p => p.id === productId))) return false;
     const next = { ...incomingAlias };
     if (productId === "auto") delete next[name]; else next[name] = productId;
     setIncomingAlias(next); // อัปเดตหน้าจอทันที ไม่ต้องรอ network ตอบกลับ
     const onFail = () => showToast("บันทึกการจับคู่ไม่สำเร็จ — อาจยังไม่ได้รัน sql/incoming-aliases-setup.sql ในเครื่องเซิร์ฟเวอร์ (เครื่องอื่นจะยังไม่เห็นการแก้นี้)", "error");
     if (productId === "auto") api.deleteIncomingAlias(name).catch(onFail);
     else api.setIncomingAlias(name, productId, source).catch(onFail);
+    return true;
   };
 
   const filteredProducts = useMemo(() => {
