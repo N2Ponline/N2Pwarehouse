@@ -3387,7 +3387,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
   // แถวที่จับคู่ได้เก็บชื่อต้นทางจาก MyOrder ไว้ใน it.src (เฉพาะบันทึกหลังเพิ่มฟีเจอร์นี้) เลยย้ายยอดของแต่ละชื่อไปสินค้าอื่น/กลับเป็น "ไม่พบใน StockMaster" ได้
   const [editing, setEditing] = useState(null); // { it, qty, note, picks: { [ชื่อ MyOrder]: "auto" | "none" | productId } }
   const srcEntriesOf = (it) => it.matched ? (Array.isArray(it.src) ? it.src : []) : [{ name: it.name, qty: Number(it.myQty) || 0, tag: "unmatched" }];
-  const openEdit = (it) => setEditing({ it, qty: String(it.myQty ?? ""), note: it.itemNote || "", picks: {} });
+  const openEdit = (it) => setEditing({ it, qty: String(it.myQty ?? ""), note: it.itemNote || "", picks: {}, legacyName: "" });
   // ย้ายยอดของชื่อ MyOrder หนึ่งชื่อ (entry) ออกจากแถว fromId ไปแถวของสินค้า newPid (null = ไม่มีในคลัง) — รวมยอดถ้ามีแถวปลายทางอยู่แล้ว
   const moveEntry = (items, fromId, entry, newPid) => {
     const from = items.find(x => x.id === fromId);
@@ -3399,7 +3399,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
     const q = whole ? (Number(from.myQty) || 0) : Math.min(Number(entry.qty) || 0, Number(from.myQty) || 0);
     const pos = items.findIndex(x => x.id === fromId);
     let next = whole ? items.filter(x => x.id !== fromId) : items.map(x => x.id === fromId ? { ...x, myQty: (Number(x.myQty) || 0) - q, src: fromSrc } : x);
-    const newSrc = newPid == null ? [] : [{ name: entry.name, qty: q, tag: "central-alias" }];
+    const newSrc = newPid == null || entry.noSrc ? [] : [{ name: entry.name, qty: q, tag: "central-alias" }];
     const older = (a, b) => (a && b ? (a < b ? a : b) : a || b);
     const exist = next.find(x => x.id === toId);
     if (exist) {
@@ -3430,6 +3430,16 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
       if (onSetAlias(entry.name, newPid, { source: "หน้าบันทึกค้างส่ง" }) === false) continue; // กดยกเลิกตอนเตือนสีไม่ตรง
       items = moveEntry(items, it.id, entry, newPid);
       moved.push(newPid == null ? `"${entry.name}" → ไม่มีในคลัง` : `"${entry.name}" → ${byId.get(String(newPid))?.name || ""}`);
+    }
+    // แถวที่บันทึกไว้ก่อนมีการเก็บชื่อ MyOrder (ไม่มี it.src) — ย้ายทั้งแถวไปสินค้าที่เลือก ถ้าพิมพ์ชื่อใน MyOrder มาด้วยจะจำคู่ไว้ใช้รอบหน้า
+    const lv = picks.__legacy;
+    if (it.matched && srcEntriesOf(it).length === 0 && lv != null && lv !== "auto" && String(lv) !== it.id) {
+      const newPid = lv === "none" ? null : Number(lv);
+      const nm = (editing.legacyName || "").trim();
+      if (!(nm && onSetAlias(nm, newPid, { source: "หน้าบันทึกค้างส่ง" }) === false)) {
+        items = moveEntry(items, it.id, { name: nm || it.name, qty: num, noSrc: !nm }, newPid);
+        moved.push(newPid == null ? `"${it.name}" → ไม่มีในคลัง` : `"${it.name}" → ${byId.get(String(newPid))?.name || ""}`);
+      }
     }
     updateSavedItems(items);
     setEditing(null);
@@ -3844,8 +3854,14 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
 
                   <label style={lbl}>🔗 จับคู่กับสินค้าใน StockMaster</label>
                   {entries.length === 0 ? (
-                    <div style={{ fontSize: 12, color: "#9CA3AF", background: "#F9FAFB", borderRadius: 10, padding: 10 }}>
-                      รายการนี้บันทึกไว้ก่อนมีระบบเก็บชื่อจาก MyOrder — กด "เทียบข้อมูลสินค้า" ใหม่อีกรอบ แล้วจะแก้จับคู่ที่นี่ได้
+                    <div style={{ background: "#F9FAFB", borderRadius: 12, padding: 10, marginBottom: 8 }}>
+                      <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 6 }}>เปลี่ยนเป็นสินค้า</div>
+                      <ProductPicker products={products} value={editing.picks.__legacy ?? String(it.id)} autoLabel="— ใช้ตามเดิม —"
+                        onPick={v => setPick("__legacy", v)} />
+                      <div style={{ fontSize: 12, color: "#6B7280", margin: "10px 0 4px" }}>ชื่อสินค้าใน MyOrder <span style={{ color: "#9CA3AF" }}>(ไม่บังคับ — ใส่แล้วระบบจำคู่ไว้ใช้รอบหน้า)</span></div>
+                      <input className="inp" value={editing.legacyName} onChange={e => setEditing(x => ({ ...x, legacyName: e.target.value }))}
+                        placeholder="คัดลอกชื่อจาก MyOrder มาวาง" style={{ width: "100%", boxSizing: "border-box" }} />
+                      <div style={{ fontSize: 11, color: "#B45309", marginTop: 6 }}>แถวนี้บันทึกไว้ก่อนระบบเก็บชื่อจาก MyOrder — ถ้าไม่ใส่ชื่อ จะย้ายแถวให้รอบนี้รอบเดียว รอบหน้ากดเทียบข้อมูลอาจจับคู่แบบเดิมอีก</div>
                     </div>
                   ) : entries.map(en => (
                     <div key={en.name} style={{ background: "#F9FAFB", borderRadius: 12, padding: 10, marginBottom: 8 }}>
