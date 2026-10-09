@@ -3218,7 +3218,6 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
   const [savedLackOnly, setSavedLackOnly] = useState(false); // ติ๊กแล้วกรองเหลือเฉพาะแถวสีแดง (ของขาด ต้องสั่งเพิ่ม) — ใช้ร่วมกับแท็บย่อย/ช่องค้นหาได้
   const [savedSortCol, setSavedSortCol] = useState(null); // เรียงคอลัมน์ในตารางบันทึก — คนละ state กับ sortCol ของตารางเทียบข้อมูลด้านบน
   const [savedSortDir, setSavedSortDir] = useState("desc");
-  const [matchingId, setMatchingId] = useState(null); // id ของรายการ "ไม่พบใน StockMaster" ที่กำลังเปิดตัวเลือกจับคู่อยู่
 
   useEffect(() => {
     api.getAliases().then(rows2 => {
@@ -3270,7 +3269,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
         comps.forEach(c => {
           if (!byId.has(String(c.product_id))) { anyBad = true; return; }
           const q = (Number(c.qty) || 1) * it.qty;
-          const s = slot(c.product_id); s.my += q; s.mySrc.push({ name: key + (Number(c.qty) > 1 ? ` ×${c.qty}` : ""), qty: q, tag: "alias" }); mergeOrderDate(s, it.orderDate);
+          const s = slot(c.product_id); s.my += q; s.mySrc.push({ name: key + (Number(c.qty) > 1 ? ` ×${c.qty}` : ""), raw: key, qty: q, tag: "alias" }); mergeOrderDate(s, it.orderDate);
         });
         if (anyBad) um.push({ ...it, how: "สินค้าในตารางจับคู่ถูกลบ" });
         return;
@@ -3345,6 +3344,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
     return [
       ...builtRows.map(r => ({
         id: String(r.p.id), name: r.p.name, sku: r.p.sku, myQty: r.my, stock: r.stock, incQty: r.inc, matched: true,
+        src: (r.mySrc || []).map(x => ({ name: x.raw || x.name, qty: x.qty, tag: x.tag })),
         itemNote: oldById.get(String(r.p.id))?.itemNote || "", age: r.age, firstSeen: r.firstSeen, dateIsReal: r.dateIsReal,
       })),
       ...umRows.map(u => ({
@@ -3372,13 +3372,6 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
     try { await api.patchBacklogNoteItems(nextItems); }
     catch (e) { showToast("อัปเดตไม่สำเร็จ: " + e.message, "error"); setSaved(prevSaved); }
   };
-  const editQty = (it) => {
-    const v = window.prompt(`แก้ไขจำนวนค้างส่งจาก MyOrder ของ "${it.name}"`, it.myQty);
-    if (v == null) return;
-    const num = parseInt(String(v).replace(/[^\d]/g, ""), 10);
-    if (!Number.isFinite(num) || num < 0) { window.alert("กรุณาใส่ตัวเลขจำนวนเต็มที่ถูกต้อง"); return; }
-    updateSavedItems(saved.items.map(x => x.id === it.id ? { ...x, myQty: num } : x));
-  };
   // กรอกจำนวน "สินค้ารอเข้า" เองได้ — เฉพาะรายการที่จับคู่กับ StockMaster ไม่ได้ (ไม่มี SKU ให้ดึงยอดจริงมาอัตโนมัติ)
   const editIncQty = (it) => {
     const v = window.prompt(`กรอกจำนวนสินค้ารอเข้าของ "${it.name}" (เว้นว่างไว้ถ้าไม่ทราบ)`, it.incQty ?? "");
@@ -3389,35 +3382,58 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
     if (!Number.isFinite(num) || num < 0) { window.alert("กรุณาใส่ตัวเลขจำนวนเต็มที่ถูกต้อง"); return; }
     updateSavedItems(saved.items.map(x => x.id === it.id ? { ...x, incQty: num } : x));
   };
-  // จับคู่รายการที่ชื่อใน MyOrder ไม่ตรงกับ StockMaster จากตารางบันทึกได้เลย — บันทึกเป็นคู่ถาวรใน incoming_aliases (ตัวเดียวกับตาราง "จับคู่เอง" ด้านบน)
-  // ครั้งหน้ากด "เทียบข้อมูลสินค้า" จะจับคู่ให้เองอัตโนมัติ และแปลงแถวในบันทึกตอนนี้เป็นสินค้าในคลังทันที (ถ้ามีแถวของสินค้านั้นอยู่แล้วจะรวมยอดค้างส่งเข้าด้วยกัน)
-  const matchSavedItem = (it, v) => {
-    if (v === "auto" || v === "none") { setMatchingId(null); return; }
-    const p = byId.get(String(v));
-    if (!p) return;
-    if (onSetAlias(it.name, Number(v), { source: "หน้าบันทึกค้างส่ง" }) === false) return;
-    const pid = String(p.id);
-    const rest = saved.items.filter(x => x.id !== it.id);
-    const exist = rest.find(x => x.id === pid);
+  // ── ปุ่มแก้ไขรวม (✏️) — แก้จำนวนค้างส่ง + หมายเหตุ + จับคู่สินค้า ในหน้าต่างเดียว ──
+  // การจับคู่บันทึกเป็นคู่ถาวรใน incoming_aliases (ตัวเดียวกับตาราง "จับคู่เอง" ด้านบน) ครั้งหน้ากด "เทียบข้อมูลสินค้า" จะจับคู่ให้เองอัตโนมัติ
+  // แถวที่จับคู่ได้เก็บชื่อต้นทางจาก MyOrder ไว้ใน it.src (เฉพาะบันทึกหลังเพิ่มฟีเจอร์นี้) เลยย้ายยอดของแต่ละชื่อไปสินค้าอื่น/กลับเป็น "ไม่พบใน StockMaster" ได้
+  const [editing, setEditing] = useState(null); // { it, qty, note, picks: { [ชื่อ MyOrder]: "auto" | "none" | productId } }
+  const srcEntriesOf = (it) => it.matched ? (Array.isArray(it.src) ? it.src : []) : [{ name: it.name, qty: Number(it.myQty) || 0, tag: "unmatched" }];
+  const openEdit = (it) => setEditing({ it, qty: String(it.myQty ?? ""), note: it.itemNote || "", picks: {} });
+  // ย้ายยอดของชื่อ MyOrder หนึ่งชื่อ (entry) ออกจากแถว fromId ไปแถวของสินค้า newPid (null = ไม่มีในคลัง) — รวมยอดถ้ามีแถวปลายทางอยู่แล้ว
+  const moveEntry = (items, fromId, entry, newPid) => {
+    const from = items.find(x => x.id === fromId);
+    if (!from) return items;
+    const toId = newPid == null ? "u:" + entry.name : String(newPid);
+    if (toId === fromId) return items;
+    const fromSrc = (from.src || []).filter(x => x.name !== entry.name);
+    const whole = !from.matched || fromSrc.length === 0; // ย้ายทั้งแถว (พาหมายเหตุ/วันที่ไปด้วย)
+    const q = whole ? (Number(from.myQty) || 0) : Math.min(Number(entry.qty) || 0, Number(from.myQty) || 0);
+    const pos = items.findIndex(x => x.id === fromId);
+    let next = whole ? items.filter(x => x.id !== fromId) : items.map(x => x.id === fromId ? { ...x, myQty: (Number(x.myQty) || 0) - q, src: fromSrc } : x);
+    const newSrc = newPid == null ? [] : [{ name: entry.name, qty: q, tag: "central-alias" }];
     const older = (a, b) => (a && b ? (a < b ? a : b) : a || b);
-    const next = exist
-      ? rest.map(x => x.id !== pid ? x : { ...x, myQty: (Number(x.myQty) || 0) + (Number(it.myQty) || 0),
-          firstSeen: older(x.firstSeen, it.firstSeen), dateIsReal: older(x.firstSeen, it.firstSeen) === x.firstSeen ? x.dateIsReal : it.dateIsReal,
-          itemNote: [x.itemNote, it.itemNote].filter(Boolean).join(" · ") })
-      : [...rest];
-    if (!exist) {
-      const idx = saved.items.findIndex(x => x.id === it.id);
-      next.splice(idx, 0, { id: pid, name: p.name, sku: p.sku, myQty: it.myQty, stock: Number(p.quantity) || 0, incQty: p.qtyOnOrder || 0, matched: true,
-        itemNote: it.itemNote || "", age: it.age, firstSeen: it.firstSeen, dateIsReal: it.dateIsReal });
+    const exist = next.find(x => x.id === toId);
+    if (exist) {
+      next = next.map(x => x.id !== toId ? x : { ...x, myQty: (Number(x.myQty) || 0) + q, src: x.matched ? [...(x.src || []), ...newSrc] : x.src,
+        firstSeen: older(x.firstSeen, from.firstSeen), dateIsReal: older(x.firstSeen, from.firstSeen) === x.firstSeen ? x.dateIsReal : from.dateIsReal,
+        itemNote: whole ? [x.itemNote, from.itemNote].filter(Boolean).join(" · ") : x.itemNote });
+    } else {
+      const p = newPid == null ? null : byId.get(String(newPid));
+      const base = { myQty: q, itemNote: whole ? (from.itemNote || "") : "", age: from.age, firstSeen: from.firstSeen, dateIsReal: from.dateIsReal };
+      const row = p
+        ? { id: toId, name: p.name, sku: p.sku, stock: Number(p.quantity) || 0, incQty: p.qtyOnOrder || 0, matched: true, src: newSrc, ...base }
+        : { id: toId, name: entry.name, sku: null, stock: null, incQty: null, matched: false, ...base };
+      next = [...next]; next.splice(Math.min(pos, next.length), 0, row);
     }
-    updateSavedItems(next);
-    setMatchingId(null);
-    showToast(`จับคู่ "${it.name}" → ${p.name} แล้ว${exist ? " (รวมยอดกับรายการเดิม)" : ""}`);
+    return next;
   };
-  const editItemNote = (it) => {
-    const v = window.prompt(`หมายเหตุสำหรับ "${it.name}"`, it.itemNote || "");
-    if (v == null) return;
-    updateSavedItems(saved.items.map(x => x.id === it.id ? { ...x, itemNote: v.trim() } : x));
+  const saveEdit = () => {
+    const { it, qty, note, picks } = editing;
+    const num = parseInt(String(qty).replace(/[^\d]/g, ""), 10);
+    if (!Number.isFinite(num) || num < 0) { window.alert("กรุณาใส่จำนวนค้างส่งเป็นตัวเลขจำนวนเต็มที่ถูกต้อง"); return; }
+    let items = saved.items.map(x => x.id === it.id ? { ...x, myQty: num, itemNote: note.trim() } : x);
+    const moved = [];
+    for (const entry of srcEntriesOf(it)) {
+      const v = picks[entry.name];
+      if (v == null || v === "auto") continue;
+      const newPid = v === "none" ? null : Number(v);
+      if ((newPid == null ? "u:" + entry.name : String(newPid)) === it.id) continue;
+      if (onSetAlias(entry.name, newPid, { source: "หน้าบันทึกค้างส่ง" }) === false) continue; // กดยกเลิกตอนเตือนสีไม่ตรง
+      items = moveEntry(items, it.id, entry, newPid);
+      moved.push(newPid == null ? `"${entry.name}" → ไม่มีในคลัง` : `"${entry.name}" → ${byId.get(String(newPid))?.name || ""}`);
+    }
+    updateSavedItems(items);
+    setEditing(null);
+    showToast(moved.length ? "บันทึกแล้ว · จับคู่ " + moved.join(", ") : "บันทึกแล้ว");
   };
   const deleteItem = (it) => {
     if (!window.confirm(`ลบ "${it.name}" ออกจากบันทึกนี้ใช่ไหม?`)) return;
@@ -3763,16 +3779,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
                       <b style={{ fontSize: 13.5 }}>{it.name}</b>
                       {it.matched
                         ? <span style={{ display: "block", fontFamily: "monospace", color: "#6B7280", fontSize: 11.5 }}>{it.sku || ""}</span>
-                        : <>
-                            <span style={{ display: "inline-block", marginTop: 2, fontSize: 10.5, padding: "2px 8px", borderRadius: 99, background: "#FFFBEB", color: "#B45309", fontWeight: 700 }}>ไม่พบใน StockMaster</span>
-                            <button onClick={() => setMatchingId(matchingId === it.id ? null : it.id)} title="เลือกสินค้าใน StockMaster ที่เป็นตัวเดียวกัน (จำไว้ใช้ครั้งต่อไปด้วย)"
-                              style={{ marginLeft: 4, marginTop: 2, fontSize: 10.5, padding: "2px 8px", borderRadius: 99, background: matchingId === it.id ? "#7C3AED" : "#EDE9FE", color: matchingId === it.id ? "#fff" : "#6D28D9", border: "none", fontWeight: 700, cursor: "pointer" }}>🔗 จับคู่สินค้า</button>
-                            {matchingId === it.id && (
-                              <div style={{ marginTop: 6 }}>
-                                <ProductPicker products={products} value="auto" autoLabel="— เลือกสินค้าในคลังที่ตรงกัน —" onPick={v => matchSavedItem(it, v)} />
-                              </div>
-                            )}
-                          </>}
+                        : <span style={{ display: "inline-block", marginTop: 2, fontSize: 10.5, padding: "2px 8px", borderRadius: 99, background: "#FFFBEB", color: "#B45309", fontWeight: 700 }}>ไม่พบใน StockMaster</span>}
                       {lack && <span style={{ display: "inline-block", marginTop: 3, fontSize: 10.5, padding: "2px 8px", borderRadius: 99, background: "#E11D48", color: "#fff", fontWeight: 700 }}>⚠️ ขาดอีก {lackQty.toLocaleString("th-TH")} ชิ้น (สต็อก+รอเข้าไม่พอ)</span>}
                     </td>
                     <td style={{ padding: 10, textAlign: "center", background: cellBg }}>{numChip(it.myQty, "#FEE2E2", "#DC2626")}</td>
@@ -3806,8 +3813,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
                         {it.matched && onViewHistory && (
                           <button onClick={() => onViewHistory(byId.get(String(it.id)))} title="ดูรายการเคลื่อนไหว" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>🕘</button>
                         )}
-                        <button onClick={() => editQty(it)} title="แก้ไขจำนวนค้างส่ง" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>✏️</button>
-                        <button onClick={() => editItemNote(it)} title="แก้ไขหมายเหตุ" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>📝</button>
+                        <button onClick={() => openEdit(it)} title="แก้ไขจำนวน / หมายเหตุ / จับคู่สินค้า" style={{ padding: "6px 8px", fontSize: 13, background: it.matched ? "#fff" : "#F5F3FF", border: "1px solid " + (it.matched ? "#E5E7EB" : "#C4B5FD"), borderRadius: 8, cursor: "pointer" }}>✏️</button>
                         <button onClick={() => deleteItem(it)} title="ลบรายการนี้" style={{ padding: "6px 8px", fontSize: 13, background: "#fff", border: "1px solid #E5E7EB", borderRadius: 8, cursor: "pointer" }}>🗑️</button>
                       </div>
                     </td>
@@ -3817,6 +3823,53 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
               </tbody>
             </table>
           </div>
+          {editing && (() => {
+            const { it } = editing;
+            const entries = srcEntriesOf(it);
+            const setPick = (name, v) => setEditing(e => ({ ...e, picks: { ...e.picks, [name]: v } }));
+            const lbl = { fontSize: 12.5, fontWeight: 700, color: "#374151", display: "block", marginBottom: 5 };
+            return (
+              <div style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20, backdropFilter: "blur(8px)" }}
+                onClick={() => setEditing(null)}>
+                <div onClick={e => e.stopPropagation()}
+                  style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 20, width: "100%", maxWidth: 520, maxHeight: "90vh", overflowY: "auto", overflowX: "hidden", padding: 24, boxSizing: "border-box", boxShadow: "0 24px 60px rgba(0,0,0,0.15)" }}>
+                  <h3 style={{ fontSize: 18, fontWeight: 700, color: "#111827", marginBottom: 2 }}>✏️ แก้ไขรายการ</h3>
+                  <div style={{ fontSize: 13, color: "#6B7280", marginBottom: 16 }}>{it.name}{it.sku ? <span style={{ fontFamily: "monospace" }}> · {it.sku}</span> : ""}</div>
+
+                  <label style={lbl}>จำนวนค้างส่งจาก MyOrder</label>
+                  <input className="inp" type="number" min="0" value={editing.qty} onChange={e => setEditing(x => ({ ...x, qty: e.target.value }))} style={{ marginBottom: 14, maxWidth: 160 }} />
+
+                  <label style={lbl}>หมายเหตุ</label>
+                  <textarea className="inp" rows={2} value={editing.note} onChange={e => setEditing(x => ({ ...x, note: e.target.value }))} placeholder="เช่น รอโรงงานส่ง, ลูกค้ายกเลิกบางส่วน..." style={{ marginBottom: 14, resize: "vertical", width: "100%", boxSizing: "border-box" }} />
+
+                  <label style={lbl}>🔗 จับคู่กับสินค้าใน StockMaster</label>
+                  {entries.length === 0 ? (
+                    <div style={{ fontSize: 12, color: "#9CA3AF", background: "#F9FAFB", borderRadius: 10, padding: 10 }}>
+                      รายการนี้บันทึกไว้ก่อนมีระบบเก็บชื่อจาก MyOrder — กด "เทียบข้อมูลสินค้า" ใหม่อีกรอบ แล้วจะแก้จับคู่ที่นี่ได้
+                    </div>
+                  ) : entries.map(en => (
+                    <div key={en.name} style={{ background: "#F9FAFB", borderRadius: 12, padding: 10, marginBottom: 8 }}>
+                      <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 6 }}>ชื่อใน MyOrder: <b style={{ color: "#111827" }}>{en.name}</b>{it.matched ? ` (${Number(en.qty).toLocaleString("th-TH")} ชิ้น)` : ""}</div>
+                      {en.tag === "alias" ? (
+                        <div style={{ fontSize: 11.5, color: "#B45309" }}>จับคู่แบบชุด/โปรจากหน้า "ยิงตัดสต๊อก" — แก้ที่หน้านั้นแทน</div>
+                      ) : (
+                        <ProductPicker products={products}
+                          value={editing.picks[en.name] ?? (it.matched ? String(it.id) : "auto")}
+                          autoLabel={it.matched ? "— ใช้ตามเดิม —" : "— ยังไม่จับคู่ —"}
+                          onPick={v => setPick(en.name, v)} />
+                      )}
+                    </div>
+                  ))}
+                  <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 2 }}>* การจับคู่จำไว้ใช้ครั้งต่อไปด้วย (ใช้ร่วมกับหน้า "🧾 ของรอเข้า") · เลือก "ไม่จับคู่" = ไม่มีสินค้านี้ในคลัง</p>
+
+                  <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 16 }}>
+                    <button onClick={() => setEditing(null)} style={{ background: "#F3F4F6", color: "#374151", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>ยกเลิก</button>
+                    <button onClick={saveEdit} style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 10, padding: "9px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>💾 บันทึก</button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
           <div style={{ marginTop: 14, background: "#DBEAFE", borderRadius: 14, padding: "12px 18px", textAlign: "center", fontSize: 12, color: "#1E3A8A", fontWeight: 700 }}>
             🔄 บันทึกนี้อัปเดตอัตโนมัติทุกครั้งที่กด "เทียบข้อมูลสินค้า" ด้านบนสำเร็จ (หมายเหตุ/จำนวนรอเข้าที่กรอกเองไว้จะไม่หายไป)
           </div>
