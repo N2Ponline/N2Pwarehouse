@@ -2516,6 +2516,9 @@ const playScanTone = (kind) => {
   } catch {}
 };
 
+// การส่งของแทนเฉพาะใบ เก็บใน pick_progress._subs = { [ชื่อ myorder]: [{product_id, qty}] } (คีย์อื่นใน pick_progress คือ product_id → {scanned, short})
+const pickSubsOf = (prog) => (prog && typeof prog._subs === "object" && prog._subs) || {};
+
 const pickStatusLabel = (s) => s === "closed" ? "ตัดสต็อกแล้ว" : s === "picking" ? "รอตัดสต็อก" : "ยังไม่เริ่ม";
 const fmtDT = (iso) => iso ? new Date(iso).toLocaleString("th-TH", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "-";
 // ตัวกรองวันที่แบบด่วนของรายการใบหยิบ — "all" ไม่ส่งเงื่อนไขวันที่เลย ที่เหลือคืน [from, to] เป็น YYYY-MM-DD
@@ -2566,6 +2569,9 @@ function AliasEditor({ name, products, initial, onSave, onCancel, onAddProduct, 
         "{name}" ขาย 1 หน่วย = ต้องหยิบสินค้าอะไร กี่ชิ้น?
         {guessed && rows.length === 1 && rows[0].pid === String(guessed.id) && <span style={{ color: "#B45309", fontWeight: 400 }}> (ระบบเดาให้ — เช็คให้ตรงก่อนบันทึก)</span>}
       </div>
+      {Array.isArray(initial) && initial.length > 0 && (
+        <div style={{ fontSize: 11.5, color: "#B91C1C", marginBottom: 6 }}>⚠️ บันทึกตรงนี้ = เปลี่ยนถาวร มีผลกับ<b>ทุกใบหยิบต่อไป</b> ถ้าแค่ของหมดแล้วส่งตัวอื่น/สีอื่นแทน ให้กด "ยกเลิก" แล้วใช้ "🔁 ส่งตัวอื่นแทน (เฉพาะใบนี้)"</div>
+      )}
       {rows.map((r, i) => (
         <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
           <ProductPicker products={products} value={r.pid} autoLabel="— เลือกสินค้าในคลัง —" onPick={v => setRow(i, { pid: v })} />
@@ -2602,6 +2608,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   const [closing, setClosing] = useState(false);
   const [editingName, setEditingName] = useState(null);
   const [bulkFor, setBulkFor] = useState(null);      // { pid } กำลังยืนยันปุ่ม "ครบ ✓"
+  const [subFor, setSubFor] = useState(null);        // pid ของไลน์ที่กำลังเลือกของส่งแทน (เฉพาะใบนี้)
   const [busy, setBusy] = useState(false);
   const [recentPreset, setRecentPreset] = useState("all"); // "all" | "today" | "yesterday" | "month" | "custom"
   const [recentFrom, setRecentFrom] = useState(() => localDateStr(new Date()));
@@ -2627,18 +2634,22 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   const { items, lines, unmapped } = useMemo(() => {
     const list = Array.isArray(pick?.products) ? pick.products : [];
     const lineMap = new Map();
+    const subs = pickSubsOf(progress);
     const items = list.map(raw => {
       const name = pickName(raw.name); const orderQty = Number(raw.qty) || 0;
       let comps = aliases.has(name) ? aliases.get(name) : undefined;
       let auto = false;
       if (comps === undefined) { const p = productByName.get(name); if (p) { comps = [{ product_id: p.id, qty: 1 }]; auto = true; } }
+      // ส่งของตัวอื่นแทนเฉพาะใบนี้ (เช่น สีขาวหมด ส่งสีเขียวแทน) — ทับการจับคู่ถาวรเฉพาะใบนี้ ไม่แตะ product_aliases
+      const sub = subs[name] ? { from: comps } : null;
+      if (sub) { comps = subs[name]; auto = false; }
       const missing = Array.isArray(comps) && comps.some(c => !productById.has(c.product_id));
-      const it = { name, orderQty, comps, auto, skip: Array.isArray(comps) && comps.length === 0, unmapped: comps === undefined || missing, missing };
+      const it = { name, orderQty, comps, auto, sub, skip: Array.isArray(comps) && comps.length === 0, unmapped: comps === undefined || missing, missing };
       if (Array.isArray(comps) && !missing) comps.forEach(c => {
         const key = String(c.product_id);
         const line = lineMap.get(key) || { pid: c.product_id, product: productById.get(c.product_id), required: 0, sources: [] };
         line.required += orderQty * c.qty;
-        line.sources.push({ name, orderQty, per: c.qty });
+        line.sources.push({ name, orderQty, per: c.qty, sub: !!sub });
         lineMap.set(key, line);
       });
       return it;
@@ -2708,7 +2719,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
     pickRef.current = row; setPick(row);
     const prog = row?.pick_progress && typeof row.pick_progress === "object" ? row.pick_progress : {};
     progressRef.current = prog; setProgress(prog);
-    localQty.current = {}; summaryShownRef.current = false; setShowSummary(false); setEditingName(null); setBulkFor(null);
+    localQty.current = {}; summaryShownRef.current = false; setShowSummary(false); setEditingName(null); setBulkFor(null); setSubFor(null);
   };
 
   const loadPick = async (id) => {
@@ -2804,6 +2815,30 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
     } catch (e) { if (!handleSetupError(e)) showToast(e.message, "error"); }
   };
 
+  // 🔁 ส่งตัวอื่นแทนเฉพาะใบนี้ — เปลี่ยน SKU ของไลน์นี้ทุกชื่อ myorder ที่ชี้มา แล้วเริ่มนับยิงใหม่ (ยอดที่ยิงไว้ของตัวเดิมไม่นับ)
+  const applySub = (line, newPid) => {
+    const np = productById.get(Number(newPid)); if (!np || np.id === line.pid) { setSubFor(null); return; }
+    if ((line.scanned > 0 || line.short > 0) && !window.confirm(`"${line.product.name}" ยิง/ใส่ของขาดไปแล้ว ${line.scanned + line.short} ชิ้น — เปลี่ยนเป็น "${np.name}" ต้องยิงใหม่ทั้งหมด ตกลงไหม?`)) return;
+    const prog = progressRef.current;
+    const subs = { ...pickSubsOf(prog) };
+    line.sources.forEach(s => {
+      const it = items.find(x => x.name === s.name); if (!it || !Array.isArray(it.comps)) return;
+      subs[s.name] = it.comps.map(c => c.product_id === line.pid ? { ...c, product_id: np.id } : c);
+    });
+    const next = { ...prog, _subs: subs }; delete next[String(line.pid)];
+    setSubFor(null);
+    saveProgress(next);
+    showToast(`ใบ PK${pickRef.current?.id} ส่ง "${np.name}" แทน "${line.product.name}" — เฉพาะใบนี้ การจับคู่ถาวรไม่เปลี่ยน`);
+  };
+  const clearSub = (line) => {
+    if ((line.scanned > 0 || line.short > 0) && !window.confirm(`ยกเลิกส่งแทนแล้วยอดที่ยิงไว้ของ "${line.product.name}" (${line.scanned + line.short} ชิ้น) จะเริ่มนับใหม่ ตกลงไหม?`)) return;
+    const prog = progressRef.current;
+    const subs = { ...pickSubsOf(prog) };
+    line.sources.forEach(s => { delete subs[s.name]; });
+    const next = { ...prog, _subs: subs }; delete next[String(line.pid)];
+    saveProgress(next);
+  };
+
   // ยืนยันปิดใบหยิบ = จุดเดียวที่ตัดสต็อกจริง — ตัดทีเดียวรวมทุกไลน์ตามยอดที่ยิง/ยืนยันไว้ (ก่อนหน้านี้ตัดทันทีทุกครั้งที่ยิง ผู้ใช้ขอให้เลื่อนมาตัดตอนปิดใบแทน)
   const closePick = async () => {
     const p = pickRef.current; if (!p) return;
@@ -2828,7 +2863,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
         const res = await commitStockChange({
           productId: product.id,
           next: (live) => live - line.scanned,
-          makeTx: () => ({ type: "out", quantity: line.scanned, note: `ใบหยิบ PK${p.id}`, by: staffRef.current.trim() || p.picked_by || "" }),
+          makeTx: () => ({ type: "out", quantity: line.scanned, note: `ใบหยิบ PK${p.id}${line.sources.some(s => s.sub) ? ` (ส่งแทน ${line.sources.filter(s => s.sub).map(s => s.name).join(", ")})` : ""}`, by: staffRef.current.trim() || p.picked_by || "" }),
         });
         localQty.current[product.id] = res.newQty;
         res.txs.forEach(tx => onStockCut(product.id, res.newQty, tx));
@@ -3031,8 +3066,26 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
                         <div style={{ fontSize: 14, fontWeight: 700, color: "#111827" }}>{l.product.name} <span style={{ fontFamily: "monospace", fontWeight: 400, color: "#6B7280", fontSize: 12 }}>{l.product.sku}</span></div>
                         <div style={{ fontSize: 11.5, color: "#6B7280", marginTop: 2 }} title={srcText}>จาก: {srcText}</div>
                         <div style={{ fontSize: 11.5, color: "#6B7280" }}>คงเหลือในคลัง {qtyOf(l.product)} {l.product.unit || ""}{l.product.location && l.product.location !== "-" ? ` · ช่อง ${l.product.location}` : ""}
-                          {!isClosed && <button onClick={() => setEditingName(l.sources[0].name)} style={{ marginLeft: 6, background: "none", border: "none", color: "#7C3AED", fontSize: 11, cursor: "pointer", textDecoration: "underline" }}>แก้การจับคู่</button>}
+                          {!isClosed && !l.sources.some(s => s.sub) && <>
+                            <button onClick={() => { setEditingName(null); setSubFor(subFor === l.pid ? null : l.pid); }} title="ของตัวนี้หมด/ไม่พอ ส่งตัวอื่นแทน (เช่น สีอื่น) — มีผลเฉพาะใบนี้" style={{ marginLeft: 6, background: "none", border: "none", color: "#0369A1", fontSize: 11, cursor: "pointer", textDecoration: "underline", fontWeight: 700 }}>🔁 ส่งตัวอื่นแทน (เฉพาะใบนี้)</button>
+                            <button onClick={() => { setSubFor(null); setEditingName(l.sources[0].name); }} title="เปลี่ยนว่าชื่อนี้ใน MyOrder คือสินค้าไหน — มีผลทุกใบต่อไป" style={{ marginLeft: 6, background: "none", border: "none", color: "#9CA3AF", fontSize: 11, cursor: "pointer", textDecoration: "underline" }}>แก้การจับคู่ถาวร</button>
+                          </>}
                         </div>
+                        {l.sources.some(s => s.sub) && (
+                          <div style={{ marginTop: 4, fontSize: 11.5, fontWeight: 700, color: "#0369A1", background: "#E0F2FE", borderRadius: 8, padding: "4px 8px", display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                            🔁 ส่งแทนเฉพาะใบนี้ — ลูกค้าสั่ง: {l.sources.filter(s => s.sub).map(s => s.name).join(", ")}
+                            {!isClosed && <button onClick={() => clearSub(l)} style={btnStyle("#fff", "#0369A1", { fontSize: 11, padding: "2px 8px", border: "1px solid #BAE6FD" })}>ยกเลิกส่งแทน</button>}
+                          </div>
+                        )}
+                        {subFor === l.pid && !isClosed && (
+                          <div style={{ marginTop: 8, background: "#F0F9FF", border: "1px solid #BAE6FD", borderRadius: 12, padding: "10px 12px" }} data-nofocus>
+                            <div style={{ fontSize: 12, color: "#0369A1", fontWeight: 700, marginBottom: 6 }}>ส่งอะไรแทน "{l.product.name}" ในใบ PK{pick.id}? (การจับคู่ชื่อ MyOrder ยังเหมือนเดิม ใบต่อไปกลับไปเป็น "{l.product.name}")</div>
+                            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                              <ProductPicker products={products} value="auto" autoLabel="— เลือกสินค้าที่จะส่งแทน —" onPick={v => { if (v !== "auto" && v !== "none") applySub(l, v); }} />
+                              <button onClick={() => setSubFor(null)} style={btnStyle("none", "#6B7280")}>ยกเลิก</button>
+                            </div>
+                          </div>
+                        )}
                         {editingName && l.sources.some(s => s.name === editingName) && !isClosed && (
                           <AliasEditor name={editingName} products={products} initial={aliases.get(editingName) || items.find(it => it.name === editingName)?.comps || null}
                             orderQty={items.find(it => it.name === editingName)?.orderQty}
@@ -5950,7 +6003,7 @@ export default function WarehouseApp() {
       prods.forEach(p => {
         const q = Number(p.qty) || 0;
         // จับคู่ชื่อโปร (เช่น "6 แพค ฟรี 1 แพค") → SKU × ชิ้น ด้วยตารางเดียวกับหน้ายิงตัดสต๊อก; ไม่มี alias → นับตามชื่อเดิม 1 หน่วย = 1 ชิ้น
-        const comps = aliasMap.get(pickName(p.name));
+        const comps = pickSubsOf(s.pick_progress)[pickName(p.name)] || aliasMap.get(pickName(p.name));
         if (comps === undefined) { map[date].byProduct[p.name] = (map[date].byProduct[p.name] || 0) + q; map[date].totalItems += q; return; }
         comps.forEach(c => { const nm = productName(c.product_id); const pieces = q * c.qty; map[date].byProduct[nm] = (map[date].byProduct[nm] || 0) + pieces; map[date].totalItems += pieces; });
       });
