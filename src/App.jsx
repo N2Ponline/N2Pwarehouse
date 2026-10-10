@@ -4317,20 +4317,24 @@ function ReceivingPanel({ products, backlog: backlogProp, incomingAlias, onRecei
             orderDate: match ? match.d.orderDate : r.date, needDate: match ? match.d.needDate : null,
             orderedBy: match ? match.d.orderedBy : r.orderedBy, supplier: match ? match.d.supplier : r.orderNo,
             channel: match ? match.d.channel : r.tracking, orderNote: match ? match.d.orderNote : r.note,
-            items: [],
+            items: [], trackings: [],
           });
         }
+        // เลขพัสดุดึงจากช่อง "เลขสั่งซื้อ" (orderNo) ของรอบใน backlog — หน้าใบสั่งกรอกเลขพัสดุไว้ช่องนี้ ส่วน channel ของใบมักว่าง
+        const tn = String(r.orderNo || "").trim();
+        if (tn && !docsMap.get(docKey).trackings.includes(tn)) docsMap.get(docKey).trackings.push(tn);
         const itemName = match ? match.it.name : b.name;
         const unit = match ? match.it.unit : "ชิ้น";
         const m = matchBacklogName(String(itemName).trim(), products, incomingAlias);
         docsMap.get(docKey).items.push({ roundKey, name: itemName, unit, backlogItemId: b.id, backlogRoundId: r.id, orderedQty, pendingQty, ...m });
       });
     });
+    docsMap.forEach(d => { if (d.trackings.length) d.channel = d.trackings.join(", "); });
     return [...docsMap.values()].sort((a, b) => String(a.orderDate || "").localeCompare(String(b.orderDate || "")));
   }, [orders, backlog, products, incomingAlias, receivingLogsAll]);
 
   const kw = search.trim().toLowerCase();
-  const filteredDocs = kw ? pendingDocs.filter(d => (d.docNo || "").toLowerCase().includes(kw) || d.items.some(it => it.name.toLowerCase().includes(kw))) : pendingDocs;
+  const filteredDocs = kw ? pendingDocs.filter(d => (d.docNo || "").toLowerCase().includes(kw) || (d.channel || "").toLowerCase().includes(kw) || d.items.some(it => it.name.toLowerCase().includes(kw))) : pendingDocs;
   const shownDocs = [...filteredDocs.filter(d => arriving.has(d.docKey)), ...filteredDocs.filter(d => !arriving.has(d.docKey))];
   const arrivingCount = pendingDocs.filter(d => arriving.has(d.docKey)).length;
   const openDoc = pendingDocs.find(d => d.docKey === openDocId) || null;
