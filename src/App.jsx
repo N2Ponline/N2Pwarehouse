@@ -2924,10 +2924,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
             <div style={{ display: "flex", gap: 6 }}>
               <button onClick={() => setShowSummary(true)} style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 10, padding: "10px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>{isClosed ? "📋 ดูสรุป" : "✅ ปิดใบ / สรุป"}</button>
               <button onClick={leavePick} style={{ background: "#F3F4F6", color: "#6B7280", border: "none", borderRadius: 10, padding: "10px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>✕ ออกจากใบ</button>
-              {!isClosed && (
-                <button onClick={() => deletePick(pick.id)} title="ลบใบนี้ทิ้ง เช่น เปิดผิดใบ/ใบซ้ำ"
-                  style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>🗑️ ลบใบ</button>
-              )}
+              {/* ไม่มีปุ่มลบใบตรงนี้ (ผู้ใช้ขอเอาออก 10 ต.ค. 2026 กันกดพลาดตอนยิง) — ลบได้ที่ 🗑️ บนการ์ดในรายการใบหยิบ */}
             </div>
           )}
         </div>
