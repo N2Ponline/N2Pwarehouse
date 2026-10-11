@@ -3244,7 +3244,7 @@ const backlogAgeBg = (age) => age >= 14 ? "#FEE2E2" : age >= 5 ? "#FEF3C7" : "#F
 
 // ═══════════ บันทึกสินค้าค้างส่ง — วางรายการจาก MyOrder เทียบกับสต็อก/รอเข้าจริงแบบเต็ม (เหมือนหน้าหลักของเครื่องมือ backlog-check) แล้วบันทึกเฉพาะ "ค้างส่ง (สต็อกไม่มีของ)" + ที่จับคู่กับคลังไม่ได้ ไว้เป็นโน้ตกันตกหล่น ═══════════
 // เก็บที่ตาราง backlog_notes แถวเดียว id=1 (jsonb) ให้ทุกคน/ทุกเครื่องเห็นตรงกัน (ต้องรัน backlog-notes-setup.sql ก่อนถึงจะใช้ได้)
-// บันทึกอัตโนมัติทุกครั้งที่กด "เทียบข้อมูลสินค้า" สำเร็จ (ไม่ต้องกดปุ่ม "บันทึก" แยกอีกต่อไป — ปุ่มยังอยู่ไว้กดบันทึกซ้ำเองได้เผื่อบันทึกอัตโนมัติล้มเหลว)
+// "เทียบข้อมูลสินค้า" แค่แสดงผล ไม่เขียน DB — บันทึกเฉพาะตอนกดปุ่ม "บันทึก" เอง (เทียบบางตัวดูเฉยๆ ได้ ไม่ทับบันทึกรวม)
 // แก้ไข/ลบ/ใส่หมายเหตุทีละรายการได้โดยไม่กระทบวันที่บันทึกล่าสุด, การบันทึกซ้ำ (อัตโนมัติหรือกดเอง) จะไม่ทับหมายเหตุ/จำนวนรอเข้าที่กรอกเองไว้ (merge จาก saved.items เดิมเสมอ)
 function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, onSetAlias, incomingRows }) {
   const [paste, setPaste] = useState("");
@@ -3353,7 +3353,6 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
     built.sort((a, b) => (b.over - a.over) || b.my - a.my);
     setRows(built);
     setUnmatched(umAged);
-    saveItems(buildSaveItems(built, umAged), "บันทึกอัตโนมัติแล้ว");
   };
 
   // จับคู่เอง/แก้ไขวันครั้งไหนแล้ว เทียบใหม่อัตโนมัติให้เห็นผลทันที (ถ้าเคยกดเทียบไปแล้วรอบนี้)
@@ -3414,7 +3413,11 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
       showToast("บันทึกไม่สำเร็จ: " + e.message, "error");
     } finally { setSaving(false); }
   };
-  const doSave = async () => { if (rows != null) await saveItems(buildSaveItems(rows, unmatched), "บันทึกแล้ว"); };
+  const doSave = async () => {
+    if (rows == null) return;
+    if (!window.confirm(`บันทึกจะเขียนทับบันทึกค้างส่งเดิมทั้งหมดด้วยรายการที่เทียบอยู่นี้ (${rows.length + unmatched.length} รายการ) ต้องการบันทึกไหม?`)) return;
+    await saveItems(buildSaveItems(rows, unmatched), "บันทึกแล้ว");
+  };
 
   const updateSavedItems = async (nextItems) => {
     const prevSaved = saved;
@@ -3590,7 +3593,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
     <div>
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16, marginBottom: 14 }}>
         <h2 style={{ fontSize: 18, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📋 บันทึกสินค้าค้างส่ง</h2>
-        <p style={{ fontSize: 12.5, color: "#6B7280", marginBottom: 10 }}>วางรายการจาก MyOrder (ปุ่ม "คัดลอกรายการสินค้า" ใน extension) แล้วกด "เทียบข้อมูลสินค้า" — ระบบจะบันทึก<b>ทุกรายการที่ค้างส่ง</b> (ทั้งที่ยังมีสต็อกและไม่มีสต็อก) + ที่จับคู่กับคลังไม่ได้ ไว้เป็นโน้ตกันตกหล่น<b>ให้อัตโนมัติทันที</b> พร้อมจำนวนวันที่ค้าง ทุกคนที่เข้าเว็บนี้เห็นบันทึกเดียวกัน</p>
+        <p style={{ fontSize: 12.5, color: "#6B7280", marginBottom: 10 }}>วางรายการจาก MyOrder (ปุ่ม "คัดลอกรายการสินค้า" ใน extension) แล้วกด "เทียบข้อมูลสินค้า" เพื่อดูผล (ยังไม่บันทึก) — ถ้าต้องการเก็บเป็นบันทึกค้างส่ง ให้กด <b>"💾 บันทึก"</b> ระบบจะบันทึก<b>ทุกรายการที่ค้างส่ง</b> (ทั้งที่ยังมีสต็อกและไม่มีสต็อก) + ที่จับคู่กับคลังไม่ได้ <b>เขียนทับบันทึกเดิมทั้งชุด</b> พร้อมจำนวนวันที่ค้าง ทุกคนที่เข้าเว็บนี้เห็นบันทึกเดียวกัน</p>
         <textarea value={paste} onChange={e => setPaste(e.target.value)}
           placeholder={"เช่น\nที่เกี่ยวขาแว่นกันหล่น\t480 ชิ้น\nชั้นเสียบครีมติดผนัง\t204 ชิ้น"}
           style={{ width: "100%", minHeight: 130, border: "1px solid #E5E7EB", borderRadius: 10, padding: 10, fontSize: 13, fontFamily: "inherit", resize: "vertical" }} />
@@ -3602,7 +3605,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
           {rows != null && (
             <button onClick={doSave} disabled={saving}
               style={{ background: "#16A34A", color: "#fff", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 13, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.6 : 1 }}>
-              {saving ? "กำลังบันทึก..." : `💾 บันทึกอีกครั้ง (${rows.length + unmatched.length} รายการ)`}
+              {saving ? "กำลังบันทึก..." : `💾 บันทึก (${rows.length + unmatched.length} รายการ)`}
             </button>
           )}
           <span style={{ fontSize: 12, color: "#6B7280" }}>{parseInfo}</span>
@@ -3937,7 +3940,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
             );
           })()}
           <div style={{ marginTop: 14, background: "#DBEAFE", borderRadius: 14, padding: "12px 18px", textAlign: "center", fontSize: 12, color: "#1E3A8A", fontWeight: 700 }}>
-            🔄 บันทึกนี้อัปเดตอัตโนมัติทุกครั้งที่กด "เทียบข้อมูลสินค้า" ด้านบนสำเร็จ (หมายเหตุ/จำนวนรอเข้าที่กรอกเองไว้จะไม่หายไป)
+            💾 บันทึกนี้อัปเดตเมื่อกดปุ่ม "บันทึก" ด้านบนเท่านั้น — กด "เทียบข้อมูลสินค้า" อย่างเดียวไม่ทับบันทึก (หมายเหตุ/จำนวนรอเข้าที่กรอกเองไว้จะไม่หายไป)
           </div>
           </>
           )}
