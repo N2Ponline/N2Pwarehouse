@@ -5443,33 +5443,49 @@ export default function WarehouseApp() {
       <table>
         <thead>
           <tr>
-            <th>SKU</th><th>ชื่อสินค้า</th><th>คงเหลือ</th><th>รอเข้า</th><th>ค้างส่ง</th><th>ขาย 7 วัน</th><th>ขาย 14 วัน</th><th>เฉลี่ย/วัน</th><th>พอขายอีก</th><th>แนะนำสั่ง</th><th>ประเมินราคา (฿)</th><th style={{ textAlign: "right" }}>จัดการ</th>
+            <th>สินค้า</th><th>ของที่มีจริง</th><th>ขายวันละ</th><th>ควรสั่ง</th><th>ทำไมต้องสั่ง</th><th style={{ textAlign: "right" }}>จัดการ</th>
           </tr>
         </thead>
         <tbody>
-          {list.map(p => (
+          {list.map(p => {
+            const onOrder = p.qtyOnOrder || 0;
+            const fmt = (n) => Math.round(n).toLocaleString("th-TH");
+            // เหตุผลเป็นประโยคธรรมดา อ่านแล้วรู้เลยว่าทำไมขึ้นมาในรายการ
+            const why = p.available < 0
+              ? (onOrder > 0 ? `รอเข้า ${fmt(onOrder)} ยังไม่พอส่งลูกค้าที่ค้างอยู่ ${fmt(p.backlog)} — ขาดอยู่ ${fmt(-p.available)} ชิ้น` : `ลูกค้ารอของอยู่ ${fmt(p.backlog)} ชิ้น แต่ไม่มีของและไม่มีของรอเข้า`)
+              : p.available === 0
+                ? (p.stockoutDays14 > 0 ? `ของหมดมา ${p.stockoutDays14} วันแล้ว และยังไม่ได้สั่ง` : "ของหมดพอดี และยังไม่ได้สั่ง")
+                : p.urgent
+                  ? `ของที่มีพอขายอีกแค่ ${p.daysLeft.toFixed(0)} วัน แต่ของใหม่ต้องรอ ${reorderCfg.lead} วัน`
+                  : `พอขายอีก ${p.daysLeft.toFixed(0)} วัน — ถึงรอบต้องสั่งแล้ว`;
+            return (
             <tr key={p.id}>
-              <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>{highlightMatch(p.sku, search)}</td>
-              <td>{highlightMatch(p.name, search)}</td>
-              <td style={{ fontWeight: 700, color: statusColor(p).fg }}>{p.quantity}</td>
-              <td style={{ color: p.qtyOnOrder > 0 ? "#7C3AED" : "#D1D5DB", fontWeight: p.qtyOnOrder > 0 ? 700 : 400, whiteSpace: "nowrap" }}
-                                title={p.incomingSources ? "จากระบบใบสั่ง:\n" + p.incomingSources.map(x => "• " + x.name + " — " + x.qty).join("\n") : undefined}>
-                                {p.qtyOnOrder > 0 ? `+${p.qtyOnOrder}` : "-"}
-                                {p.incomingSources && <span style={{ marginLeft: 3, fontSize: 10, opacity: 0.65 }}>🧾</span>}
-                              </td>
-              <td style={{ color: p.backlog > 0 ? "#B45309" : "#D1D5DB", fontWeight: p.backlog > 0 ? 700 : 400 }}>{p.backlog > 0 ? p.backlog : "-"}</td>
-              <td>{p.out7}</td>
-              <td>{p.out14}</td>
-              <td style={{ whiteSpace: "nowrap" }} title={p.stockoutDays14 > 0 ? `ของหมด ${p.stockoutDays14} วันใน 14 วัน — ยอดขายจริงอาจสูงกว่านี้ ดูช่องค้างส่งประกอบ` : undefined}>
-                <b>{p.dailyRate.toFixed(1)}</b>
-                {p.trendUp && <span title="7 วันล่าสุดขายดีขึ้นเกิน 30% — ใช้ยอด 7 วัน" style={{ color: "#059669", marginLeft: 3, fontSize: 11 }}>▲</span>}
-                {p.stockoutDays14 > 0 && <span style={{ color: "#9CA3AF", marginLeft: 3, fontSize: 10 }}>หมด {p.stockoutDays14}ว.</span>}
+              <td style={{ minWidth: 160 }}>
+                <div style={{ fontWeight: 600, color: "#111827" }}>{highlightMatch(p.name, search)}</div>
+                <div style={{ fontFamily: "monospace", fontSize: 11, color: "#9CA3AF" }}>{highlightMatch(p.sku, search)}</div>
               </td>
-              <td style={{ fontWeight: 700, color: p.available <= 0 ? "#DC2626" : p.urgent ? "#D97706" : "#6B7280", whiteSpace: "nowrap" }}>
-                {p.available <= 0 ? "ไม่พอแล้ว" : isFinite(p.daysLeft) ? `${p.daysLeft.toFixed(1)} วัน` : "-"}
+              <td style={{ whiteSpace: "nowrap" }}
+                title={p.incomingSources ? "รอเข้าจากระบบใบสั่ง:\n" + p.incomingSources.map(x => "• " + x.name + " — " + x.qty).join("\n") : undefined}>
+                <div style={{ fontWeight: 800, fontSize: 15, color: p.available < 0 ? "#DC2626" : p.available === 0 ? "#DC2626" : "#111827" }}>
+                  {p.available < 0 ? `ขาด ${fmt(-p.available)}` : p.available === 0 ? "หมด" : `${fmt(p.available)} ชิ้น`}
+                </div>
+                <div style={{ fontSize: 11, color: "#6B7280" }}>
+                  คลัง {fmt(p.quantity)}
+                  {onOrder > 0 && <span style={{ color: "#7C3AED" }}> + รอเข้า {fmt(onOrder)}</span>}
+                  {p.backlog > 0 && <span style={{ color: "#B45309" }}> − ค้างส่ง {fmt(p.backlog)}</span>}
+                </div>
               </td>
-              <td style={{ fontWeight: 700, color: "#7C3AED" }}>{p.suggested.toLocaleString("th-TH")}</td>
-              <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(p.suggested * p.price).toLocaleString("th-TH")}</td>
+              <td style={{ whiteSpace: "nowrap" }}>
+                <div><b style={{ fontSize: 15 }}>{p.dailyRate < 10 ? p.dailyRate.toFixed(1) : fmt(p.dailyRate)}</b> ชิ้น
+                  {p.trendUp && <span title="7 วันล่าสุดขายดีขึ้นเกิน 30% — คิดจากยอด 7 วัน" style={{ color: "#059669", marginLeft: 4, fontSize: 11, fontWeight: 700 }}>▲ ขายดีขึ้น</span>}
+                </div>
+                <div style={{ fontSize: 11, color: "#6B7280" }}>7 วัน ขาย {fmt(p.out7)} · 14 วัน ขาย {fmt(p.out14)}</div>
+              </td>
+              <td style={{ whiteSpace: "nowrap" }}>
+                <div style={{ fontWeight: 800, fontSize: 16, color: "#7C3AED" }}>{p.suggested.toLocaleString("th-TH")} ชิ้น</div>
+                <div style={{ fontSize: 11, color: "#6B7280" }}>{p.price > 0 ? `≈ ฿${fmt(p.suggested * p.price)}` : "ยังไม่ใส่ราคาทุน"}</div>
+              </td>
+              <td style={{ fontSize: 12.5, color: p.available <= 0 ? "#B91C1C" : "#374151", minWidth: 180 }}>{why}</td>
               <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                 <button onClick={() => { setTxType("in"); setTxForm({ productId: String(p.id), quantity: "", note: "", by: "" }); setShowModal("tx"); }}
                   title="รับเข้า" style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", color: "#059669", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer", marginRight: 4, fontWeight: 700 }}>📥</button>
@@ -5477,7 +5493,8 @@ export default function WarehouseApp() {
                   title="ตั้งจำนวนรอเข้า" style={{ background: "#F5F3FF", border: "1px solid #DDD6FE", color: "#7C3AED", borderRadius: 8, padding: "4px 9px", fontSize: 12, cursor: "pointer" }}>✏️</button>
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -6516,8 +6533,9 @@ export default function WarehouseApp() {
               <div>
                 <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🛒 ต้องสั่งซื้อ</h2>
                 <p style={{ fontSize: 13, color: "#6B7280", maxWidth: 560 }}>
-                  เฉลี่ยขาย/วัน = 60% ของยอด 7 วัน + 40% ของยอด 14 วัน (7 วันโตเกิน 30% ใช้ 7 วัน ▲) · พร้อมใช้ = คงเหลือ + รอเข้า − ค้างส่ง ·
-                  ขึ้นรายการเมื่อพร้อมใช้ ≤ เฉลี่ย × (รอของ + เผื่อ) · แนะนำสั่ง = เฉลี่ย × (รอของ + เผื่อ + สั่งทุก) − พร้อมใช้
+                  <b>ของที่มีจริง</b> = ของในคลัง + ของรอเข้า − ของที่ลูกค้าค้างส่งอยู่ ·
+                  <b> ขายวันละ</b> ดูจากยอดขาย 7 และ 14 วันล่าสุด ·
+                  <b> ควรสั่ง</b> = จำนวนที่ทำให้มีของพอขายอีก {reorderCfg.lead + reorderCfg.safety + reorderCfg.cycle} วัน (รอของ {reorderCfg.lead} + เผื่อ {reorderCfg.safety} + จนถึงรอบสั่งถัดไป {reorderCfg.cycle}) — หักของรอเข้าให้แล้ว
                 </p>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
