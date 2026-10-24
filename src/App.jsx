@@ -4832,7 +4832,16 @@ export default function WarehouseApp() {
   const [stockSub, setStockSub] = useState("orders"); // เมนูย่อยของ "เช็คสต็อก": orders | adjust | print | labels | receivingApproval | reorder | transactions | dispose (backlog ย้ายออกไปเป็นแท็บหลักแล้ว)
   const [checkerName, setCheckerName] = useState(""); // ผู้ตรวจนับ
   const [savingStockCheck, setSavingStockCheck] = useState(false);
-  const [reorderDays, setReorderDays] = useState(7); // จำนวนวันที่ต้องการให้สต็อกพอ ในหน้า "ต้องสั่งซื้อ"
+  // ตั้งค่าหน้า "ต้องสั่งซื้อ": รอของกี่วัน / เผื่อกี่วัน / สั่งทุกกี่วัน — จำไว้ในเครื่อง
+  const [reorderCfg, setReorderCfgState] = useState(() => {
+    const def = { lead: 10, safety: 4, cycle: 14 };
+    try { return { ...def, ...JSON.parse(localStorage.getItem("reorderCfg") || "{}") }; } catch { return def; }
+  });
+  const setReorderCfg = (k, v) => setReorderCfgState(prev => {
+    const next = { ...prev, [k]: Math.max(0, parseInt(v) || 0) };
+    try { localStorage.setItem("reorderCfg", JSON.stringify(next)); } catch {}
+    return next;
+  });
   const [reorderSearch, setReorderSearch] = useState(""); // ค้นหาชื่อสินค้า/SKU ในหน้า "ต้องสั่งซื้อ"
 
   // ── ยอดออเดอร์ (จาก MyOrder extension) — ไว้ให้แอดมินเทียบกับที่พนักงานตัดสต็อกจริง ──
@@ -5335,36 +5344,77 @@ export default function WarehouseApp() {
     return products.filter(p => p.quantity > 0 && !recentProductIds.has(p.id));
   })();
 
-  // รายการที่ควรสั่งซื้อ — อิงอัตราเบิกจริง 30 วันล่าสุด, หักลบของที่สั่งรอเข้าแล้ว (qtyOnOrder) เพื่อไม่ให้สั่งซ้ำ
+  // รายการที่ควรสั่งซื้อ — ยอดขาย (เบิกออก) 7 + 14 วัน ถ่วงน้ำหนัก 60/40, ถ้า 7 วันโตเกิน 30% ใช้ 7 วันเลย
+  // หารด้วยจำนวนวันเต็มเสมอ แม้ช่วงไหนของหมด — ออเดอร์ช่วงของหมดไปค้างส่งแล้วถูกตัดรวดเดียวตอนของเข้า
+  // ถ้าตัดวันที่หมดออกจะได้ค่าเฉลี่ยสูงเกินจริงหลายเท่า (เช็คกับข้อมูลจริง ต.ค. 2026) · "หมด X วัน" แสดงไว้ประกอบเท่านั้น
+  // พร้อมใช้ = คงเหลือ + รอเข้า − ค้างส่ง · ถึงจุดสั่งเมื่อ พร้อมใช้ ≤ เฉลี่ย × (รอของ + เผื่อ)
+  // แนะนำสั่ง = เฉลี่ย × (รอของ + เผื่อ + รอบสั่ง) − พร้อมใช้
   const reorderList = useMemo(() => {
-    const now = new Date();
-    const cutoff7 = new Date(now); cutoff7.setDate(cutoff7.getDate() - 7);
-    const cutoff30 = new Date(now); cutoff30.setDate(cutoff30.getDate() - 30);
-    const out7 = {}, out30 = {};
+    const { lead, safety, cycle } = reorderCfg;
+    const dayKey = (d) => localDateStr(d);
+    const days = []; // วันนี้ย้อนหลัง 14 วัน (ใหม่ → เก่า)
+    for (let i = 0; i < 14; i++) { const d = new Date(); d.setDate(d.getDate() - i); days.push(dayKey(d)); }
+    const oldest = days[13];
+    // ยอดเปลี่ยนสุทธิ/ยอดเบิก ต่อสินค้าต่อวัน
+    const net = {}, outByDay = {};
     transactions.forEach(tx => {
-      if (tx.type !== "out") return;
-      const d = new Date(tx.date);
-      if (d >= cutoff30) out30[tx.productId] = (out30[tx.productId] || 0) + tx.quantity;
-      if (d >= cutoff7) out7[tx.productId] = (out7[tx.productId] || 0) + tx.quantity;
+      const k = String(tx.date || "").slice(0, 10);
+      if (!k || k < oldest) return;
+      const q = Number(tx.quantity) || 0;
+      const delta = tx.type === "in" ? q : tx.type === "out" ? -q : q; // adjust เก็บค่าบวก/ลบมาแล้ว
+      ((net[tx.productId] ||= {})[k]) = (net[tx.productId][k] || 0) + delta;
+      if (tx.type === "out") ((outByDay[tx.productId] ||= {})[k]) = (outByDay[tx.productId][k] || 0) + q;
     });
     return products
       .map(p => {
-        const o7 = out7[p.id] || 0;
-        const o30 = out30[p.id] || 0;
-        const dailyRate = o30 / 30;
+        const n = net[p.id] || {}, o = outByDay[p.id] || {};
+        // ย้อนยอดคงเหลือจากปัจจุบันกลับไปทีละวัน: ต้นวัน = สิ้นวัน − ยอดเปลี่ยนของวันนั้น
+        let endBal = p.quantity, out7 = 0, out14 = 0, inStock14 = 0;
+        days.forEach((k, i) => {
+          const startBal = endBal - (n[k] || 0);
+          const sold = o[k] || 0;
+          if (i < 7) out7 += sold;
+          out14 += sold; if (sold > 0 || startBal > 0 || endBal > 0) inStock14++;
+          endBal = startBal;
+        });
+        const r14 = out14 / 14, r7 = out7 / 7;
+        const trendUp = r14 > 0 && r7 > r14 * 1.3;
+        const dailyRate = trendUp ? r7 : 0.6 * r7 + 0.4 * r14;
         const onOrder = p.qtyOnOrder || 0;
-        const available = p.quantity + onOrder; // นับของที่สั่งรอเข้าเป็นสต็อกที่กำลังจะมี ไม่ต้องสั่งซ้ำ
-        const daysLeft = dailyRate > 0 ? available / dailyRate : Infinity;
-        const targetQty = Math.ceil(dailyRate * reorderDays);
-        const suggested = Math.max(0, targetQty - available);
-        return { ...p, out7: o7, out30: o30, dailyRate, daysLeft, suggested };
+        const backlog = p.backlogTotal || 0;
+        const available = p.quantity + onOrder - backlog;
+        const daysLeft = dailyRate > 0 ? Math.max(0, available) / dailyRate : Infinity;
+        const reorderPoint = dailyRate * (lead + safety);
+        const suggested = available <= reorderPoint ? Math.max(0, Math.ceil(dailyRate * (lead + safety + cycle) - available)) : 0;
+        const urgent = available <= 0 || daysLeft < lead; // ของจะขาดก่อนล็อตใหม่มาถึง
+        return { ...p, out7, out14, stockoutDays14: 14 - inStock14, trendUp, dailyRate, backlog, available, daysLeft, suggested, urgent };
       })
       .filter(p => p.suggested > 0)
-      .sort((a, b) => a.daysLeft - b.daysLeft);
-  }, [products, transactions, reorderDays]);
+      .sort((a, b) => a.daysLeft - b.daysLeft || b.dailyRate - a.dailyRate);
+  }, [products, transactions, reorderCfg]);
   const reorderCost = reorderList.reduce((s, p) => s + p.suggested * p.price, 0);
-  const reorderOutOfStock = reorderList.filter(p => p.quantity <= 0);
-  const reorderLowStock = reorderList.filter(p => p.quantity > 0);
+  const reorderOutOfStock = reorderList.filter(p => p.urgent);
+  const reorderLowStock = reorderList.filter(p => !p.urgent);
+
+  const handleExportReorder = async () => {
+    try {
+      const XLSX = await loadXLSX();
+      const { lead, safety, cycle } = reorderCfg;
+      const rows = [
+        [`ใบแนะนำสั่งซื้อ N2P — ${new Date().toLocaleDateString("th-TH", { dateStyle: "long" })}`],
+        [`รอของ ${lead} วัน · เผื่อ ${safety} วัน · สั่งทุก ${cycle} วัน`],
+        [],
+        ["สถานะ", "SKU", "ชื่อสินค้า", "คงเหลือ", "รอเข้า", "ค้างส่ง", "ขาย 7 วัน", "ขาย 14 วัน", "เฉลี่ย/วัน", "พอขายอีก (วัน)", "แนะนำสั่ง", "ราคาทุน", "ประเมินราคา (฿)"],
+        ...reorderList.map(p => [p.urgent ? "ด่วน" : "ถึงจุดสั่ง", p.sku, p.name, p.quantity, p.qtyOnOrder || 0, p.backlog, p.out7, p.out14,
+          Math.round(p.dailyRate * 10) / 10, isFinite(p.daysLeft) ? Math.round(p.daysLeft * 10) / 10 : "-", p.suggested, p.price, p.suggested * p.price]),
+      ];
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+      ws["!cols"] = [8, 12, 40, 8, 8, 8, 9, 9, 9, 12, 10, 9, 14].map(w => ({ wch: w }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "แนะนำสั่งซื้อ");
+      XLSX.writeFile(wb, `reorder_${todayStr()}.xlsx`);
+    } catch (e) { alert("Export ไม่สำเร็จ: " + e.message); }
+  };
   const matchesReorderSearch = (p) => {
     const q = reorderSearch.trim().toLowerCase();
     if (!q) return true;
@@ -5393,7 +5443,7 @@ export default function WarehouseApp() {
       <table>
         <thead>
           <tr>
-            <th>SKU</th><th>ชื่อสินค้า</th><th>คงเหลือ</th><th>รอเข้า</th><th>เบิก 7 วัน</th><th>เบิก 30 วัน</th><th>พอใช้อีก</th><th>แนะนำสั่ง</th><th>ประเมินราคา (฿)</th><th style={{ textAlign: "right" }}>จัดการ</th>
+            <th>SKU</th><th>ชื่อสินค้า</th><th>คงเหลือ</th><th>รอเข้า</th><th>ค้างส่ง</th><th>ขาย 7 วัน</th><th>ขาย 14 วัน</th><th>เฉลี่ย/วัน</th><th>พอขายอีก</th><th>แนะนำสั่ง</th><th>ประเมินราคา (฿)</th><th style={{ textAlign: "right" }}>จัดการ</th>
           </tr>
         </thead>
         <tbody>
@@ -5407,10 +5457,16 @@ export default function WarehouseApp() {
                                 {p.qtyOnOrder > 0 ? `+${p.qtyOnOrder}` : "-"}
                                 {p.incomingSources && <span style={{ marginLeft: 3, fontSize: 10, opacity: 0.65 }}>🧾</span>}
                               </td>
+              <td style={{ color: p.backlog > 0 ? "#B45309" : "#D1D5DB", fontWeight: p.backlog > 0 ? 700 : 400 }}>{p.backlog > 0 ? p.backlog : "-"}</td>
               <td>{p.out7}</td>
-              <td>{p.out30}</td>
-              <td style={{ fontWeight: 700, color: p.quantity <= 0 ? "#DC2626" : p.daysLeft <= 3 ? "#D97706" : "#6B7280" }}>
-                {p.quantity <= 0 ? "หมดแล้ว" : isFinite(p.daysLeft) ? `${p.daysLeft.toFixed(1)} วัน` : "-"}
+              <td>{p.out14}</td>
+              <td style={{ whiteSpace: "nowrap" }} title={p.stockoutDays14 > 0 ? `ของหมด ${p.stockoutDays14} วันใน 14 วัน — ยอดขายจริงอาจสูงกว่านี้ ดูช่องค้างส่งประกอบ` : undefined}>
+                <b>{p.dailyRate.toFixed(1)}</b>
+                {p.trendUp && <span title="7 วันล่าสุดขายดีขึ้นเกิน 30% — ใช้ยอด 7 วัน" style={{ color: "#059669", marginLeft: 3, fontSize: 11 }}>▲</span>}
+                {p.stockoutDays14 > 0 && <span style={{ color: "#9CA3AF", marginLeft: 3, fontSize: 10 }}>หมด {p.stockoutDays14}ว.</span>}
+              </td>
+              <td style={{ fontWeight: 700, color: p.available <= 0 ? "#DC2626" : p.urgent ? "#D97706" : "#6B7280", whiteSpace: "nowrap" }}>
+                {p.available <= 0 ? "ไม่พอแล้ว" : isFinite(p.daysLeft) ? `${p.daysLeft.toFixed(1)} วัน` : "-"}
               </td>
               <td style={{ fontWeight: 700, color: "#7C3AED" }}>{p.suggested.toLocaleString("th-TH")}</td>
               <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(p.suggested * p.price).toLocaleString("th-TH")}</td>
@@ -6459,20 +6515,29 @@ export default function WarehouseApp() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16, flexWrap: "wrap", gap: 10 }}>
               <div>
                 <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>🛒 ต้องสั่งซื้อ</h2>
-                <p style={{ fontSize: 13, color: "#6B7280" }}>คำนวณจากอัตราเบิกจริง 30 วันล่าสุด หักลบ "รอเข้า" ที่สั่งไว้แล้วออกให้อัตโนมัติ</p>
+                <p style={{ fontSize: 13, color: "#6B7280", maxWidth: 560 }}>
+                  เฉลี่ยขาย/วัน = 60% ของยอด 7 วัน + 40% ของยอด 14 วัน (7 วันโตเกิน 30% ใช้ 7 วัน ▲) · พร้อมใช้ = คงเหลือ + รอเข้า − ค้างส่ง ·
+                  ขึ้นรายการเมื่อพร้อมใช้ ≤ เฉลี่ย × (รอของ + เผื่อ) · แนะนำสั่ง = เฉลี่ย × (รอของ + เผื่อ + สั่งทุก) − พร้อมใช้
+                </p>
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <label style={{ fontSize: 13, color: "#6B7280" }}>ให้สต็อกพอสำหรับ</label>
-                <input type="number" min="1" className="inp" style={{ width: 64, padding: "8px 10px", textAlign: "center" }}
-                  value={reorderDays} onChange={e => setReorderDays(Math.max(1, parseInt(e.target.value) || 1))} />
-                <label style={{ fontSize: 13, color: "#6B7280" }}>วัน</label>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                {[["lead", "รอของ"], ["safety", "เผื่อ"], ["cycle", "สั่งทุก"]].map(([k, l]) => (
+                  <label key={k} style={{ fontSize: 13, color: "#6B7280", display: "flex", alignItems: "center", gap: 4 }}>
+                    {l}
+                    <input type="number" min="0" className="inp" style={{ width: 56, padding: "8px 6px", textAlign: "center" }}
+                      value={reorderCfg[k]} onChange={e => setReorderCfg(k, e.target.value)} />
+                    วัน
+                  </label>
+                ))}
+                <button onClick={handleExportReorder} disabled={reorderList.length === 0}
+                  style={{ background: "#F5F3FF", border: "1px solid #DDD6FE", color: "#7C3AED", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>📥 Export Excel</button>
               </div>
             </div>
 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 14, marginBottom: 20 }}>
               {[
                 { label: "รายการที่ต้องสั่ง", value: reorderList.length, icon: "📋", bg: "#F5F3FF", color: "#7C3AED" },
-                { label: "หมดสต็อกแล้ว", value: reorderOutOfStock.length, icon: "🚨", bg: reorderOutOfStock.length > 0 ? "#FEF2F2" : "#F0FDF4", color: reorderOutOfStock.length > 0 ? "#DC2626" : "#059669" },
+                { label: "ด่วน (ขาดก่อนของมา)", value: reorderOutOfStock.length, icon: "🚨", bg: reorderOutOfStock.length > 0 ? "#FEF2F2" : "#F0FDF4", color: reorderOutOfStock.length > 0 ? "#DC2626" : "#059669" },
                 { label: "ยอดสั่งซื้อประเมิน (฿)", value: reorderCost.toLocaleString("th-TH"), icon: "💰", bg: "#EFF6FF", color: "#2563EB" },
               ].map((s, i) => (
                 <div key={i} style={{ background: "#fff", borderRadius: 16, padding: 18, border: "1px solid #E5E7EB" }}>
@@ -6500,12 +6565,12 @@ export default function WarehouseApp() {
             <div style={{ marginBottom: 28 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
                 <span style={{ background: "#FEE2E2", color: "#DC2626", borderRadius: 999, padding: "3px 12px", fontSize: 12, fontWeight: 700 }}>ด่วนที่สุด</span>
-                <h3 style={{ fontSize: 16, fontWeight: 700, color: "#111827", margin: 0 }}>หมดสต็อกแล้ว แต่ยังขายได้ต่อเนื่อง</h3>
+                <h3 style={{ fontSize: 16, fontWeight: 700, color: "#111827", margin: 0 }}>ของจะขาดก่อนล็อตใหม่มาถึง</h3>
                 <span style={{ fontSize: 12, color: "#6B7280" }}>{reorderSearch ? `${reorderOutOfStockView.length} / ${reorderOutOfStock.length}` : reorderOutOfStock.length} รายการ</span>
               </div>
-              <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 10 }}>สินค้ากลุ่มนี้เหลือ 0 ชิ้นในคลัง แต่ยังมีการเบิกออกในช่วงที่ผ่านมา — กำลังเสียโอกาสขายอยู่ตอนนี้ ควรสั่งก่อนกลุ่มอื่นทั้งหมด</p>
+              <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 10 }}>พร้อมใช้พอขายได้ไม่ถึง {reorderCfg.lead} วัน (หรือไม่พอส่งค้างส่งแล้ว) — ต่อให้สั่งวันนี้ก็จะขาดช่วงหนึ่ง ควรสั่งทันที และถ้าเร่งของได้ให้เร่ง</p>
               {reorderOutOfStock.length === 0 ? (
-                <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 28, color: "#9CA3AF" }}>ไม่มีสินค้าหมดสต็อก 🎉</div>
+                <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 28, color: "#9CA3AF" }}>ไม่มีสินค้าด่วน 🎉</div>
               ) : reorderOutOfStockView.length === 0 ? (
                 <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 28, color: "#9CA3AF" }}>ไม่พบสินค้าที่ค้นหาในกลุ่มนี้</div>
               ) : (
@@ -6516,13 +6581,13 @@ export default function WarehouseApp() {
             {/* กลุ่ม 2: ใกล้หมด */}
             <div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
-                <span style={{ background: "#FEF3C7", color: "#B45309", borderRadius: 999, padding: "3px 12px", fontSize: 12, fontWeight: 700 }}>ใกล้หมด</span>
-                <h3 style={{ fontSize: 16, fontWeight: 700, color: "#111827", margin: 0 }}>จะหมดภายใน {reorderDays} วัน</h3>
+                <span style={{ background: "#FEF3C7", color: "#B45309", borderRadius: 999, padding: "3px 12px", fontSize: 12, fontWeight: 700 }}>ถึงจุดสั่ง</span>
+                <h3 style={{ fontSize: 16, fontWeight: 700, color: "#111827", margin: 0 }}>พอขาย {reorderCfg.lead}–{reorderCfg.lead + reorderCfg.safety} วัน</h3>
                 <span style={{ fontSize: 12, color: "#6B7280" }}>{reorderSearch ? `${reorderLowStockView.length} / ${reorderLowStock.length}` : reorderLowStock.length} รายการ</span>
               </div>
-              <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 10 }}>ยังมีของอยู่บ้าง แต่ที่อัตราเบิกปัจจุบันจะหมดภายในรอบที่กำหนด ควรสั่งควบคู่ไปกับกลุ่มด่วนที่สุด</p>
+              <p style={{ fontSize: 13, color: "#6B7280", marginBottom: 10 }}>ยังทันของเข้าก่อนหมด แต่ถึงจุดที่ต้องสั่งแล้ว — สั่งรอบนี้พร้อมกลุ่มด่วนได้เลย</p>
               {reorderLowStock.length === 0 ? (
-                <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 28, color: "#9CA3AF" }}>ไม่มีสินค้าใกล้หมด 🎉</div>
+                <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 28, color: "#9CA3AF" }}>ไม่มีสินค้าถึงจุดสั่ง 🎉</div>
               ) : reorderLowStockView.length === 0 ? (
                 <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 28, color: "#9CA3AF" }}>ไม่พบสินค้าที่ค้นหาในกลุ่มนี้</div>
               ) : (
