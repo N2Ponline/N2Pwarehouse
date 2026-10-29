@@ -98,6 +98,9 @@ const api = {
   getArrivingFlags: () => sb("backlog_notes?id=eq.2&select=items").then(rows => (rows && rows[0] && Array.isArray(rows[0].items)) ? rows[0].items : []),
   saveArrivingFlags: (items) => sb("backlog_notes?on_conflict=id", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ id: 2, items }) }),
   updateBacklogNote: (note) => sb("backlog_notes?id=eq.1", { method: "PATCH", body: JSON.stringify({ note }) }),
+  // หมายเหตุผู้จัดการว่า "ใบหยิบค้างเพราะอะไร" — ยืม backlog_notes แถว id=3 เก็บ jsonb { [PK id]: { note, by, at } } (ไม่ใช้ order_scans.note เพราะคอลัมน์นั้นเป็นหมายเหตุที่มาจาก extension)
+  getPickNotes: () => sb("backlog_notes?id=eq.3&select=items").then(rows => { const it = rows && rows[0] && rows[0].items; return (it && typeof it === "object" && !Array.isArray(it)) ? it : {}; }),
+  savePickNotes: (items) => sb("backlog_notes?on_conflict=id", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ id: 3, items, saved_at: new Date().toISOString() }) }),
   // ── รับสินค้าเข้า (แทนใบพิมพ์กระดาษ) — ฝ่ายคลังบันทึกก่อน (pending) ผู้จัดการอนุมัติทีหลังถึงเข้าสต็อกจริง ต้องรัน receiving-logs-setup.sql ก่อน ──
   getReceivingLogs: () => sbAll("receiving_logs?select=*&order=created_at.desc"),
   addReceivingLogs: (rows) => sb("receiving_logs", { method: "POST", body: JSON.stringify(rows) }), // รับ array บันทึกหลายแถวพร้อมกันได้
@@ -2594,6 +2597,222 @@ function AliasEditor({ name, products, initial, onSave, onCancel, onAddProduct, 
   );
 }
 
+// ═══════════ ใบหยิบค้าง (หน้าผู้จัดการ) — สรุปรายวันว่าใบไหนยังไม่ได้ยิงตัดสต็อก แยกเพจ/สินค้า + ใส่หมายเหตุว่าค้างเพราะอะไร ═══════════
+const PICK_NOTE_QUICK = ["ของหมด", "รอของเข้า", "ลูกค้ายกเลิก", "พิมพ์สลิปซ้ำ", "ส่งแล้ว ลืมยิง", "ตีกลับ/แก้ไขออเดอร์"];
+function PickBacklogPanel({ showToast }) {
+  const [preset, setPreset] = useState("all"); // all | today | yesterday | month | custom
+  const [from, setFrom] = useState(() => localDateStr(new Date()));
+  const [to, setTo] = useState(() => localDateStr(new Date()));
+  const [rows, setRows] = useState([]);
+  const [notes, setNotes] = useState({});
+  const [drafts, setDrafts] = useState({});
+  const [savingId, setSavingId] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [openDay, setOpenDay] = useState(null);
+  const [dayView, setDayView] = useState("sheets"); // sheets | page | product
+  const [onlyNoNote, setOnlyNoNote] = useState(false);
+  const [checker, setChecker] = useState(() => { try { return localStorage.getItem("managerName") || ""; } catch { return ""; } });
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [f, t] = preset === "all" ? [null, null] : pickDateRangeForPreset(preset, from, to);
+      const fromIso = new Date(Math.max(new Date(PICK_FEATURE_FLOOR), f ? new Date(f + "T00:00:00") : 0)).toISOString();
+      const list = t ? await api.getOrderScansRange(fromIso, new Date(t + "T23:59:59").toISOString()) : await api.getRecentOrderScans(fromIso);
+      setRows((list || []).filter(r => r.pick_status !== "closed"));
+      setNotes(await api.getPickNotes());
+    } catch (e) { showToast(e.message, "error"); }
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, [preset, from, to]);
+
+  const days = useMemo(() => {
+    const m = new Map();
+    rows.forEach(r => {
+      if (onlyNoNote && notes[r.id]?.note) return;
+      const d = localDateStr(new Date(r.created_at));
+      if (!m.has(d)) m.set(d, { date: d, sheets: [], pages: new Map(), prods: new Map() });
+      const g = m.get(d);
+      g.sheets.push(r);
+      const pg = r.page_name || "ไม่ระบุเพจ";
+      const pe = g.pages.get(pg) || { name: pg, count: 0, units: 0, ids: [] };
+      pe.count += 1; pe.units += Number(r.total_items) || 0; pe.ids.push(r.id); g.pages.set(pg, pe);
+      (Array.isArray(r.products) ? r.products : []).forEach(p => {
+        const nm = pickName(p.name) || "ไม่ระบุสินค้า";
+        const e = g.prods.get(nm) || { name: nm, qty: 0, ids: new Set() };
+        e.qty += Number(p.qty) || 0; e.ids.add(r.id); g.prods.set(nm, e);
+      });
+    });
+    return [...m.values()].sort((a, b) => b.date.localeCompare(a.date));
+  }, [rows, notes, onlyNoNote]);
+
+  const saveNote = async (id, text) => {
+    const note = String(text ?? "").trim();
+    setSavingId(id);
+    try {
+      const fresh = await api.getPickNotes(); // ดึงสดก่อนเขียน กันทับหมายเหตุที่คนอื่นเพิ่งบันทึก
+      if (note) fresh[id] = { note, by: checker.trim() || "ผู้จัดการ", at: new Date().toISOString() };
+      else delete fresh[id];
+      await api.savePickNotes(fresh);
+      setNotes(fresh);
+      setDrafts(d => { const n = { ...d }; delete n[id]; return n; });
+      showToast(note ? `บันทึกหมายเหตุ PK${id} แล้ว` : `ลบหมายเหตุ PK${id} แล้ว`);
+    } catch (e) { showToast(e.message, "error"); }
+    setSavingId(null);
+  };
+
+  const today = localDateStr(new Date());
+  const ageDays = (d) => Math.round((new Date(today + "T00:00:00") - new Date(d + "T00:00:00")) / 86400000);
+  const fmtDay = (d) => new Date(d + "T00:00:00").toLocaleDateString("th-TH", { weekday: "short", day: "numeric", month: "short" });
+  const total = days.reduce((s, g) => s + g.sheets.length, 0);
+  const totalNoted = days.reduce((s, g) => s + g.sheets.filter(r => notes[r.id]?.note).length, 0);
+  const th = { textAlign: "left", whiteSpace: "nowrap" }; // สี/พื้นหลังมาจาก thead th ใน appStyles เหมือนตารางอื่นในแอป
+  const td = { padding: "8px 10px", fontSize: 13, color: "#111827", borderBottom: "1px solid #F3F4F6", verticalAlign: "top" };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📋 ใบหยิบค้าง (ยังไม่ยิงตัดสต็อก)</h2>
+          <p style={{ fontSize: 13, color: "#6B7280" }}>สรุปรายวันว่ามีใบหยิบที่ยังไม่ได้ยิงตัดสต็อกกี่ใบ แยกตามเพจและชื่อสินค้า — เช็คแล้วใส่หมายเหตุว่าค้างเพราะอะไร (พนักงานจะเห็นหมายเหตุบนการ์ดในหน้ายิงตัดสต็อกด้วย)</p>
+        </div>
+        <button onClick={load} style={btnStyle("#F3F4F6", "#6B7280", { padding: "8px 12px" })}>🔄 รีเฟรช</button>
+      </div>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center", marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, color: "#6B7280" }}>วันที่:</span>
+          {[["all", "ทั้งหมด"], ["today", "วันนี้"], ["yesterday", "เมื่อวาน"], ["month", "เดือนนี้"], ["custom", "กำหนดเอง"]].map(([v, l]) => (
+            <button key={v} onClick={() => setPreset(v)}
+              style={{ background: preset === v ? "#7C3AED" : "#F3F4F6", color: preset === v ? "#fff" : "#6B7280", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{l}</button>
+          ))}
+          {preset === "custom" && (
+            <>
+              <input type="date" className="inp" style={{ padding: "6px 8px", fontSize: 12 }} value={from} onChange={e => setFrom(e.target.value)} />
+              <span style={{ fontSize: 12, color: "#6B7280" }}>ถึง</span>
+              <input type="date" className="inp" style={{ padding: "6px 8px", fontSize: 12 }} value={to} onChange={e => setTo(e.target.value)} />
+            </>
+          )}
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#374151", cursor: "pointer" }}>
+          <input type="checkbox" checked={onlyNoNote} onChange={e => setOnlyNoNote(e.target.checked)} /> เฉพาะใบที่ยังไม่มีหมายเหตุ
+        </label>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
+          <span style={{ fontSize: 12, color: "#6B7280" }}>ผู้ตรวจ:</span>
+          <input className="inp" value={checker} placeholder="ชื่อผู้จัดการ" style={{ padding: "6px 8px", fontSize: 12, width: 140 }}
+            onChange={e => { setChecker(e.target.value); try { localStorage.setItem("managerName", e.target.value); } catch {} }} />
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+        {[["ใบค้างทั้งหมด", total, "#DC2626"], ["ใส่หมายเหตุแล้ว", totalNoted, "#059669"], ["ยังไม่มีหมายเหตุ", total - totalNoted, "#D97706"], ["จำนวนวันที่มีใบค้าง", days.length, "#7C3AED"]].map(([l, v, c]) => (
+          <div key={l} style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 12, padding: "10px 16px", minWidth: 140 }}>
+            <div style={{ fontSize: 12, color: "#6B7280" }}>{l}</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: c }}>{v}</div>
+          </div>
+        ))}
+      </div>
+
+      {loading && <div style={{ color: "#9CA3AF", fontSize: 13, padding: 12 }}>กำลังโหลด...</div>}
+      {!loading && days.length === 0 && <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 12, color: "#059669", fontSize: 14, padding: 24, textAlign: "center" }}>✅ ไม่มีใบหยิบค้างตามเงื่อนไขที่เลือก</div>}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {days.map(g => {
+          const open = openDay === g.date;
+          const picking = g.sheets.filter(r => r.pick_status === "picking").length;
+          const noted = g.sheets.filter(r => notes[r.id]?.note).length;
+          const age = ageDays(g.date);
+          return (
+            <div key={g.date} style={{ background: "#fff", border: "1px solid " + (open ? "#C4B5FD" : "#E5E7EB"), borderRadius: 12, overflow: "hidden" }}>
+              <div onClick={() => setOpenDay(open ? null : g.date)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", cursor: "pointer", flexWrap: "wrap" }}>
+                <div style={{ fontWeight: 700, fontSize: 14, color: "#111827", minWidth: 120 }}>{open ? "▾" : "▸"} {fmtDay(g.date)}</div>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#DC2626" }}>ค้าง {g.sheets.length} ใบ</span>
+                <span style={{ fontSize: 12, color: "#6B7280" }}>ยังไม่เริ่ม {g.sheets.length - picking} · รอตัดสต็อก {picking}</span>
+                <span style={{ fontSize: 12, color: "#6B7280" }}>{g.pages.size} เพจ · {g.prods.size} สินค้า</span>
+                <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: age >= 2 ? "#FEE2E2" : age === 1 ? "#FEF3C7" : "#F3F4F6", color: age >= 2 ? "#B91C1C" : age === 1 ? "#92400E" : "#6B7280", fontWeight: 600 }}>{age === 0 ? "วันนี้" : `ค้างมา ${age} วัน`}</span>
+                <span style={{ marginLeft: "auto", fontSize: 12, color: noted === g.sheets.length ? "#059669" : "#D97706", fontWeight: 600 }}>📝 หมายเหตุ {noted}/{g.sheets.length}</span>
+              </div>
+              {open && (
+                <div style={{ borderTop: "1px solid #F3F4F6", padding: "12px 16px" }}>
+                  <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                    {[["sheets", `🧾 รายใบ (${g.sheets.length})`], ["page", `🏪 แยกตามเพจ (${g.pages.size})`], ["product", `📦 แยกตามสินค้า (${g.prods.size})`]].map(([v, l]) => (
+                      <button key={v} onClick={() => setDayView(v)}
+                        style={{ background: dayView === v ? "#7C3AED" : "#F3F4F6", color: dayView === v ? "#fff" : "#6B7280", border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>{l}</button>
+                    ))}
+                  </div>
+                  <div style={{ overflowX: "auto" }}>
+                    {dayView === "page" && (
+                      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                        <thead><tr><th style={th}>เพจ</th><th style={{ ...th, textAlign: "right" }}>ใบค้าง</th><th style={{ ...th, textAlign: "right" }}>หน่วยขาย</th><th style={th}>เลขใบ</th></tr></thead>
+                        <tbody>{[...g.pages.values()].sort((a, b) => b.count - a.count).map(p => (
+                          <tr key={p.name}><td style={td}>{p.name}</td><td style={{ ...td, textAlign: "right", fontWeight: 700 }}>{p.count}</td><td style={{ ...td, textAlign: "right" }}>{p.units}</td><td style={{ ...td, fontSize: 12, color: "#7C3AED", fontFamily: "monospace" }}>{p.ids.map(id => "PK" + id).join(", ")}</td></tr>
+                        ))}</tbody>
+                      </table>
+                    )}
+                    {dayView === "product" && (
+                      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                        <thead><tr><th style={th}>ชื่อสินค้า (MyOrder)</th><th style={{ ...th, textAlign: "right" }}>หน่วยขายที่ค้าง</th><th style={{ ...th, textAlign: "right" }}>จำนวนใบ</th><th style={th}>เลขใบ</th></tr></thead>
+                        <tbody>{[...g.prods.values()].sort((a, b) => b.qty - a.qty).map(p => (
+                          <tr key={p.name}><td style={td}>{p.name}</td><td style={{ ...td, textAlign: "right", fontWeight: 700 }}>{p.qty}</td><td style={{ ...td, textAlign: "right" }}>{p.ids.size}</td><td style={{ ...td, fontSize: 12, color: "#7C3AED", fontFamily: "monospace" }}>{[...p.ids].map(id => "PK" + id).join(", ")}</td></tr>
+                        ))}</tbody>
+                      </table>
+                    )}
+                    {dayView === "sheets" && (
+                      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                        <thead><tr><th style={th}>ใบ</th><th style={th}>เพจ / สินค้า</th><th style={th}>สถานะ</th><th style={{ ...th, minWidth: 280 }}>หมายเหตุ (ค้างเพราะอะไร)</th></tr></thead>
+                        <tbody>{g.sheets.map(r => {
+                          const saved = notes[r.id];
+                          const draft = drafts[r.id] ?? saved?.note ?? "";
+                          const dirty = draft.trim() !== (saved?.note || "");
+                          const prods = Array.isArray(r.products) ? r.products : [];
+                          const scanned = r.pick_progress && typeof r.pick_progress === "object" ? Object.entries(r.pick_progress).filter(([k]) => k !== "_subs").reduce((s, [, v]) => s + (Number(v?.scanned) || 0), 0) : 0;
+                          return (
+                            <tr key={r.id}>
+                              <td style={{ ...td, whiteSpace: "nowrap" }}>
+                                <div style={{ fontFamily: "monospace", fontWeight: 700, color: "#7C3AED" }}>PK{r.id}</div>
+                                <div style={{ fontSize: 11, color: "#9CA3AF" }}>{fmtDT(r.created_at)}</div>
+                              </td>
+                              <td style={td}>
+                                <div style={{ fontWeight: 600 }}>{r.page_name || "ไม่ระบุเพจ"}</div>
+                                <div style={{ fontSize: 12, color: "#374151" }}>{prods.map(p => `${pickName(p.name)} ×${p.qty}`).join(" · ") || "ไม่ระบุสินค้า"}</div>
+                                <div style={{ fontSize: 11, color: "#9CA3AF" }}>{r.total_orders || 0} ออเดอร์ · {r.total_items || 0} หน่วยขาย</div>
+                              </td>
+                              <td style={{ ...td, whiteSpace: "nowrap" }}>
+                                <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 999, background: r.pick_status === "picking" ? "#FEF3C7" : "#EDE9FE", color: r.pick_status === "picking" ? "#92400E" : "#5B21B6", fontWeight: 600 }}>{pickStatusLabel(r.pick_status)}</span>
+                                {scanned > 0 && <div style={{ fontSize: 11, color: "#6B7280", marginTop: 3 }}>ยิงแล้ว {scanned} ชิ้น{r.picked_by ? ` · ${r.picked_by}` : ""}</div>}
+                              </td>
+                              <td style={td}>
+                                <div style={{ display: "flex", gap: 6 }}>
+                                  <input className="inp" value={draft} placeholder="เช่น ของหมด รอของเข้า..." style={{ flex: 1, padding: "6px 8px", fontSize: 12 }}
+                                    onChange={e => setDrafts(d => ({ ...d, [r.id]: e.target.value }))}
+                                    onKeyDown={e => { if (e.key === "Enter" && dirty) saveNote(r.id, draft); }} />
+                                  <button disabled={!dirty || savingId === r.id} onClick={() => saveNote(r.id, draft)}
+                                    style={btnStyle(dirty ? "#7C3AED" : "#E5E7EB", dirty ? "#fff" : "#9CA3AF", { cursor: dirty ? "pointer" : "default", whiteSpace: "nowrap" })}>{savingId === r.id ? "..." : "💾 บันทึก"}</button>
+                                </div>
+                                <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 5 }}>
+                                  {PICK_NOTE_QUICK.map(q => (
+                                    <button key={q} onClick={() => setDrafts(d => ({ ...d, [r.id]: q }))}
+                                      style={{ background: "#F9FAFB", border: "1px solid #E5E7EB", borderRadius: 999, padding: "1px 8px", fontSize: 11, color: "#6B7280", cursor: "pointer" }}>{q}</button>
+                                  ))}
+                                </div>
+                                {saved?.note && <div style={{ fontSize: 11, color: "#059669", marginTop: 4 }}>✓ {saved.by} · {fmtDT(saved.at)}</div>}
+                              </td>
+                            </tr>
+                          );
+                        })}</tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockCut, onAddProduct }) {
   const [staffName, setStaffName] = useState(() => { try { return localStorage.getItem("staffName") || ""; } catch { return ""; } });
   const [pick, setPick] = useState(null);           // แถว order_scans ที่กำลังหยิบ
@@ -2615,6 +2834,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   const [recentTo, setRecentTo] = useState(() => localDateStr(new Date()));
   const [recentStatusFilter, setRecentStatusFilter] = useState("pending"); // "all" | "pending" | "closed"
   const [recentSearch, setRecentSearch] = useState(""); // ค้นหาจากเลขใบ (PK) / ชื่อสินค้า / ชื่อเพจ
+  const [pickNotes, setPickNotes] = useState({}); // หมายเหตุผู้จัดการต่อใบ (จากเมนู "ใบหยิบค้าง") — ดูอย่างเดียวในหน้านี้
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth < 900); // จอแคบ (มือถือ/แท็บเล็ต) → คอลัมน์เดียว รูปอยู่บน
   useEffect(() => { const onResize = () => setNarrow(window.innerWidth < 900); window.addEventListener("resize", onResize); return () => window.removeEventListener("resize", onResize); }, []);
   const inputRef = useRef(null);
@@ -2686,6 +2906,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
         : recentStatusFilter === "closed" ? notStaleLog.filter(r => r.pick_status === "closed")
         : notStaleLog.filter(r => r.pick_status !== "closed");
       setRecent(filtered);
+      api.getPickNotes().then(setPickNotes).catch(() => {}); // หมายเหตุจากหน้าผู้จัดการ — โหลดไม่ได้ก็ไม่เป็นไร แค่ไม่โชว์
     } catch (e) { showToast(e.message, "error"); }
     setLoadingRecent(false);
   };
@@ -3004,6 +3225,10 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
                   <div style={{ fontSize: 13, color: "#111827", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.page_name || "ไม่ระบุเพจ"}</div>
                   <div style={{ fontSize: 12, color: "#374151", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📦 {pickName(r.products?.[0]?.name) || "ไม่ระบุสินค้า"}{n > 1 ? ` +${n - 1} รายการ` : ""}</div>
                   <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>{fmtDT(r.created_at)} · {r.total_orders || 0} ออเดอร์ · {n} รายการ {r.total_items || 0} หน่วยขาย{prog ? ` · ยิงแล้ว ${prog} ชิ้น` : ""}</div>
+                  <div style={{ fontSize: 12, marginTop: 6, paddingTop: 6, borderTop: "1px dashed #E5E7EB", color: rClosed ? "#065F46" : "#9CA3AF", fontWeight: rClosed ? 600 : 400 }}>
+                    {rClosed ? `✂️ ยิงตัดสต็อก ${fmtDT(r.pick_closed_at)}${r.picked_by ? ` · โดย ${r.picked_by}` : ""}` : "⏳ ยังไม่ได้ยิงตัดสต็อก"}
+                  </div>
+                  {pickNotes[r.id]?.note && <div style={{ fontSize: 12, marginTop: 4, color: "#B45309", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={pickNotes[r.id].note}>📝 ผจก.: {pickNotes[r.id].note}</div>}
                 </div>
               );
             })}
@@ -3042,6 +3267,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
                   </div>
                   <div style={{ fontSize: 13, color: "#111827", fontWeight: 600, marginTop: 2 }}>{pick.page_name || "ไม่ระบุเพจ"}</div>
                   <div style={{ fontSize: 12, color: "#6B7280" }}>{fmtDT(pick.created_at)} · {pick.total_orders || 0} ออเดอร์ · {items.length} ชื่อสินค้า{pick.note ? ` · 📝 ${pick.note}` : ""}</div>
+                  {isClosed && <div style={{ fontSize: 12, color: "#065F46", fontWeight: 600 }}>✂️ ยิงตัดสต็อก {fmtDT(pick.pick_closed_at)}{pick.picked_by ? ` · โดย ${pick.picked_by}` : ""}</div>}
                 </div>
                 <div style={{ textAlign: "right" }}>
                   <div style={{ fontSize: 26, fontWeight: 800, color: "#111827", fontFamily: "monospace" }}>{totalScanned}<span style={{ color: "#9CA3AF", fontSize: 16 }}>/{totalRequired}</span></div>
@@ -6148,7 +6374,7 @@ export default function WarehouseApp() {
   };
   const stockSubTabs = tab === "stockcheck" ? (
     <div style={{ display: "flex", flexDirection: "column", gap: 4, width: 200, flexShrink: 0 }}>
-      {[["orders", "🧾 เช็คออเดอร์"], ["adjust", "🔍 ปรับสต็อก"], ["receivingApproval", "📥 รับเข้ารออนุมัติ"], ["reorder", "🛒 ต้องสั่งซื้อ"], ["dispose", "🗑️ จำหน่ายออก"], ["labels", "🏷️ แผ่นบาร์โค้ด"], ["transactions", "🔄 เคลื่อนไหว"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"]].map(([v, l]) => {
+      {[["orders", "🧾 เช็คออเดอร์"], ["pickBacklog", "📋 ใบหยิบค้าง"], ["adjust", "🔍 ปรับสต็อก"], ["receivingApproval", "📥 รับเข้ารออนุมัติ"], ["reorder", "🛒 ต้องสั่งซื้อ"], ["dispose", "🗑️ จำหน่ายออก"], ["labels", "🏷️ แผ่นบาร์โค้ด"], ["transactions", "🔄 เคลื่อนไหว"], ["print", "🖨️ พิมพ์ใบเช็คสต็อก"]].map(([v, l]) => {
         const on = v !== "print" && stockSub === v;
         const badgeCount = v === "orders" ? unreviewedScanCount : v === "reorder" ? reorderList.length : 0;
         return (
@@ -6785,6 +7011,14 @@ export default function WarehouseApp() {
             {stockSubTabs}
             <div style={{ flex: 1, minWidth: 0 }}>
             <LabelSheetPanel products={products} />
+            </div>
+          </div>
+        )}
+        {tab === "stockcheck" && scansUnlocked && stockSub === "pickBacklog" && (
+          <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
+            {stockSubTabs}
+            <div style={{ flex: 1, minWidth: 0 }}>
+            <PickBacklogPanel showToast={showToast} />
             </div>
           </div>
         )}
