@@ -2852,7 +2852,7 @@ function TeamNoteBox({ showToast }) {
         {note === null
           ? <div style={{ fontSize: 12.5, color: "#9CA3AF" }}>กำลังโหลด...</div>
           : has
-            ? <div className="backlog-note-cols" style={{ fontSize: 13, color: "#78350F" }}>{note.split(/\r?\n/).map((line, i) => <div key={i}>{line || " "}</div>)}</div>
+            ? <div style={{ fontSize: 13, color: "#78350F", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{note.split(/\r?\n/).map((line, i) => <div key={i}>{line || " "}</div>)}</div>
             : <div style={{ fontSize: 12.5, color: "#9CA3AF" }}>ยังไม่มีโน้ต — กด "แก้ไข" เพื่อฝากข้อความถึงฝ่ายอื่น</div>}
       </div>
       <button onClick={async () => { const row = await api.getBacklogNotes().catch(() => null); const fresh = (row && row.note) || note || ""; setNote(fresh); setDraft(fresh); setEditing(true); }}
