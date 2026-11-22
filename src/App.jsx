@@ -2813,6 +2813,54 @@ function PickBacklogPanel({ showToast }) {
   );
 }
 
+// ═══════════ โน้ตถึงฝ่ายอื่น (กล่องเหลือง) — เดิมอยู่หน้าบันทึกค้างส่ง ย้ายมาหน้ายิงตัดสต็อก 22 พ.ย. 2026 ═══════════
+// เก็บที่คอลัมน์ note ของ backlog_notes แถว id=1 เหมือนเดิม (ข้อมูลเดิมยังอยู่ครบ) — PATCH เฉพาะ note ไม่แตะ items
+function TeamNoteBox({ showToast }) {
+  const [note, setNote] = useState(null); // null = กำลังโหลด
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const load = () => api.getBacklogNotes().then(row => setNote((row && row.note) || "")).catch(() => setNote(""));
+  useEffect(() => { load(); const t = setInterval(() => { if (!document.hidden) load(); }, 60000); return () => clearInterval(t); }, []);
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.updateBacklogNote(draft);
+      setNote(draft); setEditing(false);
+      showToast("บันทึกโน้ตแล้ว");
+    } catch (e) {
+      showToast("บันทึกโน้ตไม่สำเร็จ: " + e.message, "error");
+    } finally { setSaving(false); }
+  };
+  const has = !!(note && note.trim()); // โน้ตที่มีแต่บรรทัดว่าง ถือว่ายังไม่มีโน้ต
+  if (editing) return (
+    <div style={{ background: "#FFFBEB", border: "1.5px solid #FDE68A", borderRadius: 14, padding: "12px 16px", marginBottom: 16 }}>
+      <div style={{ fontSize: 11, fontWeight: 800, color: "#92400E", marginBottom: 6 }}>📌 โน้ตถึงฝ่ายอื่น</div>
+      <textarea value={draft} onChange={e => setDraft(e.target.value)} rows={4} autoFocus
+        placeholder="พิมพ์ข้อความฝากไว้ให้ฝ่ายอื่นอ่าน..."
+        style={{ width: "100%", border: "1px solid #FDE68A", borderRadius: 8, padding: 8, fontSize: 13, fontFamily: "inherit", resize: "vertical", boxSizing: "border-box" }} />
+      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+        <button onClick={save} disabled={saving} style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 9, padding: "7px 14px", fontSize: 12.5, fontWeight: 700, cursor: saving ? "default" : "pointer", opacity: saving ? 0.6 : 1 }}>{saving ? "กำลังบันทึก..." : "บันทึกโน้ต"}</button>
+        <button onClick={() => setEditing(false)} style={{ background: "#F3F4F6", border: "none", borderRadius: 9, padding: "7px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>ยกเลิก</button>
+      </div>
+    </div>
+  );
+  return (
+    <div style={{ background: has ? "#FFFBEB" : "#F8FAF9", border: has ? "1.5px solid #FDE68A" : "1px dashed #D1D5DB", borderRadius: 14, padding: "12px 16px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 11, fontWeight: 800, color: has ? "#92400E" : "#9CA3AF", marginBottom: 4 }}>📌 โน้ตถึงฝ่ายอื่น</div>
+        {note === null
+          ? <div style={{ fontSize: 12.5, color: "#9CA3AF" }}>กำลังโหลด...</div>
+          : has
+            ? <div className="backlog-note-cols" style={{ fontSize: 13, color: "#78350F" }}>{note.split(/\r?\n/).map((line, i) => <div key={i}>{line || " "}</div>)}</div>
+            : <div style={{ fontSize: 12.5, color: "#9CA3AF" }}>ยังไม่มีโน้ต — กด "แก้ไข" เพื่อฝากข้อความถึงฝ่ายอื่น</div>}
+      </div>
+      <button onClick={async () => { const row = await api.getBacklogNotes().catch(() => null); const fresh = (row && row.note) || note || ""; setNote(fresh); setDraft(fresh); setEditing(true); }}
+        style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 9, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>✏️ แก้ไข</button>
+    </div>
+  );
+}
+
 function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockCut, onAddProduct }) {
   const [staffName, setStaffName] = useState(() => { try { return localStorage.getItem("staffName") || ""; } catch { return ""; } });
   const [pick, setPick] = useState(null);           // แถว order_scans ที่กำลังหยิบ
@@ -3158,6 +3206,8 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
         {(loadingPick || busy) && <div style={{ marginTop: 8, fontSize: 12, color: "#6B7280" }}>⏳ {loadingPick ? "กำลังโหลดใบหยิบ..." : "กำลังบันทึก..."}</div>}
       </div>
 
+      <TeamNoteBox showToast={showToast} />
+
       {!pick && (
         <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, padding: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
@@ -3486,9 +3536,6 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
   const [saved, setSaved] = useState(undefined); // undefined = กำลังโหลด, null = ยังไม่เคยบันทึก
   const [saving, setSaving] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set()); // ติ๊กเลือกหลายรายการในตารางบันทึก เพื่อลบพร้อมกัน
-  const [editingNote, setEditingNote] = useState(false);
-  const [noteDraft, setNoteDraft] = useState("");
-  const [savingNote, setSavingNote] = useState(false);
   const [savedFilter, setSavedFilter] = useState("all"); // "all" | "over" | "short" — แท็บย่อยของตารางบันทึก (คนละอันกับ filterMode ของตารางเทียบข้อมูลด้านบน)
   const [savedSearch, setSavedSearch] = useState("");
   const [savedLackOnly, setSavedLackOnly] = useState(false); // ติ๊กแล้วกรองเหลือเฉพาะแถวสีแดง (ของขาด ต้องสั่งเพิ่ม) — ใช้ร่วมกับแท็บย่อย/ช่องค้นหาได้
@@ -3737,20 +3784,6 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
     setSelectedIds(new Set());
   };
 
-  // โน้ตข้อความเดียวฝากถึงฝ่ายอื่น (ไม่ผูกกับรายการสินค้าไหนโดยเฉพาะ) — แก้ไขได้ทันทีไม่ต้องรอ "บันทึก" จากการเทียบข้อมูล
-  const openEditNote = () => { setNoteDraft(saved?.note || ""); setEditingNote(true); };
-  const saveNote = async () => {
-    setSavingNote(true);
-    try {
-      await api.updateBacklogNote(noteDraft);
-      setSaved(prev => ({ ...(prev || {}), note: noteDraft }));
-      setEditingNote(false);
-      showToast("บันทึกโน้ตแล้ว");
-    } catch (e) {
-      showToast("บันทึกโน้ตไม่สำเร็จ: " + e.message, "error");
-    } finally { setSavingNote(false); }
-  };
-
   const numChip = (v, bg, fg) => v == null
     ? <span style={{ display: "inline-block", borderRadius: 10, padding: "6px 14px", fontWeight: 800, fontSize: 15, fontFamily: "monospace", background: "#F1F5F9", color: "#94A3B8" }}>—</span>
     : <span style={{ display: "inline-block", borderRadius: 10, padding: "6px 14px", fontWeight: 800, fontSize: 15, fontFamily: "monospace", background: bg, color: fg }}>{Number(v).toLocaleString("th-TH")}</span>;
@@ -3976,29 +4009,7 @@ function BacklogNotesPanel({ products, showToast, onViewHistory, incomingAlias, 
             )}
           </div>
 
-          {/* ── โน้ตข้อความเดียวฝากถึงฝ่ายอื่น อยู่บนสุด ไม่ผูกกับรายการไหน ── */}
-          {!editingNote ? (
-            <div style={{ background: saved?.note ? "#FFFBEB" : "#F8FAF9", border: saved?.note ? "1.5px solid #FDE68A" : "1px dashed #D1D5DB", borderRadius: 14, padding: "12px 16px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 11, fontWeight: 800, color: saved?.note ? "#92400E" : "#9CA3AF", marginBottom: 4 }}>📌 โน้ตถึงฝ่ายอื่น</div>
-                {saved?.note
-                  ? <div className="backlog-note-cols" style={{ fontSize: 13, color: "#78350F" }}>{saved.note.split(/\r?\n/).map((line, i) => <div key={i}>{line || " "}</div>)}</div>
-                  : <div style={{ fontSize: 12.5, color: "#9CA3AF" }}>ยังไม่มีโน้ต — กด "แก้ไข" เพื่อฝากข้อความถึงฝ่ายอื่น</div>}
-              </div>
-              <button onClick={openEditNote} style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 9, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>✏️ แก้ไข</button>
-            </div>
-          ) : (
-            <div style={{ background: "#FFFBEB", border: "1.5px solid #FDE68A", borderRadius: 14, padding: "12px 16px", marginBottom: 16 }}>
-              <div style={{ fontSize: 11, fontWeight: 800, color: "#92400E", marginBottom: 6 }}>📌 โน้ตถึงฝ่ายอื่น</div>
-              <textarea value={noteDraft} onChange={e => setNoteDraft(e.target.value)} rows={3} autoFocus
-                placeholder="พิมพ์ข้อความฝากไว้ให้ฝ่ายอื่นอ่าน..."
-                style={{ width: "100%", border: "1px solid #FDE68A", borderRadius: 8, padding: 8, fontSize: 13, fontFamily: "inherit", resize: "vertical", boxSizing: "border-box" }} />
-              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                <button onClick={saveNote} disabled={savingNote} style={{ background: "#7C3AED", color: "#fff", border: "none", borderRadius: 9, padding: "7px 14px", fontSize: 12.5, fontWeight: 700, cursor: savingNote ? "default" : "pointer", opacity: savingNote ? 0.6 : 1 }}>{savingNote ? "กำลังบันทึก..." : "บันทึกโน้ต"}</button>
-                <button onClick={() => setEditingNote(false)} style={{ background: "#F3F4F6", border: "none", borderRadius: 9, padding: "7px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>ยกเลิก</button>
-              </div>
-            </div>
-          )}
+          {/* โน้ตถึงฝ่ายอื่น (กล่องเหลือง) ย้ายไปหน้า "ยิงตัดสต็อก" แล้ว (22 พ.ย. 2026) — ดู TeamNoteBox */}
 
           {!saved || !Array.isArray(saved.items) || saved.items.length === 0 ? (
             <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, textAlign: "center", padding: 32, color: "#9CA3AF", fontSize: 13 }}>
