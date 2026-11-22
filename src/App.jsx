@@ -2813,6 +2813,157 @@ function PickBacklogPanel({ showToast }) {
   );
 }
 
+// ═══════════ 🔒 สินค้าต้องกันรอส่ง (22 พ.ย. 2026) ═══════════
+// ออเดอร์ที่สั่งหลายสินค้า แต่ในคลังมีของบางตัว บางตัวหมด → ส่งไม่ได้ และของตัวที่มีมักโดนแพ็คออเดอร์อื่นไปจนหมด
+// (เช่น ผ้าคลุมโต๊ะกลม+เหลี่ยม) หน้านี้สรุปว่าแต่ละกลุ่มสินค้าต้อง "กันไว้ขั้นต่ำ" กี่ชิ้น
+// ออเดอร์มาจากเว็บบันทึกยอดขาย (ซิงค์จาก MyOrder ด้วย extension N2P MyOrder Sync) ผ่าน RPC myorder_pending_items
+// (ไฟล์ n2p-sales-entry/myorder-reserve.sql) — ได้แค่ วันที่ + ชื่อสินค้า + จำนวน ไม่มีข้อมูลลูกค้า
+// คำนวณสดทุกครั้ง: สต็อกจาก products, จับคู่ชื่อจาก product_aliases (ตัวเดียวกับหน้ายิงตัดสต็อก)
+const SALES_SB_URL = "https://mpnafscofwxwtphiomjc.supabase.co";
+const SALES_SB_KEY = "sb_publishable_cOkqAVFclRnIYV_2QIHU2Q_qlL0ELTG";
+const reserveNz = (s) => String(s || "").replace(/\(copy\d*\)/gi, "").replace(/\s+/g, "").toLowerCase();
+const reserveBase = (name) => String(name || "").replace(/\(.*$/, "").replace(/\s+/g, " ").trim() || String(name || "").trim();
+
+function ReservePanel({ products, aliases }) {
+  const [data, setData] = useState(null); // { synced_at, modes, orders: [[date, [[name, qty, free], ...]], ...] }
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [showUnmatched, setShowUnmatched] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${SALES_SB_URL}/rest/v1/rpc/myorder_pending_items`, {
+        method: "POST", headers: { apikey: SALES_SB_KEY, "Content-Type": "application/json" }, body: JSON.stringify({ p_days: 60 }),
+      });
+      if (!r.ok) throw new Error(r.status === 404 ? "ยังไม่ได้รัน SQL myorder-reserve.sql ในเว็บบันทึกยอดขาย" : `${r.status} ${(await r.text()).slice(0, 200)}`);
+      setData(await r.json()); setErr("");
+    } catch (e) { setErr(e.message || String(e)); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); const t = setInterval(() => { if (!document.hidden) load(); }, 5 * 60 * 1000); return () => clearInterval(t); }, []);
+
+  const result = useMemo(() => {
+    if (!data || !Array.isArray(data.orders)) return null;
+    const byId = new Map(products.map(p => [Number(p.id), p]));
+    const byName = new Map(products.map(p => [pickName(p.name), p]));
+    const byNz = new Map(products.map(p => [reserveNz(p.name), p]));
+    const aliasNz = new Map(); aliases.forEach((v, k) => aliasNz.set(reserveNz(k), v));
+    const resolve = (raw) => {
+      const n = pickName(raw);
+      if (aliases.has(n)) return aliases.get(n);
+      const p = byName.get(n) || byNz.get(reserveNz(n));
+      if (p) return [{ product_id: Number(p.id), qty: 1 }];
+      if (aliasNz.has(reserveNz(n))) return aliasNz.get(reserveNz(n));
+      return undefined;
+    };
+    const stockOf = (pid) => Number(byId.get(pid)?.quantity) || 0;
+    const unmatched = new Map(); const groups = new Map();
+    for (const [date, items] of data.orders) {
+      const need = new Map(); let bad = false;
+      for (const [name, qty, free] of (items || [])) {
+        const comps = resolve(name);
+        if (comps === undefined || comps.some(c => !byId.has(Number(c.product_id)))) {
+          if (!free) { bad = true; const k = pickName(name); unmatched.set(k, (unmatched.get(k) || 0) + (Number(qty) || 1)); }
+          continue;
+        }
+        comps.forEach(c => { const pid = Number(c.product_id); need.set(pid, (need.get(pid) || 0) + (Number(qty) || 1) * (Number(c.qty) || 1)); });
+      }
+      if (bad || need.size < 2) continue;
+      const pids = [...need.keys()];
+      const has = pids.some(pid => stockOf(pid) > 0), lacks = pids.some(pid => stockOf(pid) <= 0);
+      if (!has || !lacks) continue; // ส่งได้ครบ หรือหมดทุกตัว (ไม่ได้ถือของตัวไหนไว้) → ไม่เกี่ยว
+      const bases = [...new Set(pids.map(pid => reserveBase(byId.get(pid).name)))].sort((a, b) => a.length - b.length || a.localeCompare(b, "th")); // ชื่อสั้น (ตัวหลัก) ขึ้นก่อน เช่น ไม้ถู + ผ้าสำรองไม้ถู
+      const key = bases.join(" + ");
+      const g = groups.get(key) || { key, bases, orders: 0, oldest: date, need: new Map() };
+      g.orders++; if (date < g.oldest) g.oldest = date;
+      need.forEach((q, pid) => g.need.set(pid, (g.need.get(pid) || 0) + q));
+      groups.set(key, g);
+    }
+    const label = (g, pid) => {
+      const name = byId.get(pid).name;
+      if (g.bases.length > 1) return pickName(name);
+      const rest = name.slice(name.indexOf(g.bases[0]) >= 0 ? name.indexOf(g.bases[0]) + g.bases[0].length : 0).replace(/[()]/g, " ").replace(/\s+/g, " ").trim();
+      return rest || pickName(name);
+    };
+    const rows = [...groups.values()].map(g => {
+      const lines = [...g.need.entries()].map(([pid, q]) => ({ pid, q, stock: stockOf(pid), label: label(g, pid) })).sort((a, b) => b.q - a.q);
+      return { ...g, lines, short: lines.filter(l => l.stock < l.q) };
+    }).sort((a, b) => b.orders - a.orders);
+    return { rows, unmatched: [...unmatched.entries()].sort((a, b) => b[1] - a[1]) };
+  }, [data, products, aliases]);
+
+  const fmtDay = (iso) => { const d = new Date(iso); return `${d.getDate()}/${d.getMonth() + 1}`; };
+  const daysAgo = (iso) => Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86400000));
+  const th = { background: "#6D28D9", textAlign: "left", padding: "10px 12px", fontSize: 12, fontWeight: 700, color: "#fff", whiteSpace: "nowrap" };
+  const td = { padding: "10px 12px", fontSize: 13, color: "#111827", verticalAlign: "top", borderTop: "1px solid #F1F5F9" };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+        <div>
+          <h2 style={{ fontSize: 20, fontWeight: 800, color: "#111827", margin: 0 }}>🔒 สินค้าต้องกันรอส่ง</h2>
+          <p style={{ fontSize: 13, color: "#6B7280", margin: "6px 0 0" }}>
+            ออเดอร์ที่สั่งหลายสินค้า แต่ในคลังมีไม่ครบ — <b>ตัวเลข = จำนวนที่ต้องกันไว้ให้ออเดอร์เหล่านี้ ห้ามแพ็คออเดอร์อื่นจนเหลือต่ำกว่านี้</b>
+          </p>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {data?.synced_at && <span style={{ fontSize: 12, color: "#6B7280" }}>ออเดอร์อัปเดตล่าสุด: <b>{fmtDT(data.synced_at)}</b></span>}
+          <button onClick={load} disabled={loading} style={{ background: "#F3F4F6", color: "#374151", border: "none", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: loading ? "default" : "pointer" }}>{loading ? "⏳ กำลังโหลด..." : "🔄 รีเฟรช"}</button>
+        </div>
+      </div>
+
+      {err && <div style={{ background: "#FEF2F2", color: "#B91C1C", border: "1px solid #FECACA", borderRadius: 12, padding: "10px 14px", fontSize: 13, marginBottom: 14 }}>⛔ โหลดออเดอร์ไม่สำเร็จ: {err}</div>}
+
+      {result && result.unmatched.length > 0 && (
+        <div style={{ background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 12, padding: "10px 14px", fontSize: 13, color: "#92400E", marginBottom: 14 }}>
+          ⚠️ ชื่อสินค้า MyOrder ที่ยังจับคู่กับคลังไม่ได้ {result.unmatched.length} รายการ — ออเดอร์ที่มีชื่อพวกนี้ยังไม่ถูกนับ (จับคู่ได้ที่หน้ายิงตัดสต็อก)
+          <button onClick={() => setShowUnmatched(v => !v)} style={{ marginLeft: 8, background: "none", border: "none", color: "#B45309", fontWeight: 700, cursor: "pointer", textDecoration: "underline", fontSize: 13 }}>{showUnmatched ? "ซ่อน" : "ดูรายชื่อ"}</button>
+          {showUnmatched && <div style={{ marginTop: 6 }}>{result.unmatched.map(([n, q]) => <div key={n}>• {n} <span style={{ color: "#B45309" }}>({q} ชิ้น)</span></div>)}</div>}
+        </div>
+      )}
+
+      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 16, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+            <thead>
+              <tr><th style={th}>สินค้า</th><th style={{ ...th, textAlign: "right" }}>ออเดอร์</th><th style={th}>ค้างส่งตั้งแต่</th><th style={th}>กันไว้ขั้นต่ำ</th><th style={th}>หมายเหตุ</th></tr>
+            </thead>
+            <tbody>
+              {!result ? (
+                <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#9CA3AF", padding: 30 }}>{err ? "—" : "⏳ กำลังโหลด..."}</td></tr>
+              ) : result.rows.length === 0 ? (
+                <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#059669", padding: 30 }}>✅ ไม่มีออเดอร์ที่ต้องกันของไว้</td></tr>
+              ) : result.rows.map(g => (
+                <tr key={g.key}>
+                  <td style={{ ...td, fontWeight: 700 }}>{g.key}</td>
+                  <td style={{ ...td, textAlign: "right", fontWeight: 800, fontFamily: "monospace", fontSize: 14 }}>{g.orders.toLocaleString("th-TH")}</td>
+                  <td style={{ ...td, whiteSpace: "nowrap" }}>{fmtDay(g.oldest)} <span style={{ color: daysAgo(g.oldest) >= 7 ? "#DC2626" : "#6B7280", fontSize: 12 }}>({daysAgo(g.oldest)} วัน)</span></td>
+                  <td style={td}>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {g.lines.map(l => (
+                        <span key={l.pid} title={`คลังมี ${l.stock.toLocaleString("th-TH")}`} style={{ background: "#F5F3FF", color: "#4C1D95", borderRadius: 8, padding: "3px 9px", fontSize: 12.5, whiteSpace: "nowrap" }}>
+                          {l.label} <b>{l.q.toLocaleString("th-TH")}</b>
+                        </span>
+                      ))}
+                    </div>
+                  </td>
+                  <td style={{ ...td, color: g.short.length ? "#B91C1C" : "#059669", fontSize: 12.5 }}>
+                    {g.short.length ? `${g.short.map(l => l.label).join(", ")} ไม่พอ รอของเข้า` : "ของพอ ส่งได้เมื่อกันไว้ครบ"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <p style={{ fontSize: 12, color: "#9CA3AF", marginTop: 10 }}>
+        คิดจากออเดอร์ที่ยังไม่ได้พิมพ์ใบส่งของ (ย้อนหลัง 60 วัน) เทียบกับสต็อกคงเหลือตอนนี้ — รีเฟรชเองทุก 5 นาที · ออเดอร์ซิงค์จาก MyOrder เฉพาะตอน Chrome ที่ติดตั้ง extension เปิดอยู่
+      </p>
+    </div>
+  );
+}
+
 // ═══════════ โน้ตถึงฝ่ายอื่น (กล่องเหลือง) — เดิมอยู่หน้าบันทึกค้างส่ง ย้ายมาหน้ายิงตัดสต็อก 22 พ.ย. 2026 ═══════════
 // เก็บที่คอลัมน์ note ของ backlog_notes แถว id=1 เหมือนเดิม (ข้อมูลเดิมยังอยู่ครบ) — PATCH เฉพาะ note ไม่แตะ items
 function TeamNoteBox({ showToast }) {
@@ -6419,7 +6570,7 @@ export default function WarehouseApp() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {[["dashboard","🏠 แดชบอร์ด"],["backlog","📋 บันทึกค้างส่ง"],["pick","🎯 ยิงตัดสต๊อก"],["receiving","📥 รับสินค้าเข้า"],["inventory","📦 คลังสินค้า"],["returns","📮 พัสดุตีกลับ"],["stockcheck","🔍 เช็คสต็อก"]].map(([v,l]) => {
+            {[["dashboard","🏠 แดชบอร์ด"],["backlog","📋 บันทึกค้างส่ง"],["reserve","🔒 สินค้าต้องกันรอส่ง"],["pick","🎯 ยิงตัดสต๊อก"],["receiving","📥 รับสินค้าเข้า"],["inventory","📦 คลังสินค้า"],["returns","📮 พัสดุตีกลับ"],["stockcheck","🔍 เช็คสต็อก"]].map(([v,l]) => {
               const badgeCount = v === "stockcheck" ? unreviewedScanCount + reorderList.length : 0;
               return (
               <button key={v} onClick={() => setTab(v)}
@@ -6443,6 +6594,9 @@ export default function WarehouseApp() {
         {tab === "receiving" && (
           <ReceivingPanel products={products} backlog={backlog} incomingAlias={incomingAlias} onReceivingLogChange={upsertReceivingLogs} showToast={showToast} />
         )}
+
+        {/* ─── สินค้าต้องกันรอส่ง — ออเดอร์หลายสินค้าที่ของมาไม่ครบ ─── */}
+        {tab === "reserve" && <ReservePanel products={products} aliases={aliasMap} />}
 
         {/* ─── บันทึกค้างส่ง — ย้ายออกมาเป็นแท็บหลัก ไม่ล็อกรหัสผู้จัดการอีกต่อไป ─── */}
         {tab === "backlog" && (
