@@ -2895,6 +2895,36 @@ function ReservePanel({ products, aliases }) {
 
   const fmtDay = (iso) => { const d = new Date(iso); return `${d.getDate()}/${d.getMonth() + 1}`; };
   const daysAgo = (iso) => Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86400000));
+  // พิมพ์ลงเครื่อง TSC (กระดาษความร้อน 100×150 มม.) — ขาวดำล้วน ตัวใหญ่ หนึ่งกล่องต่อสินค้า ไม่ตัดกล่องข้ามแผ่น
+  const printTsc = () => {
+    if (!result || result.rows.length === 0) return;
+    const now = new Date();
+    const stamp = `${now.getDate()}/${now.getMonth() + 1} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const card = (g) => `<div class="card">
+      <div class="name">${escHtml(g.key)}</div>
+      <div class="meta">${g.orders.toLocaleString("th-TH")} ออเดอร์ · ค้างตั้งแต่ ${fmtDay(g.oldest)} (${daysAgo(g.oldest)} วัน)</div>
+      <table>${g.lines.map(l => `<tr><td>${escHtml(l.label)}</td><td class="q">${l.q.toLocaleString("th-TH")}</td></tr>`).join("")}</table>
+      ${g.short.length ? `<div class="short">⚠ ${escHtml(g.short.map(l => l.label).join(", "))} ไม่พอ รอของเข้า</div>` : ""}
+    </div>`;
+    const html = `<!doctype html><html lang="th"><head><meta charset="utf-8"><title>สินค้าต้องกันรอส่ง ${stamp}</title><style>
+      @page { size: 100mm 150mm; margin: 3mm; }
+      * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      body { margin: 0; font-family: "Sarabun", "Tahoma", sans-serif; color: #000; font-size: 11pt; }
+      .head { border-bottom: 2px solid #000; padding-bottom: 1.5mm; margin-bottom: 2mm; }
+      .head b { font-size: 14pt; } .head div { font-size: 9pt; }
+      .card { border: 1.5px solid #000; border-radius: 2mm; padding: 2mm 2.5mm; margin-bottom: 2.5mm; break-inside: avoid; page-break-inside: avoid; }
+      .name { font-size: 12.5pt; font-weight: 800; line-height: 1.25; }
+      .meta { font-size: 9.5pt; margin: 0.5mm 0 1mm; }
+      table { width: 100%; border-collapse: collapse; }
+      td { font-size: 11pt; padding: 0.6mm 0; border-top: 1px dashed #000; vertical-align: top; }
+      td.q { text-align: right; font-weight: 800; font-size: 13pt; white-space: nowrap; padding-left: 3mm; }
+      .short { margin-top: 1mm; font-size: 9.5pt; font-weight: 700; }
+    </style></head><body>
+      <div class="head"><b>🔒 สินค้าต้องกันรอส่ง</b><div>ตัวเลข = จำนวนขั้นต่ำที่ต้องกันไว้ ห้ามแพ็คออเดอร์อื่นจนเหลือต่ำกว่านี้ · พิมพ์ ${stamp}</div></div>
+      ${result.rows.map(card).join("")}
+    </body></html>`;
+    try { printHtmlInPlace(html); } catch (e) { alert(e.message); }
+  };
   const th = { background: "#6D28D9", textAlign: "left", padding: "10px 12px", fontSize: 12, fontWeight: 700, color: "#fff", whiteSpace: "nowrap" };
   const td = { padding: "10px 12px", fontSize: 13, color: "#111827", verticalAlign: "top", borderTop: "1px solid #F1F5F9" };
 
@@ -2909,6 +2939,7 @@ function ReservePanel({ products, aliases }) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           {data?.synced_at && <span style={{ fontSize: 12, color: "#6B7280" }}>ออเดอร์อัปเดตล่าสุด: <b>{fmtDT(data.synced_at)}</b></span>}
+          <button onClick={printTsc} disabled={!result || result.rows.length === 0} title="พิมพ์ลงเครื่อง TSC กระดาษ 100×150 มม." style={{ background: "#6D28D9", color: "#fff", border: "none", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: 700, cursor: (!result || result.rows.length === 0) ? "default" : "pointer", opacity: (!result || result.rows.length === 0) ? 0.5 : 1 }}>🖨️ พิมพ์ (TSC)</button>
           <button onClick={load} disabled={loading} style={{ background: "#F3F4F6", color: "#374151", border: "none", borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: loading ? "default" : "pointer" }}>{loading ? "⏳ กำลังโหลด..." : "🔄 รีเฟรช"}</button>
         </div>
       </div>
