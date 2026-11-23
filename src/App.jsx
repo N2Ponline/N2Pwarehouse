@@ -2859,6 +2859,7 @@ function ReservePanel({ products, aliases }) {
     };
     const stockOf = (pid) => Number(byId.get(pid)?.quantity) || 0;
     const unmatched = new Map(); const groups = new Map();
+    const parsed = []; const demand = new Map(); // demand = ยอดที่ออเดอร์ค้างทั้งหมด (รวมออเดอร์สินค้าเดียว) ต้องใช้ต่อสินค้า
     for (const [date, items] of data.orders) {
       const need = new Map(); let bad = false;
       for (const [name, qty, free] of (items || [])) {
@@ -2869,9 +2870,15 @@ function ReservePanel({ products, aliases }) {
         }
         comps.forEach(c => { const pid = Number(c.product_id); need.set(pid, (need.get(pid) || 0) + (Number(qty) || 1) * (Number(c.qty) || 1)); });
       }
-      if (bad || need.size < 2) continue;
+      if (bad) continue;
+      need.forEach((q, pid) => demand.set(pid, (demand.get(pid) || 0) + q));
+      if (need.size >= 2) parsed.push([date, need]);
+    }
+    // ตัวที่ "ไม่พอ" = สต็อกน้อยกว่ายอดที่ออเดอร์ค้างทั้งหมดต้องใช้ (เดิมดูแค่สต็อก ≤ 0 → นาฬิกาแฟชั่นน้ำตาลเหลือ 3 แต่ค้าง 67 เลยไม่ขึ้น)
+    const isShort = (pid) => stockOf(pid) < (demand.get(pid) || 0);
+    for (const [date, need] of parsed) {
       const pids = [...need.keys()];
-      const has = pids.some(pid => stockOf(pid) > 0), lacks = pids.some(pid => stockOf(pid) <= 0);
+      const has = pids.some(pid => stockOf(pid) > 0), lacks = pids.some(isShort);
       if (!has || !lacks) continue; // ส่งได้ครบ หรือหมดทุกตัว (ไม่ได้ถือของตัวไหนไว้) → ไม่เกี่ยว
       const bases = [...new Set(pids.map(pid => reserveBase(byId.get(pid).name)))].sort((a, b) => a.length - b.length || a.localeCompare(b, "th")); // ชื่อสั้น (ตัวหลัก) ขึ้นก่อน เช่น ไม้ถู + ผ้าสำรองไม้ถู
       const key = bases.join(" + ");
@@ -2888,7 +2895,7 @@ function ReservePanel({ products, aliases }) {
     };
     const rows = [...groups.values()].map(g => {
       const lines = [...g.need.entries()].map(([pid, q]) => ({ pid, q, stock: stockOf(pid), label: label(g, pid) })).sort((a, b) => b.q - a.q);
-      return { ...g, lines, short: lines.filter(l => l.stock < l.q) };
+      return { ...g, lines, short: lines.filter(l => l.stock < l.q || isShort(l.pid)) };
     }).sort((a, b) => b.orders - a.orders);
     return { rows, unmatched: [...unmatched.entries()].sort((a, b) => b[1] - a[1]) };
   }, [data, products, aliases]);
@@ -2989,7 +2996,7 @@ function ReservePanel({ products, aliases }) {
         </div>
       </div>
       <p style={{ fontSize: 12, color: "#9CA3AF", marginTop: 10 }}>
-        คิดจากออเดอร์ที่ยังไม่ได้พิมพ์ใบส่งของ (ย้อนหลัง 60 วัน) เทียบกับสต็อกคงเหลือตอนนี้ — รีเฟรชเองทุก 5 นาที · ออเดอร์ซิงค์จาก MyOrder เฉพาะตอน Chrome ที่ติดตั้ง extension เปิดอยู่
+        คิดจากออเดอร์ที่ของยังไม่ออกจากคลัง (รวมที่พิมพ์ใบส่งของแล้วแต่ขนส่งยังไม่สแกนรับ · ย้อนหลัง 60 วัน) เทียบกับสต็อกคงเหลือตอนนี้ — รีเฟรชเองทุก 5 นาที · ออเดอร์ซิงค์จาก MyOrder เฉพาะตอน Chrome ที่ติดตั้ง extension เปิดอยู่
       </p>
     </div>
   );
