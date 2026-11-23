@@ -2927,7 +2927,7 @@ function ReservePanel({ products, aliases }) {
       td.q { text-align: right; font-weight: 800; font-size: 13pt; white-space: nowrap; padding-left: 3mm; }
       .short { margin-top: 1mm; font-size: 9.5pt; font-weight: 700; }
     </style></head><body>
-      <div class="head"><b>🔒 สินค้าต้องกันรอส่ง</b><div>ตัวเลข = จำนวนขั้นต่ำที่ต้องกันไว้ ห้ามแพ็คออเดอร์อื่นจนเหลือต่ำกว่านี้ · พิมพ์ ${stamp}</div></div>
+      <div class="head"><b>🔒 สินค้าต้องกันรอส่ง</b><div>ตัวเลข = จำนวนขั้นต่ำที่ต้องกันไว้ ห้ามแพ็คออเดอร์อื่นจนเหลือต่ำกว่านี้ · นับเฉพาะยังไม่มีเลข/มีเลขพัสดุแล้ว ไม่รวมที่พิมพ์ใบปะหน้าแล้ว · พิมพ์ ${stamp}</div></div>
       ${result.rows.map(card).join("")}
     </body></html>`;
     try { printHtmlInPlace(html); } catch (e) { alert(e.message); }
@@ -2996,7 +2996,7 @@ function ReservePanel({ products, aliases }) {
         </div>
       </div>
       <p style={{ fontSize: 12, color: "#9CA3AF", marginTop: 10 }}>
-        คิดจากออเดอร์ที่ของยังไม่ออกจากคลัง (รวมที่พิมพ์ใบส่งของแล้วแต่ขนส่งยังไม่สแกนรับ · ย้อนหลัง 60 วัน) เทียบกับสต็อกคงเหลือตอนนี้ — รีเฟรชเองทุก 5 นาที · ออเดอร์ซิงค์จาก MyOrder เฉพาะตอน Chrome ที่ติดตั้ง extension เปิดอยู่
+        คิดจากออเดอร์สถานะ <b>ยังไม่มีเลขพัสดุ</b> และ <b>มีเลขพัสดุแล้ว</b> เท่านั้น — <b>ไม่รวมที่พิมพ์ใบปะหน้าแล้ว</b> (ย้อนหลัง 60 วัน) เทียบกับสต็อกคงเหลือตอนนี้ — รีเฟรชเองทุก 5 นาที · ออเดอร์ซิงค์จาก MyOrder เฉพาะตอน Chrome ที่ติดตั้ง extension เปิดอยู่
       </p>
     </div>
   );
