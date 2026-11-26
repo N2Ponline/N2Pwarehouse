@@ -2663,22 +2663,30 @@ function PickLogPanel({ showToast }) {
     const pickById = new Map(rows.map(r => [r.id, r]));
     const GENERIC_PAGE = /^(ออเดอร์ทั้งหมด|เพจทั้งหมด|ไม่ระบุ|ช่องทางการขายอื่นๆ)?$/;
     const labelsInRangeX = labelsInRange.map(l => {
-      const hist = labByTrk.get(normTrk(l.tracking)) || [];
+      const k = normTrk(l.tracking);
+      const hist = labByTrk.get(k) || [];
       const idx = hist.findIndex(x => x.id === l.id);
-      const page = (!l.page_name || GENERIC_PAGE.test(l.page_name)) ? (pickById.get(l.pick_id)?.page_name || l.page_name) : l.page_name;
-      return { ...l, page, nth: idx + 1, firstAt: hist[0]?.created_at };
+      // พิมพ์ใบปะหน้าตอนยังไม่มีใบหยิบ → ถ้าตอนนี้มีใบหยิบแล้ว (พิมพ์ทีหลัง) บอกเลข PK
+      const laterPick = l.no_pick ? (byTrk.get(k) || []).find(s => new Date(s.created_at) > new Date(l.created_at)) : null;
+      const pickId = l.pick_id || (laterPick && laterPick.id) || null;
+      const slipPage = pickById.get(pickId)?.page_name;
+      const page = (!l.page_name || GENERIC_PAGE.test(l.page_name)) ? (slipPage && !GENERIC_PAGE.test(slipPage) ? slipPage : "ไม่ระบุเพจ (พิมพ์จากหน้ารวมทุกเพจ)") : l.page_name;
+      return { ...l, trk: k || l.tracking, page, pickId, laterPick: laterPick ? laterPick.id : null, nth: idx + 1, firstAt: hist[0]?.created_at };
     });
-    // รอบพิมพ์ = กดปุ่ม ③ หนึ่งครั้ง (batch_id) — กระดาษออกมาเป็นปึกเดียวกัน
+    // รอบพิมพ์ = กดปุ่ม ③ หนึ่งครั้ง (batch_id) — กระดาษออกมาเป็นปึกเดียวกัน · แยกเพจข้างใน
     const batchMap = new Map();
     labelsInRangeX.forEach(l => {
       const key = l.batch_id || ("t" + String(l.created_at).slice(0, 16));
-      const b = batchMap.get(key) || { key, at: l.created_at, count: 0, re: 0, noPick: 0, by: new Set(), pages: new Set() };
+      const b = batchMap.get(key) || { key, at: l.created_at, count: 0, re: 0, noPick: 0, by: new Set(), pages: new Map() };
       b.count += 1; if (l.reprint) b.re += 1; if (l.no_pick) b.noPick += 1;
-      if (l.printed_by) b.by.add(l.printed_by); if (l.page) b.pages.add(l.page);
-      batchMap.set(key, b); l.batchKey = key;
+      if (l.printed_by) b.by.add(l.printed_by);
+      const pg = b.pages.get(l.page) || { name: l.page, items: [], re: 0 };
+      pg.items.push(l); if (l.reprint) pg.re += 1;
+      b.pages.set(l.page, pg);
+      batchMap.set(key, b);
     });
-    const batches = [...batchMap.values()].sort((a, b) => new Date(b.at) - new Date(a.at));
-    labelsInRangeX.forEach(l => { const b = batchMap.get(l.batchKey); l.batchLabel = `${fmtDT(b.at)} (${b.count} ใบ)`; });
+    const batches = [...batchMap.values()].sort((a, b) => new Date(b.at) - new Date(a.at))
+      .map(b => ({ ...b, pages: [...b.pages.values()].sort((x, y) => y.items.length - x.items.length) }));
     const labelIssues = labelsInRangeX.filter(l => l.reprint || l.no_pick).reverse();
     const people = {};
     const bump = (n, k) => { if (!n) return; people[n] = people[n] || { printed: 0, closed: 0, pieces: 0, dupPrinted: 0, labels: 0, labelRe: 0 }; people[n][k] += 1; };
@@ -2702,16 +2710,21 @@ function PickLogPanel({ showToast }) {
         [r.printed_by, r.opened_by, r.closed_by, r.picked_by, r.page_name, ...Object.keys(r.pick_people || {}), ...v.labelBy].some(x => x && String(x).toUpperCase().includes(qq));
     });
   }, [view, q, onlyDup]);
-  // รายการพิมพ์ใบปะหน้าที่มีปัญหา (พิมพ์ซ้ำ / ไม่มีใบหยิบ) ในช่วงที่เลือก — กรองด้วยช่องค้นหาเดียวกัน
-  const [batchSel, setBatchSel] = useState(null); // กดรอบพิมพ์ → กรองตารางเฉพาะรอบนั้น
-  const labelIssuesShown = useMemo(() => {
+  // รอบพิมพ์ใบปะหน้า (ดรอปดาวน์) — กรองด้วยช่องค้นหาเดียวกัน (เลขพัสดุ / เพจ / ชื่อคนพิมพ์ / PK) + ติ๊ก "เฉพาะที่มีปัญหา"
+  const [openBatch, setOpenBatch] = useState(() => new Set());
+  const [onlyBadBatch, setOnlyBadBatch] = useState(true);
+  const batchesShown = useMemo(() => {
     const qq = q.trim().toUpperCase();
-    return (stats.labelIssues || []).filter(l => (!batchSel || l.batchKey === batchSel) &&
-      (!qq || [l.tracking, l.order_no, l.printed_by, l.page, l.pick_id ? "PK" + l.pick_id : ""].some(x => x && String(x).toUpperCase().includes(qq))));
-  }, [stats, q, batchSel]);
-  const reprintText = (l) => l.nth > 1
-    ? `พิมพ์ซ้ำ ครั้งที่ ${l.nth} (ครั้งแรก ${fmtDT(l.firstAt)})`
-    : "พิมพ์ซ้ำ — MyOrder ขึ้นว่าพิมพ์แล้วก่อนมี log";
+    const hitL = (l) => [l.trk, l.printed_by, l.page, l.pickId ? "PK" + l.pickId : ""].some(x => x && String(x).toUpperCase().includes(qq));
+    return (stats.batches || []).filter(b => (!onlyBadBatch || b.re || b.noPick) && (!qq || b.pages.some(p => p.items.some(hitL))))
+      .map(b => ({ ...b, hit: qq ? new Set(b.pages.flatMap(p => p.items.filter(hitL).map(l => l.id))) : null }));
+  }, [stats, q, onlyBadBatch]);
+  const toggleBatch = (k) => setOpenBatch(prev => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  const labelStatus = (l) => {
+    if (l.reprint) return [l.nth > 1 ? `ซ้ำ ครั้งที่ ${l.nth} (ครั้งแรก ${fmtDT(l.firstAt)})` : "ซ้ำ — MyOrder ขึ้นว่าพิมพ์แล้ว (ก่อนมี log)", "#B91C1C"];
+    if (l.no_pick) return [l.laterPick ? `ไม่มีใบหยิบตอนพิมพ์ → พิมพ์ใบหยิบทีหลัง PK${l.laterPick}` : "ไม่มีใบหยิบ", "#B45309"];
+    return ["ปกติ", "#059669"];
+  };
 
   const who = (name, legacy) => name ? <b style={{ color: "#111827" }}>{name}</b> : legacy ? <span style={{ color: "#9CA3AF", fontStyle: "italic" }} title="ชื่อที่ค้างในเครื่องก่อนมีระบบ PIN — อาจไม่ใช่คนทำจริง">{legacy}?</span> : <span style={{ color: "#D1D5DB" }}>-</span>;
   const th = { padding: "8px 10px", fontSize: 12, color: "#6B7280", fontWeight: 600, textAlign: "left", borderBottom: "1px solid #E5E7EB", whiteSpace: "nowrap", background: "#F9FAFB" };
@@ -2762,42 +2775,53 @@ function PickLogPanel({ showToast }) {
             <span style={{ fontSize: 13, color: "#6B7280" }}>ทั้งหมด {stats.labelTotal} ใบ · <span style={{ color: stats.labelRe ? "#B91C1C" : undefined, fontWeight: stats.labelRe ? 700 : 400 }}>พิมพ์ซ้ำ {stats.labelRe}</span> · <span style={{ color: stats.labelNoPick ? "#B45309" : undefined, fontWeight: stats.labelNoPick ? 700 : 400 }}>ไม่มีใบหยิบ {stats.labelNoPick}</span></span>
           ) : <span style={{ fontSize: 13, color: "#B45309" }}>ยังไม่ได้รัน sql/label-prints-setup.sql — ยังไม่มี log ใบปะหน้า</span>}
         </div>
-        {(stats.batches || []).some(b => b.re || b.noPick) && (
+        {labelsReady && (stats.batches || []).length > 0 && (
           <div style={{ marginTop: 10 }}>
-            <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 6 }}>🖨️ รอบพิมพ์ที่มีปัญหา (กด 1 ครั้ง = กระดาษ 1 ปึก) — กดเพื่อดูเฉพาะรอบนั้น</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {stats.batches.filter(b => b.re || b.noPick).map(b => {
-                const on = batchSel === b.key; const allRe = b.re === b.count;
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
+              <span style={{ fontSize: 12, color: "#6B7280" }}>🖨️ รอบพิมพ์ (กดปุ่ม ③ 1 ครั้ง = กระดาษ 1 ปึก) — กดที่รอบเพื่อดูรายละเอียดแยกเพจ</span>
+              <label style={{ fontSize: 12, color: "#6B7280", display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                <input type="checkbox" checked={onlyBadBatch} onChange={e => setOnlyBadBatch(e.target.checked)} /> เฉพาะรอบที่มีปัญหา
+              </label>
+            </div>
+            {batchesShown.length === 0 && <div style={{ fontSize: 13, color: "#9CA3AF", padding: "6px 2px" }}>{onlyBadBatch ? "✅ ไม่มีรอบที่พิมพ์ซ้ำหรือไม่มีใบหยิบ" : "ไม่มีรอบพิมพ์ตามเงื่อนไข"}</div>}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 460, overflow: "auto" }}>
+              {batchesShown.map(b => {
+                const open = openBatch.has(b.key) || (b.hit && b.hit.size > 0 && q.trim());
+                const bad = b.re || b.noPick; const allRe = b.re === b.count;
                 return (
-                  <button key={b.key} onClick={() => setBatchSel(on ? null : b.key)}
-                    style={{ border: on ? "2px solid #7C3AED" : "1px solid #FCA5A5", background: on ? "#EDE9FE" : "#FEF2F2", color: "#7F1D1D", borderRadius: 10, padding: "6px 10px", fontSize: 12, cursor: "pointer", textAlign: "left" }}>
-                    <b>รอบ {fmtDT(b.at)}</b> · {b.count} ใบ{b.re ? ` · ซ้ำ ${b.re}` : ""}{b.noPick ? ` · ไม่มีใบหยิบ ${b.noPick}` : ""}{b.by.size ? ` · ${[...b.by].join(", ")}` : ""}
-                    {allRe && <div style={{ fontSize: 11, fontWeight: 700 }}>ทั้งปึกเป็นใบซ้ำ — ทิ้งได้ทั้งปึก</div>}
-                  </button>
+                  <div key={b.key} style={{ border: "1px solid " + (bad ? "#FCA5A5" : "#E5E7EB"), borderRadius: 10, overflow: "hidden" }}>
+                    <div onClick={() => toggleBatch(b.key)} style={{ cursor: "pointer", padding: "8px 12px", background: bad ? "#FEF2F2" : "#F9FAFB", display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+                      <span style={{ color: "#7C3AED", fontWeight: 700 }}>{open ? "▾" : "▸"}</span>
+                      <b style={{ color: "#111827" }}>รอบ {fmtDT(b.at)}</b>
+                      <span style={{ fontSize: 13, color: "#374151" }}>· {b.count} ใบ · {b.pages.length} เพจ</span>
+                      {b.re > 0 && <span style={{ fontSize: 13, color: "#B91C1C", fontWeight: 700 }}>· ซ้ำ {b.re}</span>}
+                      {b.noPick > 0 && <span style={{ fontSize: 13, color: "#B45309", fontWeight: 700 }}>· ไม่มีใบหยิบ {b.noPick}</span>}
+                      <span style={{ fontSize: 13, color: "#6B7280" }}>· {b.by.size ? [...b.by].join(", ") : "ไม่ระบุคนพิมพ์"}</span>
+                      {allRe && <span style={{ fontSize: 12, fontWeight: 800, color: "#fff", background: "#DC2626", borderRadius: 6, padding: "1px 8px" }}>ทั้งปึกเป็นใบซ้ำ — ทิ้งได้ทั้งปึก</span>}
+                    </div>
+                    {open && (
+                      <div style={{ padding: "6px 12px 10px", background: "#fff" }}>
+                        {b.pages.map(p => (
+                          <div key={p.name} style={{ marginTop: 6 }}>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: "#111827" }}>{p.name} <span style={{ fontWeight: 400, color: "#6B7280" }}>· {p.items.length} ใบ</span>{p.re > 0 && <span style={{ color: "#B91C1C" }}> (ซ้ำ {p.re})</span>}</div>
+                            {p.items.map(l => {
+                              const [txt, col] = labelStatus(l); const isHit = b.hit && b.hit.has(l.id);
+                              return (
+                                <div key={l.id} style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap", padding: "3px 8px", marginTop: 2, borderRadius: 6, background: l.reprint ? "#FEF2F2" : l.no_pick ? "#FFFBEB" : "transparent", outline: isHit ? "2px solid #7C3AED" : "none" }}>
+                                  <span style={{ fontFamily: "monospace", fontSize: 12, minWidth: 150 }}>{l.trk || "ไม่มีเลขพัสดุ"}</span>
+                                  <span style={{ fontFamily: "monospace", fontSize: 12, color: "#7C3AED", minWidth: 64 }}>{l.pickId ? "PK" + l.pickId : "-"}</span>
+                                  <span style={{ fontSize: 12, fontWeight: 700, color: col }}>{l.reprint ? "🏷️ " : ""}{txt}{l.approved ? ` · ผจก.อนุมัติ` : ""}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 );
               })}
-              {batchSel && <button onClick={() => setBatchSel(null)} style={btnStyle("#F3F4F6", "#6B7280", { padding: "6px 10px" })}>แสดงทุกรอบ</button>}
             </div>
-          </div>
-        )}
-        {labelIssuesShown.length > 0 && (
-          <div style={{ marginTop: 8, maxHeight: 260, overflow: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
-              <thead><tr>{["รอบพิมพ์", "เลขพัสดุ", "ออเดอร์", "เพจ", "พิมพ์โดย", "ใบหยิบ", "ปัญหา"].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
-              <tbody>{labelIssuesShown.map(l => (
-                <tr key={l.id} style={{ background: l.reprint ? "#FEF2F2" : "#FFFBEB" }}>
-                  <td style={{ ...td, whiteSpace: "nowrap", fontSize: 12 }}>{l.batchLabel}</td>
-                  <td style={{ ...td, fontFamily: "monospace", fontSize: 12 }}>{l.tracking || "-"}</td>
-                  <td style={td}>{l.order_no || "-"}</td>
-                  <td style={{ ...td, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={l.page}>{l.page || "-"}</td>
-                  <td style={td}>{who(l.printed_by)}</td>
-                  <td style={{ ...td, fontFamily: "monospace" }}>{l.pick_id ? "PK" + l.pick_id : "-"}</td>
-                  <td style={{ ...td, fontSize: 12, fontWeight: 700, color: l.reprint ? "#B91C1C" : "#B45309" }}>
-                    {l.reprint ? reprintText(l) : "ไม่มีใบหยิบ"}{l.approved ? ` · อนุมัติโดย${l.approved}` : ""}
-                  </td>
-                </tr>
-              ))}</tbody>
-            </table>
           </div>
         )}
       </div>
