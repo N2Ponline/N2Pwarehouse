@@ -2659,7 +2659,27 @@ function PickLogPanel({ showToast }) {
     });
     const inR = (iso) => { const t = new Date(iso).getTime(); return range && t >= range[0] && t <= range[1]; };
     const labelsInRange = labels.filter(l => inR(l.created_at));
-    const labelIssues = labelsInRange.filter(l => l.reprint || l.no_pick).reverse();
+    // ชื่อเพจ: extension อ่านจากตัวกรองหน้า MyOrder ซึ่งมักเป็น "ออเดอร์ทั้งหมด" → ใช้ชื่อเพจจากใบหยิบแทน
+    const pickById = new Map(rows.map(r => [r.id, r]));
+    const GENERIC_PAGE = /^(ออเดอร์ทั้งหมด|เพจทั้งหมด|ไม่ระบุ|ช่องทางการขายอื่นๆ)?$/;
+    const labelsInRangeX = labelsInRange.map(l => {
+      const hist = labByTrk.get(normTrk(l.tracking)) || [];
+      const idx = hist.findIndex(x => x.id === l.id);
+      const page = (!l.page_name || GENERIC_PAGE.test(l.page_name)) ? (pickById.get(l.pick_id)?.page_name || l.page_name) : l.page_name;
+      return { ...l, page, nth: idx + 1, firstAt: hist[0]?.created_at };
+    });
+    // รอบพิมพ์ = กดปุ่ม ③ หนึ่งครั้ง (batch_id) — กระดาษออกมาเป็นปึกเดียวกัน
+    const batchMap = new Map();
+    labelsInRangeX.forEach(l => {
+      const key = l.batch_id || ("t" + String(l.created_at).slice(0, 16));
+      const b = batchMap.get(key) || { key, at: l.created_at, count: 0, re: 0, noPick: 0, by: new Set(), pages: new Set() };
+      b.count += 1; if (l.reprint) b.re += 1; if (l.no_pick) b.noPick += 1;
+      if (l.printed_by) b.by.add(l.printed_by); if (l.page) b.pages.add(l.page);
+      batchMap.set(key, b); l.batchKey = key;
+    });
+    const batches = [...batchMap.values()].sort((a, b) => new Date(b.at) - new Date(a.at));
+    labelsInRangeX.forEach(l => { const b = batchMap.get(l.batchKey); l.batchLabel = `${fmtDT(b.at)} (${b.count} ใบ)`; });
+    const labelIssues = labelsInRangeX.filter(l => l.reprint || l.no_pick).reverse();
     const people = {};
     const bump = (n, k) => { if (!n) return; people[n] = people[n] || { printed: 0, closed: 0, pieces: 0, dupPrinted: 0, labels: 0, labelRe: 0 }; people[n][k] += 1; };
     labelsInRange.forEach(l => { bump(l.printed_by, "labels"); if (l.reprint) bump(l.printed_by, "labelRe"); });
@@ -2669,7 +2689,7 @@ function PickLogPanel({ showToast }) {
       if (v.r.pick_people && typeof v.r.pick_people === "object") Object.entries(v.r.pick_people).forEach(([n, c]) => { bump(n, "pieces"); people[n].pieces += (Number(c) || 0) - 1; });
     });
     return { view, stats: { total: view.length, dupSlips: view.filter(v => v.isLater).length, dupParcels: view.filter(v => v.isLater).reduce((s, v) => s + v.dupTrks.size, 0), people,
-      labelTotal: labelsInRange.length, labelRe: labelsInRange.filter(l => l.reprint).length, labelNoPick: labelsInRange.filter(l => l.no_pick).length, labelIssues, labByTrk } };
+      labelTotal: labelsInRange.length, labelRe: labelsInRange.filter(l => l.reprint).length, labelNoPick: labelsInRange.filter(l => l.no_pick).length, labelIssues, labByTrk, batches } };
   }, [rows, range, labels]);
 
   const filtered = useMemo(() => {
@@ -2683,10 +2703,15 @@ function PickLogPanel({ showToast }) {
     });
   }, [view, q, onlyDup]);
   // รายการพิมพ์ใบปะหน้าที่มีปัญหา (พิมพ์ซ้ำ / ไม่มีใบหยิบ) ในช่วงที่เลือก — กรองด้วยช่องค้นหาเดียวกัน
+  const [batchSel, setBatchSel] = useState(null); // กดรอบพิมพ์ → กรองตารางเฉพาะรอบนั้น
   const labelIssuesShown = useMemo(() => {
     const qq = q.trim().toUpperCase();
-    return (stats.labelIssues || []).filter(l => !qq || [l.tracking, l.order_no, l.printed_by, l.page_name, l.pick_id ? "PK" + l.pick_id : ""].some(x => x && String(x).toUpperCase().includes(qq)));
-  }, [stats, q]);
+    return (stats.labelIssues || []).filter(l => (!batchSel || l.batchKey === batchSel) &&
+      (!qq || [l.tracking, l.order_no, l.printed_by, l.page, l.pick_id ? "PK" + l.pick_id : ""].some(x => x && String(x).toUpperCase().includes(qq))));
+  }, [stats, q, batchSel]);
+  const reprintText = (l) => l.nth > 1
+    ? `พิมพ์ซ้ำ ครั้งที่ ${l.nth} (ครั้งแรก ${fmtDT(l.firstAt)})`
+    : "พิมพ์ซ้ำ — MyOrder ขึ้นว่าพิมพ์แล้วก่อนมี log";
 
   const who = (name, legacy) => name ? <b style={{ color: "#111827" }}>{name}</b> : legacy ? <span style={{ color: "#9CA3AF", fontStyle: "italic" }} title="ชื่อที่ค้างในเครื่องก่อนมีระบบ PIN — อาจไม่ใช่คนทำจริง">{legacy}?</span> : <span style={{ color: "#D1D5DB" }}>-</span>;
   const th = { padding: "8px 10px", fontSize: 12, color: "#6B7280", fontWeight: 600, textAlign: "left", borderBottom: "1px solid #E5E7EB", whiteSpace: "nowrap", background: "#F9FAFB" };
@@ -2737,20 +2762,38 @@ function PickLogPanel({ showToast }) {
             <span style={{ fontSize: 13, color: "#6B7280" }}>ทั้งหมด {stats.labelTotal} ใบ · <span style={{ color: stats.labelRe ? "#B91C1C" : undefined, fontWeight: stats.labelRe ? 700 : 400 }}>พิมพ์ซ้ำ {stats.labelRe}</span> · <span style={{ color: stats.labelNoPick ? "#B45309" : undefined, fontWeight: stats.labelNoPick ? 700 : 400 }}>ไม่มีใบหยิบ {stats.labelNoPick}</span></span>
           ) : <span style={{ fontSize: 13, color: "#B45309" }}>ยังไม่ได้รัน sql/label-prints-setup.sql — ยังไม่มี log ใบปะหน้า</span>}
         </div>
+        {(stats.batches || []).some(b => b.re || b.noPick) && (
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 6 }}>🖨️ รอบพิมพ์ที่มีปัญหา (กด 1 ครั้ง = กระดาษ 1 ปึก) — กดเพื่อดูเฉพาะรอบนั้น</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {stats.batches.filter(b => b.re || b.noPick).map(b => {
+                const on = batchSel === b.key; const allRe = b.re === b.count;
+                return (
+                  <button key={b.key} onClick={() => setBatchSel(on ? null : b.key)}
+                    style={{ border: on ? "2px solid #7C3AED" : "1px solid #FCA5A5", background: on ? "#EDE9FE" : "#FEF2F2", color: "#7F1D1D", borderRadius: 10, padding: "6px 10px", fontSize: 12, cursor: "pointer", textAlign: "left" }}>
+                    <b>รอบ {fmtDT(b.at)}</b> · {b.count} ใบ{b.re ? ` · ซ้ำ ${b.re}` : ""}{b.noPick ? ` · ไม่มีใบหยิบ ${b.noPick}` : ""}{b.by.size ? ` · ${[...b.by].join(", ")}` : ""}
+                    {allRe && <div style={{ fontSize: 11, fontWeight: 700 }}>ทั้งปึกเป็นใบซ้ำ — ทิ้งได้ทั้งปึก</div>}
+                  </button>
+                );
+              })}
+              {batchSel && <button onClick={() => setBatchSel(null)} style={btnStyle("#F3F4F6", "#6B7280", { padding: "6px 10px" })}>แสดงทุกรอบ</button>}
+            </div>
+          </div>
+        )}
         {labelIssuesShown.length > 0 && (
-          <div style={{ marginTop: 8, maxHeight: 220, overflow: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 700 }}>
-              <thead><tr>{["เวลา", "เลขพัสดุ", "ออเดอร์", "เพจ", "พิมพ์โดย", "ใบหยิบ", "ปัญหา"].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+          <div style={{ marginTop: 8, maxHeight: 260, overflow: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
+              <thead><tr>{["รอบพิมพ์", "เลขพัสดุ", "ออเดอร์", "เพจ", "พิมพ์โดย", "ใบหยิบ", "ปัญหา"].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
               <tbody>{labelIssuesShown.map(l => (
                 <tr key={l.id} style={{ background: l.reprint ? "#FEF2F2" : "#FFFBEB" }}>
-                  <td style={{ ...td, whiteSpace: "nowrap" }}>{fmtDT(l.created_at)}</td>
+                  <td style={{ ...td, whiteSpace: "nowrap", fontSize: 12 }}>{l.batchLabel}</td>
                   <td style={{ ...td, fontFamily: "monospace", fontSize: 12 }}>{l.tracking || "-"}</td>
                   <td style={td}>{l.order_no || "-"}</td>
-                  <td style={{ ...td, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.page_name || "-"}</td>
+                  <td style={{ ...td, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={l.page}>{l.page || "-"}</td>
                   <td style={td}>{who(l.printed_by)}</td>
                   <td style={{ ...td, fontFamily: "monospace" }}>{l.pick_id ? "PK" + l.pick_id : "-"}</td>
                   <td style={{ ...td, fontSize: 12, fontWeight: 700, color: l.reprint ? "#B91C1C" : "#B45309" }}>
-                    {l.reprint ? `พิมพ์ซ้ำ (ครั้งที่ ${(stats.labByTrk.get(normTrk(l.tracking)) || []).findIndex(x => x.id === l.id) + 1})` : "ไม่มีใบหยิบ"}{l.approved ? ` · อนุมัติโดย${l.approved}` : ""}
+                    {l.reprint ? reprintText(l) : "ไม่มีใบหยิบ"}{l.approved ? ` · อนุมัติโดย${l.approved}` : ""}
                   </td>
                 </tr>
               ))}</tbody>
@@ -2802,10 +2845,13 @@ function PickLogPanel({ showToast }) {
                             const hit = qq && t.includes(qq);
                             const lp = stats.labByTrk.get(t) || [];
                             const lpTip = lp.length ? "ใบปะหน้า: " + lp.map(x => `${fmtDT(x.created_at)}${x.printed_by ? " " + x.printed_by : ""}`).join(" / ") : "";
+                            const lpRe = lp.length > 1 || lp.some(x => x.reprint);
+                            const tm = (iso) => new Date(iso).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" });
                             return (
                               <span key={t} title={[others.length ? "อยู่ใน " + others.join(", ") + " ด้วย" : "", lpTip].filter(Boolean).join("\n")}
-                                style={{ fontFamily: "monospace", fontSize: 12, padding: "3px 8px", borderRadius: 6, background: others.length ? "#FEE2E2" : "#F3F4F6", color: others.length ? "#991B1B" : "#374151", border: hit ? "2px solid #7C3AED" : "1px solid transparent" }}>
-                                {t}{others.length ? ` ↔ ${others.join(", ")}` : ""}{lp.length ? ` 🏷️${lp.length > 1 ? "×" + lp.length : ""}` : ""}
+                                style={{ fontFamily: "monospace", fontSize: 12, padding: "3px 8px", borderRadius: 6, background: others.length || lpRe ? "#FEE2E2" : "#F3F4F6", color: others.length || lpRe ? "#991B1B" : "#374151", border: hit ? "2px solid #7C3AED" : "1px solid transparent" }}>
+                                {t}{others.length ? ` ↔ ${others.join(", ")}` : ""}
+                                {lp.length > 0 && <b style={{ marginLeft: 6, fontFamily: "'Sarabun', sans-serif" }}>🏷️{lpRe ? " ซ้ำ" : ""} {lp.map(x => tm(x.created_at)).join(", ")}</b>}
                               </span>
                             );
                           })}
