@@ -4039,10 +4039,10 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
             <div style={{ fontSize: 32 }}>🔑</div>
             <div style={{ fontWeight: 800, fontSize: 17, color: "#111827", marginTop: 4 }}>ใส่ PIN พนักงาน</div>
             <div style={{ fontSize: 13, color: "#6B7280", marginTop: 2, marginBottom: 14 }}>{pinAsk.title}</div>
-            <input autoFocus type="password" inputMode="numeric" autoComplete="off" maxLength={6} value={pinInput}
+            <input autoFocus type="text" inputMode="numeric" autoComplete="off" maxLength={6} value={pinInput}
               onChange={e => { setPinInput(e.target.value.replace(/\D/g, "")); setPinErr(""); }}
               onKeyDown={e => { if (e.key === "Enter") submitPin(); if (e.key === "Escape") cancelPin(); }}
-              style={{ width: "100%", textAlign: "center", fontSize: 28, letterSpacing: 10, padding: "10px 12px", borderRadius: 12, border: `2px solid ${pinErr ? "#EF4444" : "#C4B5FD"}`, outline: "none", fontFamily: "monospace" }} />
+              style={{ WebkitTextSecurity: "disc", width: "100%", textAlign: "center", fontSize: 28, letterSpacing: 10, padding: "10px 12px", borderRadius: 12, border: `2px solid ${pinErr ? "#EF4444" : "#C4B5FD"}`, outline: "none", fontFamily: "monospace" }} />
             <div style={{ minHeight: 20, fontSize: 13, color: "#DC2626", fontWeight: 600, marginTop: 6 }}>{pinErr}</div>
             <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
               <button onClick={cancelPin} style={{ flex: 1, background: "#F3F4F6", color: "#374151", border: "none", borderRadius: 10, padding: "11px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>ยกเลิก</button>
