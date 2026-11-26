@@ -2635,6 +2635,35 @@ function PickLogPanel({ showToast }) {
   };
   useEffect(() => { load(); }, [preset, from, to]);
 
+  // ชื่อเพจรายพัสดุ — ถามเว็บยอดขาย (RPC myorder_page_lookup, ซิงค์จาก MyOrder) ด้วยเลขพัสดุ + order id
+  const [pageOf, setPageOf] = useState(() => new Map()); // "T:เลขพัสดุ" / "I:order id" → ชื่อเพจ
+  const [pageReady, setPageReady] = useState(null);      // null กำลังโหลด · true ได้ · false ยังไม่ได้รัน SQL
+  useEffect(() => {
+    if (!range) return;
+    const inR = (iso) => { const t = new Date(iso).getTime(); return t >= range[0] && t <= range[1]; };
+    const trks = new Set(), ids = new Set();
+    rows.filter(r => inR(r.created_at)).forEach(r => (Array.isArray(r.parcels) ? r.parcels : []).forEach(p => { const k = normTrk(p && p.tracking); if (k) trks.add(k); }));
+    labels.filter(l => inR(l.created_at)).forEach(l => { const k = normTrk(l.tracking); if (k) trks.add(k); if (l.order_id) ids.add(String(l.order_id)); });
+    if (!trks.size && !ids.size) { setPageOf(new Map()); setPageReady(true); return; }
+    let dead = false;
+    (async () => {
+      const T = [...trks], I = [...ids], m = new Map();
+      try {
+        for (let i = 0; i < Math.max(T.length, I.length); i += 1500) {
+          const r = await fetch(`${SALES_SB_URL}/rest/v1/rpc/myorder_page_lookup`, {
+            method: "POST", headers: { apikey: SALES_SB_KEY, "Content-Type": "application/json" },
+            body: JSON.stringify({ p_trackings: T.slice(i, i + 1500), p_ids: I.slice(i, i + 1500) }),
+          });
+          if (r.status === 404) { if (!dead) setPageReady(false); return; }
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          (await r.json() || []).forEach(([t, id, pg]) => { if (!pg) return; if (t) m.set("T:" + normTrk(t), pg); if (id) m.set("I:" + id, pg); });
+        }
+        if (!dead) { setPageOf(m); setPageReady(true); }
+      } catch (e) { if (!dead) { setPageOf(m); setPageReady(true); } }
+    })();
+    return () => { dead = true; };
+  }, [rows, labels, range]);
+
   // เลขพัสดุ → ใบหยิบทุกใบที่มีพัสดุนี้ (เรียงเก่า→ใหม่)
   const { view, stats } = useMemo(() => {
     const labByTrk = new Map(); // เลขพัสดุ → รายการพิมพ์ใบปะหน้า (เก่า→ใหม่)
@@ -2645,15 +2674,21 @@ function PickLogPanel({ showToast }) {
       const arr = byTrk.get(k) || []; if (!arr.some(x => x.id === r.id)) arr.push(r); byTrk.set(k, arr);
     }));
     const inRange = range ? rows.filter(r => { const t = new Date(r.created_at).getTime(); return t >= range[0] && t <= range[1]; }) : [];
+    const GENERIC_PAGE = /^(ออเดอร์ทั้งหมด|เพจทั้งหมด|ไม่ระบุ|ช่องทางการขายอื่นๆ)?$/;
     const view = inRange.map(r => {
       const trks = [...new Set((Array.isArray(r.parcels) ? r.parcels : []).map(p => normTrk(p && p.tracking)).filter(Boolean))];
+      // แยกพัสดุตามเพจจริง (จากเว็บยอดขาย) — ไม่เจอ ใช้ชื่อเพจของใบหยิบ ถ้าเป็นหน้ารวม = ไม่ทราบเพจ
+      const slipPg = r.page_name && !GENERIC_PAGE.test(r.page_name) ? r.page_name : null;
+      const pgMap = new Map();
+      trks.forEach(t => { const pg = pageOf.get("T:" + t) || slipPg || "ไม่ทราบเพจ"; const a = pgMap.get(pg) || []; a.push(t); pgMap.set(pg, a); });
+      const pageGroups = [...pgMap.entries()].map(([name, ts]) => ({ name, trks: ts })).sort((a, b) => b.trks.length - a.trks.length);
       const dupWith = new Map(); // id ใบอื่น → { row, trks: [] }
       const dupTrks = new Set();
       trks.forEach(k => (byTrk.get(k) || []).forEach(o => { if (o.id === r.id) return; dupTrks.add(k); const e = dupWith.get(o.id) || { row: o, trks: [] }; e.trks.push(k); dupWith.set(o.id, e); }));
       // ใบนี้ "พิมพ์ทีหลัง" = มีใบเก่ากว่าที่มีพัสดุเดียวกัน → ตัวต้นเหตุพิมพ์ซ้ำ
       const isLater = [...dupWith.values()].some(e => e.row.id < r.id);
       const lab = trks.map(k => labByTrk.get(k)).filter(Boolean);
-      return { r, trks, dupTrks, dupWith: [...dupWith.values()].sort((a, b) => a.row.id - b.row.id), isLater,
+      return { r, trks, pageGroups, dupTrks, dupWith: [...dupWith.values()].sort((a, b) => a.row.id - b.row.id), isLater,
         labelCount: lab.length, labelReprints: lab.filter(a => a.length > 1 || a.some(x => x.reprint)).length,
         labelBy: [...new Set(lab.flat().map(x => x.printed_by).filter(Boolean))] };
     });
@@ -2661,7 +2696,6 @@ function PickLogPanel({ showToast }) {
     const labelsInRange = labels.filter(l => inR(l.created_at));
     // ชื่อเพจ: extension อ่านจากตัวกรองหน้า MyOrder ซึ่งมักเป็น "ออเดอร์ทั้งหมด" → ใช้ชื่อเพจจากใบหยิบแทน
     const pickById = new Map(rows.map(r => [r.id, r]));
-    const GENERIC_PAGE = /^(ออเดอร์ทั้งหมด|เพจทั้งหมด|ไม่ระบุ|ช่องทางการขายอื่นๆ)?$/;
     const labelsInRangeX = labelsInRange.map(l => {
       const k = normTrk(l.tracking);
       const hist = labByTrk.get(k) || [];
@@ -2670,7 +2704,8 @@ function PickLogPanel({ showToast }) {
       const laterPick = l.no_pick ? (byTrk.get(k) || []).find(s => new Date(s.created_at) > new Date(l.created_at)) : null;
       const pickId = l.pick_id || (laterPick && laterPick.id) || null;
       const slipPage = pickById.get(pickId)?.page_name;
-      const page = (!l.page_name || GENERIC_PAGE.test(l.page_name)) ? (slipPage && !GENERIC_PAGE.test(slipPage) ? slipPage : "ไม่ระบุเพจ (พิมพ์จากหน้ารวมทุกเพจ)") : l.page_name;
+      const realPage = pageOf.get("T:" + k) || (l.order_id && pageOf.get("I:" + l.order_id));
+      const page = realPage || ((!l.page_name || GENERIC_PAGE.test(l.page_name)) ? (slipPage && !GENERIC_PAGE.test(slipPage) ? slipPage : "ไม่ระบุเพจ (พิมพ์จากหน้ารวมทุกเพจ)") : l.page_name);
       return { ...l, trk: k || l.tracking, page, pickId, laterPick: laterPick ? laterPick.id : null, nth: idx + 1, firstAt: hist[0]?.created_at };
     });
     // รอบพิมพ์ = กดปุ่ม ③ หนึ่งครั้ง (batch_id) — กระดาษออกมาเป็นปึกเดียวกัน · แยกเพจข้างใน
@@ -2698,7 +2733,7 @@ function PickLogPanel({ showToast }) {
     });
     return { view, stats: { total: view.length, dupSlips: view.filter(v => v.isLater).length, dupParcels: view.filter(v => v.isLater).reduce((s, v) => s + v.dupTrks.size, 0), people,
       labelTotal: labelsInRange.length, labelRe: labelsInRange.filter(l => l.reprint).length, labelNoPick: labelsInRange.filter(l => l.no_pick).length, labelIssues, labByTrk, batches } };
-  }, [rows, range, labels]);
+  }, [rows, range, labels, pageOf]);
 
   const filtered = useMemo(() => {
     const qq = q.trim().toUpperCase(); const qNum = qq.replace(/^PK/, "");
@@ -2707,7 +2742,7 @@ function PickLogPanel({ showToast }) {
       if (!qq) return true;
       const r = v.r;
       return String(r.id) === qNum || v.trks.some(t => t.includes(qq)) ||
-        [r.printed_by, r.opened_by, r.closed_by, r.picked_by, r.page_name, ...Object.keys(r.pick_people || {}), ...v.labelBy].some(x => x && String(x).toUpperCase().includes(qq));
+        [r.printed_by, r.opened_by, r.closed_by, r.picked_by, r.page_name, ...v.pageGroups.map(g => g.name), ...Object.keys(r.pick_people || {}), ...v.labelBy].some(x => x && String(x).toUpperCase().includes(qq));
     });
   }, [view, q, onlyDup]);
   // รอบพิมพ์ใบปะหน้า (ดรอปดาวน์) — กรองด้วยช่องค้นหาเดียวกัน (เลขพัสดุ / เพจ / ชื่อคนพิมพ์ / PK) + ติ๊ก "เฉพาะที่มีปัญหา"
@@ -2841,7 +2876,10 @@ function PickLogPanel({ showToast }) {
                     <tr onClick={() => setOpenId(open ? null : r.id)} style={{ cursor: "pointer", background: v.isLater ? "#FEF2F2" : dup ? "#FFFBEB" : "#fff" }}>
                       <td style={{ ...td, fontFamily: "monospace", fontWeight: 700, color: "#7C3AED", whiteSpace: "nowrap" }}>{open ? "▾" : "▸"} PK{r.id}</td>
                       <td style={{ ...td, whiteSpace: "nowrap" }}>{fmtDT(r.created_at)}</td>
-                      <td style={{ ...td, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.page_name}>{r.page_name || "-"}</td>
+                      <td style={{ ...td, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                        title={v.pageGroups.map(g => `${g.name} · ${g.trks.length} พัสดุ`).join("\n") || r.page_name}>
+                        {v.pageGroups.length > 1 ? <b style={{ color: "#7C3AED" }}>{v.pageGroups.length} เพจ</b> : (v.pageGroups[0]?.name || r.page_name || "-")}
+                      </td>
                       <td style={td}>{v.trks.length}</td>
                       <td style={td}>{who(r.printed_by)}</td>
                       <td style={td}>{who(r.opened_by)}</td>
@@ -2863,8 +2901,17 @@ function PickLogPanel({ showToast }) {
                     {open && (
                       <tr><td colSpan={10} style={{ padding: "8px 14px 14px", background: "#FAFAFE", borderBottom: "1px solid #E5E7EB" }}>
                         <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 6 }}>{r.total_orders || 0} ออเดอร์ · {r.total_items || 0} หน่วยขาย{r.note ? ` · 📝 ${r.note}` : ""}</div>
+                        {v.pageGroups.map(g => {
+                          const gDup = g.trks.filter(t => v.dupTrks.has(t)).length;
+                          const gLab = g.trks.filter(t => { const lp = stats.labByTrk.get(t) || []; return lp.length > 1 || lp.some(x => x.reprint); }).length;
+                          return (
+                        <div key={g.name} style={{ marginTop: 6 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#111827", marginBottom: 4 }}>{g.name} <span style={{ fontWeight: 400, color: "#6B7280" }}>· {g.trks.length} พัสดุ</span>
+                            {gDup > 0 && <span style={{ color: "#B91C1C" }}> · อยู่ในใบหยิบอื่นด้วย {gDup}</span>}
+                            {gLab > 0 && <span style={{ color: "#B91C1C" }}> · ใบปะหน้าซ้ำ {gLab}</span>}
+                          </div>
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                          {v.trks.map(t => {
+                          {g.trks.map(t => {
                             const others = v.dupWith.filter(e => e.trks.includes(t)).map(e => "PK" + e.row.id);
                             const hit = qq && t.includes(qq);
                             const lp = stats.labByTrk.get(t) || [];
@@ -2879,8 +2926,12 @@ function PickLogPanel({ showToast }) {
                               </span>
                             );
                           })}
-                          {v.trks.length === 0 && <span style={{ fontSize: 12, color: "#9CA3AF" }}>ใบนี้ไม่มีเลขพัสดุ</span>}
                         </div>
+                        </div>
+                          );
+                        })}
+                        {v.trks.length === 0 && <span style={{ fontSize: 12, color: "#9CA3AF" }}>ใบนี้ไม่มีเลขพัสดุ</span>}
+                        {pageReady === false && <div style={{ fontSize: 11, color: "#B45309", marginTop: 6 }}>ยังแยกเพจรายพัสดุไม่ได้ — ต้องรัน myorder-page-lookup.sql ในเว็บยอดขายก่อน</div>}
                       </td></tr>
                     )}
                   </Fragment>
