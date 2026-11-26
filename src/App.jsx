@@ -2612,6 +2612,7 @@ function PickLogPanel({ showToast }) {
   const [q, setQ] = useState("");
   const [onlyDup, setOnlyDup] = useState(false);
   const [openId, setOpenId] = useState(null);
+  const [sub, setSub] = useState("pick"); // pick = บันทึกจากใบหยิบ · label = เลขพัสดุที่พิมพ์ใบปะหน้าซ้ำ
   const [labels, setLabels] = useState([]);    // label_prints (log พิมพ์ใบปะหน้าจาก extension v3.13) ช่วงเดียวกัน
   const [labelsReady, setLabelsReady] = useState(true); // false = ยังไม่ได้รัน sql/label-prints-setup.sql
 
@@ -2768,8 +2769,14 @@ function PickLogPanel({ showToast }) {
   return (
     <div>
       <div style={{ marginBottom: 14 }}>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📜 Log ใบหยิบ</h2>
-        <p style={{ fontSize: 13, color: "#6B7280" }}>ใครพิมพ์ใบหยิบ (PIN ใน extension) · ใครเปิดใบ / ยิงกี่ชิ้น / ปิดใบตัดสต็อก (PIN ใน StockMaster) · <b style={{ color: "#B91C1C" }}>แดง</b> = มีพัสดุอยู่ในใบหยิบอื่นด้วย (เทียบย้อนหลัง {PICK_LOG_LOOKBACK_DAYS} วัน) · ชื่อสีเทามี ? = ใบก่อนมีระบบ PIN ชื่อค้างในเครื่อง เชื่อถือไม่ได้</p>
+        <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 10 }}>📜 Log ใบหยิบ</h2>
+        <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
+          {[["pick", `📋 บันทึกจากใบหยิบ (${stats.total})`, stats.dupSlips], ["label", `🏷️ เลขพัสดุที่พิมพ์ใบปะหน้าซ้ำ (${stats.labelRe})`, stats.labelRe]].map(([k, l, bad]) => (
+            <button key={k} onClick={() => setSub(k)} style={{ background: sub === k ? "#7C3AED" : "#fff", color: sub === k ? "#fff" : bad ? "#B91C1C" : "#374151", border: "1px solid " + (sub === k ? "#7C3AED" : bad ? "#FCA5A5" : "#E5E7EB"), borderRadius: 10, padding: "8px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>{l}</button>
+          ))}
+        </div>
+        {sub === "label" ? <p style={{ fontSize: 13, color: "#6B7280" }}>บันทึกตอนกดปุ่ม ③ พิมพ์ใบส่งของ ใน MyOrder (เครื่องที่ลง extension v3.14) · 1 รอบ = กด 1 ครั้ง = กระดาษ 1 ปึก · เลข PK = ใบหยิบล่าสุดที่มีพัสดุนั้น</p> :
+        <p style={{ fontSize: 13, color: "#6B7280" }}>ใครพิมพ์ใบหยิบ (PIN ใน extension) · ใครเปิดใบ / ยิงกี่ชิ้น / ปิดใบตัดสต็อก (PIN ใน StockMaster) · <b style={{ color: "#B91C1C" }}>แดง</b> = มีพัสดุอยู่ในใบหยิบอื่นด้วย (เทียบย้อนหลัง {PICK_LOG_LOOKBACK_DAYS} วัน) · ชื่อสีเทามี ? = ใบก่อนมีระบบ PIN ชื่อค้างในเครื่อง เชื่อถือไม่ได้</p>}
       </div>
 
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, padding: 14, marginBottom: 12, display: "flex", flexWrap: "wrap", gap: 14, alignItems: "center" }}>
@@ -2783,14 +2790,14 @@ function PickLogPanel({ showToast }) {
             <input type="date" className="inp" style={{ padding: "6px 8px", fontSize: 12 }} value={to} onChange={e => setTo(e.target.value)} />
           </>)}
         </div>
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#B91C1C", fontWeight: 600, cursor: "pointer" }}>
+        {sub === "pick" && <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "#B91C1C", fontWeight: 600, cursor: "pointer" }}>
           <input type="checkbox" checked={onlyDup} onChange={e => setOnlyDup(e.target.checked)} /> เฉพาะใบที่มีพัสดุซ้ำ
-        </label>
+        </label>}
         <input value={q} onChange={e => setQ(e.target.value)} placeholder="🔍 เลขพัสดุ / PK / ชื่อพนักงาน / เพจ" className="inp" style={{ flex: 1, minWidth: 220, padding: "7px 10px", fontSize: 13 }} />
         <button onClick={load} style={btnStyle("#F3F4F6", "#6B7280", { padding: "7px 12px" })}>🔄</button>
       </div>
 
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+      {sub === "pick" && <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
         <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 12, padding: "10px 16px" }}><div style={{ fontSize: 22, fontWeight: 800 }}>{stats.total}</div><div style={{ fontSize: 12, color: "#6B7280" }}>ใบหยิบ</div></div>
         <div style={{ background: stats.dupSlips ? "#FEF2F2" : "#fff", border: "1px solid " + (stats.dupSlips ? "#FECACA" : "#E5E7EB"), borderRadius: 12, padding: "10px 16px" }}><div style={{ fontSize: 22, fontWeight: 800, color: stats.dupSlips ? "#B91C1C" : "#111827" }}>{stats.dupSlips}</div><div style={{ fontSize: 12, color: "#6B7280" }}>ใบที่พิมพ์ซ้ำ ({stats.dupParcels} พัสดุ)</div></div>
         {Object.entries(stats.people).sort((a, b) => b[1].printed + b[1].closed - a[1].printed - a[1].closed).map(([n, p]) => (
@@ -2801,9 +2808,9 @@ function PickLogPanel({ showToast }) {
             {p.labelRe > 0 && <div style={{ fontSize: 12, color: "#B91C1C", fontWeight: 700 }}>พิมพ์ใบปะหน้าซ้ำ {p.labelRe} ใบ</div>}
           </div>
         ))}
-      </div>
+      </div>}
 
-      <div style={{ background: "#fff", border: "1px solid " + (stats.labelRe || stats.labelNoPick ? "#FECACA" : "#E5E7EB"), borderRadius: 14, padding: "12px 14px", marginBottom: 12 }}>
+      {sub === "label" && <div style={{ background: "#fff", border: "1px solid " + (stats.labelRe || stats.labelNoPick ? "#FECACA" : "#E5E7EB"), borderRadius: 14, padding: "12px 14px", marginBottom: 12 }}>
         <div style={{ display: "flex", gap: 14, alignItems: "baseline", flexWrap: "wrap" }}>
           <b style={{ fontSize: 14 }}>🏷️ พิมพ์ใบปะหน้า (ใบส่งของ)</b>
           {labelsReady ? (
@@ -2859,9 +2866,9 @@ function PickLogPanel({ showToast }) {
             </div>
           </div>
         )}
-      </div>
+      </div>}
 
-      <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, overflow: "auto" }}>
+      {sub === "pick" && <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, overflow: "auto" }}>
         {loading && <div style={{ padding: 16, color: "#9CA3AF", fontSize: 13 }}>กำลังโหลด...</div>}
         {!loading && filtered.length === 0 && <div style={{ padding: 24, color: "#9CA3AF", fontSize: 13, textAlign: "center" }}>ไม่มีใบหยิบตามเงื่อนไข</div>}
         {!loading && filtered.length > 0 && (
@@ -2940,7 +2947,7 @@ function PickLogPanel({ showToast }) {
             </tbody>
           </table>
         )}
-      </div>
+      </div>}
     </div>
   );
 }
