@@ -2612,6 +2612,8 @@ function PickLogPanel({ showToast }) {
   const [q, setQ] = useState("");
   const [onlyDup, setOnlyDup] = useState(false);
   const [openId, setOpenId] = useState(null);
+  const [labels, setLabels] = useState([]);    // label_prints (log พิมพ์ใบปะหน้าจาก extension v3.13) ช่วงเดียวกัน
+  const [labelsReady, setLabelsReady] = useState(true); // false = ยังไม่ได้รัน sql/label-prints-setup.sql
 
   const load = async () => {
     setLoading(true);
@@ -2624,6 +2626,10 @@ function PickLogPanel({ showToast }) {
       const cols = "id,created_at,page_name,total_orders,total_items,parcels,pick_status,pick_closed_at,picked_by,printed_by,opened_by,closed_by,pick_people,dup_parcels,note";
       const list = await sbAll(`order_scans?select=${cols}&created_at=gte.${encodeURIComponent(lookIso)}&created_at=lte.${encodeURIComponent(new Date(toMs).toISOString())}&order=created_at.desc`);
       setRows(list || []); setRange([fromMs, toMs]);
+      try {
+        const lp = await sbAll(`label_prints?select=*&created_at=gte.${encodeURIComponent(lookIso)}&order=created_at.asc`);
+        setLabels(lp || []); setLabelsReady(true);
+      } catch (e) { setLabels([]); setLabelsReady(false); }
     } catch (e) { showToast(e.message, "error"); }
     setLoading(false);
   };
@@ -2631,6 +2637,8 @@ function PickLogPanel({ showToast }) {
 
   // เลขพัสดุ → ใบหยิบทุกใบที่มีพัสดุนี้ (เรียงเก่า→ใหม่)
   const { view, stats } = useMemo(() => {
+    const labByTrk = new Map(); // เลขพัสดุ → รายการพิมพ์ใบปะหน้า (เก่า→ใหม่)
+    labels.forEach(l => { const k = normTrk(l.tracking); if (!k) return; const a = labByTrk.get(k) || []; a.push(l); labByTrk.set(k, a); });
     const byTrk = new Map();
     [...rows].sort((a, b) => a.id - b.id).forEach(r => (Array.isArray(r.parcels) ? r.parcels : []).forEach(p => {
       const k = normTrk(p && p.tracking); if (!k) return;
@@ -2644,28 +2652,41 @@ function PickLogPanel({ showToast }) {
       trks.forEach(k => (byTrk.get(k) || []).forEach(o => { if (o.id === r.id) return; dupTrks.add(k); const e = dupWith.get(o.id) || { row: o, trks: [] }; e.trks.push(k); dupWith.set(o.id, e); }));
       // ใบนี้ "พิมพ์ทีหลัง" = มีใบเก่ากว่าที่มีพัสดุเดียวกัน → ตัวต้นเหตุพิมพ์ซ้ำ
       const isLater = [...dupWith.values()].some(e => e.row.id < r.id);
-      return { r, trks, dupTrks, dupWith: [...dupWith.values()].sort((a, b) => a.row.id - b.row.id), isLater };
+      const lab = trks.map(k => labByTrk.get(k)).filter(Boolean);
+      return { r, trks, dupTrks, dupWith: [...dupWith.values()].sort((a, b) => a.row.id - b.row.id), isLater,
+        labelCount: lab.length, labelReprints: lab.filter(a => a.length > 1 || a.some(x => x.reprint)).length,
+        labelBy: [...new Set(lab.flat().map(x => x.printed_by).filter(Boolean))] };
     });
+    const inR = (iso) => { const t = new Date(iso).getTime(); return range && t >= range[0] && t <= range[1]; };
+    const labelsInRange = labels.filter(l => inR(l.created_at));
+    const labelIssues = labelsInRange.filter(l => l.reprint || l.no_pick).reverse();
     const people = {};
-    const bump = (n, k) => { if (!n) return; people[n] = people[n] || { printed: 0, closed: 0, pieces: 0, dupPrinted: 0 }; people[n][k] += 1; };
+    const bump = (n, k) => { if (!n) return; people[n] = people[n] || { printed: 0, closed: 0, pieces: 0, dupPrinted: 0, labels: 0, labelRe: 0 }; people[n][k] += 1; };
+    labelsInRange.forEach(l => { bump(l.printed_by, "labels"); if (l.reprint) bump(l.printed_by, "labelRe"); });
     view.forEach(v => {
       bump(v.r.printed_by, "printed"); bump(v.r.closed_by, "closed");
       if (v.isLater) bump(v.r.printed_by, "dupPrinted");
       if (v.r.pick_people && typeof v.r.pick_people === "object") Object.entries(v.r.pick_people).forEach(([n, c]) => { bump(n, "pieces"); people[n].pieces += (Number(c) || 0) - 1; });
     });
-    return { view, stats: { total: view.length, dupSlips: view.filter(v => v.isLater).length, dupParcels: view.filter(v => v.isLater).reduce((s, v) => s + v.dupTrks.size, 0), people } };
-  }, [rows, range]);
+    return { view, stats: { total: view.length, dupSlips: view.filter(v => v.isLater).length, dupParcels: view.filter(v => v.isLater).reduce((s, v) => s + v.dupTrks.size, 0), people,
+      labelTotal: labelsInRange.length, labelRe: labelsInRange.filter(l => l.reprint).length, labelNoPick: labelsInRange.filter(l => l.no_pick).length, labelIssues, labByTrk } };
+  }, [rows, range, labels]);
 
   const filtered = useMemo(() => {
     const qq = q.trim().toUpperCase(); const qNum = qq.replace(/^PK/, "");
     return view.filter(v => {
-      if (onlyDup && v.dupTrks.size === 0) return false;
+      if (onlyDup && v.dupTrks.size === 0 && v.labelReprints === 0) return false;
       if (!qq) return true;
       const r = v.r;
       return String(r.id) === qNum || v.trks.some(t => t.includes(qq)) ||
-        [r.printed_by, r.opened_by, r.closed_by, r.picked_by, r.page_name, ...Object.keys(r.pick_people || {})].some(x => x && String(x).toUpperCase().includes(qq));
+        [r.printed_by, r.opened_by, r.closed_by, r.picked_by, r.page_name, ...Object.keys(r.pick_people || {}), ...v.labelBy].some(x => x && String(x).toUpperCase().includes(qq));
     });
   }, [view, q, onlyDup]);
+  // รายการพิมพ์ใบปะหน้าที่มีปัญหา (พิมพ์ซ้ำ / ไม่มีใบหยิบ) ในช่วงที่เลือก — กรองด้วยช่องค้นหาเดียวกัน
+  const labelIssuesShown = useMemo(() => {
+    const qq = q.trim().toUpperCase();
+    return (stats.labelIssues || []).filter(l => !qq || [l.tracking, l.order_no, l.printed_by, l.page_name, l.pick_id ? "PK" + l.pick_id : ""].some(x => x && String(x).toUpperCase().includes(qq)));
+  }, [stats, q]);
 
   const who = (name, legacy) => name ? <b style={{ color: "#111827" }}>{name}</b> : legacy ? <span style={{ color: "#9CA3AF", fontStyle: "italic" }} title="ชื่อที่ค้างในเครื่องก่อนมีระบบ PIN — อาจไม่ใช่คนทำจริง">{legacy}?</span> : <span style={{ color: "#D1D5DB" }}>-</span>;
   const th = { padding: "8px 10px", fontSize: 12, color: "#6B7280", fontWeight: 600, textAlign: "left", borderBottom: "1px solid #E5E7EB", whiteSpace: "nowrap", background: "#F9FAFB" };
@@ -2702,10 +2723,40 @@ function PickLogPanel({ showToast }) {
         {Object.entries(stats.people).sort((a, b) => b[1].printed + b[1].closed - a[1].printed - a[1].closed).map(([n, p]) => (
           <div key={n} onClick={() => setQ(n)} title="กดเพื่อกรองเฉพาะคนนี้" style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 12, padding: "10px 14px", cursor: "pointer", minWidth: 120 }}>
             <div style={{ fontWeight: 700, color: "#5B21B6" }}>👤 {n}</div>
-            <div style={{ fontSize: 12, color: "#6B7280" }}>พิมพ์ {p.printed} · ปิดใบ {p.closed} · ยิง {p.pieces} ชิ้น</div>
-            {p.dupPrinted > 0 && <div style={{ fontSize: 12, color: "#B91C1C", fontWeight: 700 }}>พิมพ์ซ้ำ {p.dupPrinted} ใบ</div>}
+            <div style={{ fontSize: 12, color: "#6B7280" }}>ใบหยิบ {p.printed} · ใบปะหน้า {p.labels} · ปิดใบ {p.closed} · ยิง {p.pieces} ชิ้น</div>
+            {p.dupPrinted > 0 && <div style={{ fontSize: 12, color: "#B91C1C", fontWeight: 700 }}>พิมพ์ใบหยิบซ้ำ {p.dupPrinted} ใบ</div>}
+            {p.labelRe > 0 && <div style={{ fontSize: 12, color: "#B91C1C", fontWeight: 700 }}>พิมพ์ใบปะหน้าซ้ำ {p.labelRe} ใบ</div>}
           </div>
         ))}
+      </div>
+
+      <div style={{ background: "#fff", border: "1px solid " + (stats.labelRe || stats.labelNoPick ? "#FECACA" : "#E5E7EB"), borderRadius: 14, padding: "12px 14px", marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 14, alignItems: "baseline", flexWrap: "wrap" }}>
+          <b style={{ fontSize: 14 }}>🏷️ พิมพ์ใบปะหน้า (ใบส่งของ)</b>
+          {labelsReady ? (
+            <span style={{ fontSize: 13, color: "#6B7280" }}>ทั้งหมด {stats.labelTotal} ใบ · <span style={{ color: stats.labelRe ? "#B91C1C" : undefined, fontWeight: stats.labelRe ? 700 : 400 }}>พิมพ์ซ้ำ {stats.labelRe}</span> · <span style={{ color: stats.labelNoPick ? "#B45309" : undefined, fontWeight: stats.labelNoPick ? 700 : 400 }}>ไม่มีใบหยิบ {stats.labelNoPick}</span></span>
+          ) : <span style={{ fontSize: 13, color: "#B45309" }}>ยังไม่ได้รัน sql/label-prints-setup.sql — ยังไม่มี log ใบปะหน้า</span>}
+        </div>
+        {labelIssuesShown.length > 0 && (
+          <div style={{ marginTop: 8, maxHeight: 220, overflow: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 700 }}>
+              <thead><tr>{["เวลา", "เลขพัสดุ", "ออเดอร์", "เพจ", "พิมพ์โดย", "ใบหยิบ", "ปัญหา"].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+              <tbody>{labelIssuesShown.map(l => (
+                <tr key={l.id} style={{ background: l.reprint ? "#FEF2F2" : "#FFFBEB" }}>
+                  <td style={{ ...td, whiteSpace: "nowrap" }}>{fmtDT(l.created_at)}</td>
+                  <td style={{ ...td, fontFamily: "monospace", fontSize: 12 }}>{l.tracking || "-"}</td>
+                  <td style={td}>{l.order_no || "-"}</td>
+                  <td style={{ ...td, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{l.page_name || "-"}</td>
+                  <td style={td}>{who(l.printed_by)}</td>
+                  <td style={{ ...td, fontFamily: "monospace" }}>{l.pick_id ? "PK" + l.pick_id : "-"}</td>
+                  <td style={{ ...td, fontSize: 12, fontWeight: 700, color: l.reprint ? "#B91C1C" : "#B45309" }}>
+                    {l.reprint ? `พิมพ์ซ้ำ (ครั้งที่ ${(stats.labByTrk.get(normTrk(l.tracking)) || []).findIndex(x => x.id === l.id) + 1})` : "ไม่มีใบหยิบ"}{l.approved ? ` · อนุมัติโดย${l.approved}` : ""}
+                  </td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <div style={{ background: "#fff", border: "1px solid #E5E7EB", borderRadius: 14, overflow: "auto" }}>
@@ -2713,7 +2764,7 @@ function PickLogPanel({ showToast }) {
         {!loading && filtered.length === 0 && <div style={{ padding: 24, color: "#9CA3AF", fontSize: 13, textAlign: "center" }}>ไม่มีใบหยิบตามเงื่อนไข</div>}
         {!loading && filtered.length > 0 && (
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
-            <thead><tr>{["ใบหยิบ", "พิมพ์เมื่อ", "เพจ", "พัสดุ", "พิมพ์โดย", "เปิดใบ", "ยิง", "ปิดใบ / ตัดสต็อก", "พัสดุซ้ำ"].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
+            <thead><tr>{["ใบหยิบ", "พิมพ์เมื่อ", "เพจ", "พัสดุ", "พิมพ์โดย", "เปิดใบ", "ยิง", "ปิดใบ / ตัดสต็อก", "ใบปะหน้า", "พัสดุซ้ำ"].map(h => <th key={h} style={th}>{h}</th>)}</tr></thead>
             <tbody>
               {filtered.map(v => {
                 const r = v.r; const open = openId === r.id; const dup = v.dupTrks.size > 0;
@@ -2729,6 +2780,10 @@ function PickLogPanel({ showToast }) {
                       <td style={td}>{who(r.opened_by)}</td>
                       <td style={{ ...td, fontSize: 12 }}>{r.pick_people && Object.keys(r.pick_people).length ? Object.entries(r.pick_people).map(([n, c]) => `${n} ${c}`).join(", ") : <span style={{ color: "#D1D5DB" }}>-</span>}</td>
                       <td style={{ ...td, whiteSpace: "nowrap" }}>{r.pick_status === "closed" ? <>{who(r.closed_by, r.picked_by)} <span style={{ fontSize: 12, color: "#6B7280" }}>{fmtDT(r.pick_closed_at)}</span></> : <span style={{ fontSize: 12, color: "#92400E" }}>{pickStatusLabel(r.pick_status)}</span>}</td>
+                      <td style={{ ...td, fontSize: 12, whiteSpace: "nowrap" }}>
+                        {v.labelCount ? <span>{v.labelCount}/{v.trks.length}{v.labelBy.length ? ` · ${v.labelBy.join(", ")}` : ""}</span> : <span style={{ color: "#D1D5DB" }}>-</span>}
+                        {v.labelReprints > 0 && <div style={{ color: "#B91C1C", fontWeight: 700 }}>พิมพ์ซ้ำ {v.labelReprints}</div>}
+                      </td>
                       <td style={{ ...td, fontSize: 12 }}>
                         {dup ? v.dupWith.map(e => (
                           <div key={e.row.id} style={{ color: e.row.id < r.id ? "#B91C1C" : "#92400E", fontWeight: 600, whiteSpace: "nowrap" }}>
@@ -2739,16 +2794,18 @@ function PickLogPanel({ showToast }) {
                       </td>
                     </tr>
                     {open && (
-                      <tr><td colSpan={9} style={{ padding: "8px 14px 14px", background: "#FAFAFE", borderBottom: "1px solid #E5E7EB" }}>
+                      <tr><td colSpan={10} style={{ padding: "8px 14px 14px", background: "#FAFAFE", borderBottom: "1px solid #E5E7EB" }}>
                         <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 6 }}>{r.total_orders || 0} ออเดอร์ · {r.total_items || 0} หน่วยขาย{r.note ? ` · 📝 ${r.note}` : ""}</div>
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                           {v.trks.map(t => {
                             const others = v.dupWith.filter(e => e.trks.includes(t)).map(e => "PK" + e.row.id);
                             const hit = qq && t.includes(qq);
+                            const lp = stats.labByTrk.get(t) || [];
+                            const lpTip = lp.length ? "ใบปะหน้า: " + lp.map(x => `${fmtDT(x.created_at)}${x.printed_by ? " " + x.printed_by : ""}`).join(" / ") : "";
                             return (
-                              <span key={t} title={others.length ? "อยู่ใน " + others.join(", ") + " ด้วย" : ""}
+                              <span key={t} title={[others.length ? "อยู่ใน " + others.join(", ") + " ด้วย" : "", lpTip].filter(Boolean).join("\n")}
                                 style={{ fontFamily: "monospace", fontSize: 12, padding: "3px 8px", borderRadius: 6, background: others.length ? "#FEE2E2" : "#F3F4F6", color: others.length ? "#991B1B" : "#374151", border: hit ? "2px solid #7C3AED" : "1px solid transparent" }}>
-                                {t}{others.length ? ` ↔ ${others.join(", ")}` : ""}
+                                {t}{others.length ? ` ↔ ${others.join(", ")}` : ""}{lp.length ? ` 🏷️${lp.length > 1 ? "×" + lp.length : ""}` : ""}
                               </span>
                             );
                           })}
