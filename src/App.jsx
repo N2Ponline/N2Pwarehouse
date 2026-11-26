@@ -85,6 +85,7 @@ const api = {
   getOrderScansRange: (fromIso, toIso) => sbAll(`order_scans?select=*&created_at=gte.${encodeURIComponent(fromIso)}&created_at=lte.${encodeURIComponent(toIso)}&order=created_at.desc`),
   getOrderScan: (id) => sb(`order_scans?id=eq.${Number(id)}&select=*`),
   updateOrderScan: (id, patch) => sb(`order_scans?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  rpc: (name, body) => sb(`rpc/${name}`, { method: "POST", body: JSON.stringify(body || {}) }),
   getAliases: () => sbAll("product_aliases?select=*"),
   // components = [{product_id, qty}] — ขาย 1 หน่วยชื่อนี้ ต้องตัดสินค้าอะไรกี่ชิ้น ([] = ไม่มีในคลัง ไม่ตัด)
   upsertAlias: (name, components) => sb("product_aliases?on_conflict=myorder_name", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ myorder_name: name, components, updated_at: new Date().toISOString() }) }),
@@ -3050,7 +3051,21 @@ function TeamNoteBox({ showToast }) {
   );
 }
 
+// PIN พนักงาน (sql/staff-pin-setup.sql) — ยังไม่รัน SQL = ฟังก์ชันไม่มี → กลับไปใช้ช่องชื่อแบบเดิม ไม่บล็อกงาน
+const isMissingRpc = (e) => /Could not find the function|does not exist|PGRST202/i.test(String(e?.message || e));
+const STAFF_IDLE_MS = 5 * 60 * 1000; // ไม่ยิงอะไรเลย 5 นาที = ต้องใส่ PIN ใหม่
+
 function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockCut, onAddProduct }) {
+  const [pinMode, setPinMode] = useState(null);      // null = กำลังเช็ค · true = ใช้ PIN · false = ยังไม่รัน SQL (ใช้ช่องชื่อเดิม)
+  const [sess, setSess] = useState(null);            // { name, last } คนที่ใส่ PIN อยู่ตอนนี้ (ไม่จำข้ามการรีเฟรช/ข้ามใบ)
+  const sessRef = useRef(null);
+  const [pinAsk, setPinAsk] = useState(null);        // { title, resolve } กล่องถาม PIN ที่เปิดอยู่
+  const [pinInput, setPinInput] = useState("");
+  const [pinErr, setPinErr] = useState("");
+  const [pinBusy, setPinBusy] = useState(false);
+  const [dupInfo, setDupInfo] = useState([]);        // พัสดุของใบนี้ที่อยู่ในใบหยิบอื่นด้วย (RPC pick_dup_parcels)
+  const peopleRef = useRef({});                      // { ชื่อ: จำนวนชิ้นที่ยิง } ของใบที่เปิดอยู่
+  const [staffAdmin, setStaffAdmin] = useState(null); // { pw, list, busy, newName, newPin } หน้าต่างจัดการ PIN (ผู้จัดการ)
   const [staffName, setStaffName] = useState(() => { try { return localStorage.getItem("staffName") || ""; } catch { return ""; } });
   const [pick, setPick] = useState(null);           // แถว order_scans ที่กำลังหยิบ
   const [progress, setProgress] = useState({});      // { [product_id]: { scanned, short } }
@@ -3078,7 +3093,8 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   const queueRef = useRef(Promise.resolve());
   const pickRef = useRef(null);
   const progressRef = useRef({});
-  const staffRef = useRef(staffName); staffRef.current = staffName;
+  const staffRef = useRef(staffName);
+  staffRef.current = pinMode === false ? staffName : (sessRef.current?.name || "");
   const localQty = useRef({});      // จำนวนคงเหลือหลังตัดในรอบนี้ (กัน props ยังไม่ทัน re-render ตอนยิงรัวๆ)
   const summaryShownRef = useRef(false);
   const setupToastRef = useRef(false);
@@ -3173,6 +3189,68 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
 
   const setStaff = (v) => { setStaffName(v); try { localStorage.setItem("staffName", v); } catch {} };
 
+  useEffect(() => {
+    api.rpc("staff_verify_pin", { p_pin: "0" }).then(() => setPinMode(true)).catch(e => setPinMode(isMissingRpc(e) ? false : true));
+  }, []);
+  const endSess = () => { sessRef.current = null; staffRef.current = pinMode === false ? staffName : ""; setSess(null); };
+  // ไม่ได้ยิงอะไรเกิน 5 นาที → เคลียร์ชื่อ คนต่อไปต้องใส่ PIN ของตัวเอง
+  useEffect(() => {
+    const t = setInterval(() => { const s = sessRef.current; if (s && Date.now() - s.last > STAFF_IDLE_MS) endSess(); }, 20000);
+    return () => clearInterval(t);
+  }, [pinMode]);
+  // คืนชื่อคนที่กำลังทำงาน — โหมด PIN: ถ้ายังไม่มี/หมดเวลา เปิดกล่องให้ใส่ PIN แล้วรอ (กดยกเลิก = null)
+  const ensureStaff = (title) => {
+    if (pinMode === false) { const n = (staffRef.current || "").trim(); return Promise.resolve(n || null); }
+    const s = sessRef.current;
+    if (s && Date.now() - s.last < STAFF_IDLE_MS) { sessRef.current = { ...s, last: Date.now() }; return Promise.resolve(s.name); }
+    if (s) endSess();
+    return new Promise(resolve => { setPinInput(""); setPinErr(""); setPinAsk({ title, resolve }); });
+  };
+  const needStaffMsg = () => pinMode === false ? "กรอกชื่อพนักงานก่อน (ช่องมุมขวาบน)" : "ต้องใส่ PIN พนักงานก่อน";
+  const submitPin = async () => {
+    const v = pinInput.trim();
+    if (!/^\d{4,6}$/.test(v)) { setPinErr("PIN เป็นตัวเลข 4-6 หลัก"); return; }
+    setPinBusy(true);
+    try {
+      const name = await api.rpc("staff_verify_pin", { p_pin: v });
+      if (!name) { playScanTone("bad"); setPinErr("PIN ไม่ถูกต้อง"); setPinInput(""); }
+      else {
+        sessRef.current = { name, last: Date.now() }; staffRef.current = name; setSess(sessRef.current);
+        const a = pinAsk; setPinAsk(null); a?.resolve(name);
+      }
+    } catch (e) {
+      if (isMissingRpc(e)) { setPinMode(false); const a = pinAsk; setPinAsk(null); a?.resolve(null); showToast("ระบบ PIN ยังไม่เปิดใช้ (ยังไม่ได้รัน SQL) — ใช้ช่องชื่อแบบเดิมไปก่อน", "error"); }
+      else setPinErr("ตรวจ PIN ไม่ได้: " + e.message);
+    }
+    setPinBusy(false);
+  };
+  const cancelPin = () => { const a = pinAsk; setPinAsk(null); a?.resolve(null); };
+
+  // ── จัดการ PIN พนักงาน (ผู้จัดการ) ──
+  const loadStaffAdmin = async (pw) => {
+    setStaffAdmin(prev => ({ ...(prev || {}), pw, busy: true }));
+    try {
+      const list = await api.rpc("staff_admin_list", { p_pw: pw });
+      setStaffAdmin(prev => ({ ...(prev || {}), pw, list: list || [], busy: false }));
+    } catch (e) {
+      showToast(isMissingRpc(e) ? "ยังไม่ได้รัน SQL staff-pin-setup.sql" : e.message, "error");
+      setStaffAdmin(null);
+    }
+  };
+  const openStaffAdmin = () => {
+    const pw = window.prompt("รหัสผู้จัดการ:");
+    if (pw) loadStaffAdmin(pw);
+  };
+  const saveStaff = async (id, name, pin, active) => {
+    const a = staffAdmin; if (!a) return;
+    try {
+      await api.rpc("staff_admin_save", { p_pw: a.pw, p_id: id, p_name: name, p_pin: pin, p_active: active });
+      showToast(id ? `บันทึก "${name}" แล้ว` : `เพิ่ม "${name}" แล้ว`);
+      setStaffAdmin(prev => ({ ...prev, newName: "", newPin: "" }));
+      await loadStaffAdmin(a.pw);
+    } catch (e) { showToast(e.message, "error"); }
+  };
+
   const applyPick = (row) => {
     pickRef.current = row; setPick(row);
     const prog = row?.pick_progress && typeof row.pick_progress === "object" ? row.pick_progress : {};
@@ -3186,12 +3264,29 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
       const rows = await api.getOrderScan(id);
       let row = rows && rows[0];
       if (!row) { playScanTone("bad"); setLast({ status: "bad", msg: `ไม่พบใบหยิบ PK${id} ในระบบ` }); setLoadingPick(false); return; }
+      let who = null;
+      if (row.pick_status !== "closed") {
+        // ใบใหม่ (ปิดใบเก่า/ออกจากใบ = เคลียร์ชื่อแล้ว) ต้องใส่ PIN ของคนที่จะยิงใบนี้
+        if (pickRef.current?.id !== row.id && pinMode !== false) endSess();
+        setLoadingPick(false);
+        who = await ensureStaff(`เปิดใบหยิบ PK${id}`);
+        if (!who) { playScanTone("warn"); setLast({ status: "warn", msg: `ยังไม่ได้เปิดใบ PK${id} — ${needStaffMsg()}` }); return; }
+        setLoadingPick(true);
+      }
       // เปิดใบปุ๊บมาร์คสถานะ "รอตัดสต็อก" (เหลือง) ทันที แม้ยังไม่ได้ยิง SKU ไหนเลย — ให้เห็นว่ามีใบนี้ค้างอยู่
       if (row.pick_status !== "closed" && row.pick_status !== "picking") {
-        try { await api.updateOrderScan(row.id, { pick_status: "picking", picked_by: staffRef.current || row.picked_by || null }); row = { ...row, pick_status: "picking" }; }
+        const patch = { pick_status: "picking", picked_by: who || row.picked_by || null, ...(pinMode === true ? { opened_by: who } : {}) };
+        try { await api.updateOrderScan(row.id, patch); row = { ...row, ...patch }; }
         catch (e) { handleSetupError(e); }
+      } else if (row.pick_status === "picking" && pinMode === true && !row.opened_by && who) {
+        try { await api.updateOrderScan(row.id, { opened_by: who }); row = { ...row, opened_by: who }; } catch {}
       }
+      peopleRef.current = row.pick_people && typeof row.pick_people === "object" ? { ...row.pick_people } : {};
       applyPick(row);
+      setDupInfo([]);
+      const trks = (Array.isArray(row.parcels) ? row.parcels : []).map(p => p && p.tracking).filter(Boolean);
+      if (trks.length) api.rpc("pick_dup_parcels", { p_trackings: trks, p_exclude_id: row.id })
+        .then(r => { if (pickRef.current?.id === row.id) setDupInfo(Array.isArray(r) ? r : []); }).catch(() => {});
       const n = Array.isArray(row.products) ? row.products.length : 0;
       if (row.pick_status === "closed") { playScanTone("warn"); setLast({ status: "warn", msg: `ใบหยิบ PK${id} ตัดสต็อกไปแล้ว (${fmtDT(row.pick_closed_at)}) — ดูได้อย่างเดียว` }); }
       else { playScanTone("ok"); setLast({ status: "info", msg: `เปิดใบหยิบ PK${id} · ${row.page_name || "ไม่ระบุเพจ"} · ${n} รายการ ${row.total_items || 0} หน่วยขาย · รอตัดสต็อกตอนปิดใบ` }); }
@@ -3203,15 +3298,17 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
     progressRef.current = next; setProgress(next);
     const p = pickRef.current; if (!p) return;
     try {
-      await api.updateOrderScan(p.id, { pick_progress: next, pick_status: extra.pick_status || (p.pick_status === "closed" ? "closed" : "picking"), picked_by: staffRef.current || p.picked_by || null, ...extra });
+      await api.updateOrderScan(p.id, { pick_progress: next, pick_status: extra.pick_status || (p.pick_status === "closed" ? "closed" : "picking"), picked_by: staffRef.current || p.picked_by || null, ...(pinMode === true ? { pick_people: peopleRef.current } : {}), ...extra });
     } catch (e) { if (!handleSetupError(e)) showToast("บันทึกความคืบหน้าไม่สำเร็จ: " + e.message, "error"); }
   };
 
   const qtyOf = (p) => (localQty.current[p.id] != null ? localQty.current[p.id] : p.quantity);
 
   // บันทึกความคืบหน้าที่ยิงแล้ว n ชิ้นของ line หนึ่ง — "ไม่" ตัดสต็อกจริง (รอตัดทีเดียวตอนกดปิดใบหยิบ)
-  const registerScan = async (line, n, viaBulk) => {
+  const registerScan = async (line, n, viaBulk, who) => {
     const product = productById.get(line.pid) || line.product;
+    const by = who || staffRef.current || "";
+    if (by) peopleRef.current = { ...peopleRef.current, [by]: (Number(peopleRef.current[by]) || 0) + n };
     const key = String(line.pid); const prev = progressRef.current[key] || {};
     const next = { ...progressRef.current, [key]: { scanned: (Number(prev.scanned) || 0) + n, short: Number(prev.short) || 0 } };
     playScanTone("ok");
@@ -3232,8 +3329,9 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
     if (!line) { playScanTone("bad"); setLast({ status: "bad", msg: `"${product.name}" ไม่ได้อยู่ในใบหยิบนี้ — ไม่นับ เช็คว่าหยิบผิดตัวไหม${unmapped.length ? " (หรือยังไม่ได้จับคู่ชื่อโปร)" : ""}`, product }); return; }
     if (line.scanned + line.short >= line.required) { playScanTone("warn"); setLast({ status: "warn", msg: `"${product.name}" ยิงครบแล้ว (${line.required} ชิ้น) — ไม่นับซ้ำ`, product, line }); return; }
     if (qtyOf(product) <= 0) { playScanTone("warn"); setLast({ status: "warn", msg: `สต็อกในระบบของ "${product.name}" เป็น 0 — เช็คให้แน่ใจว่ามีของจริงก่อนยืนยัน (จะตัดสต็อกตอนปิดใบ)`, product, line }); return; }
-    if (!staffRef.current.trim()) { playScanTone("warn"); setLast({ status: "warn", msg: "กรอกชื่อพนักงานก่อนยิง (ช่องมุมขวาบน)", product, line }); return; }
-    try { await registerScan(line, 1, false); }
+    const who = await ensureStaff(`ยิงสินค้าใบ PK${p.id}`);
+    if (!who) { playScanTone("warn"); setLast({ status: "warn", msg: needStaffMsg() + " ถึงจะยิงได้", product, line }); return; }
+    try { await registerScan(line, 1, false, who); }
     catch (e) { playScanTone("bad"); setLast({ status: "bad", msg: "บันทึกไม่สำเร็จ: " + e.message, product }); }
   };
   const enqueue = (fn) => { setBusy(true); queueRef.current = queueRef.current.then(fn).catch(() => {}).then(() => setBusy(false)); };
@@ -3246,10 +3344,13 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
     const remaining = line.required - line.scanned - line.short;
     const product = productById.get(line.pid);
     if (remaining <= 0) { setBulkFor(null); return; }
-    if (!staffRef.current.trim()) { playScanTone("warn"); setLast({ status: "warn", msg: "กรอกชื่อพนักงานก่อน", product, line }); return; }
     if (qtyOf(product) < line.required) { playScanTone("warn"); setLast({ status: "warn", msg: `สต็อกในระบบของ "${product.name}" มี ${qtyOf(product)} ไม่พอกับที่ต้องหยิบทั้งหมด ${line.required} ชิ้น — เช็คสต็อกก่อนยืนยัน หรือกด "ของขาด" แทนถ้าของจริงมีไม่พอ`, product, line }); return; }
     setBulkFor(null);
-    enqueue(async () => { try { await registerScan(line, remaining, true); } catch (e) { playScanTone("bad"); setLast({ status: "bad", msg: "บันทึกไม่สำเร็จ: " + e.message, product }); } });
+    enqueue(async () => {
+      const who = await ensureStaff(`ยืนยันครบ "${product.name}"`);
+      if (!who) { playScanTone("warn"); setLast({ status: "warn", msg: needStaffMsg(), product, line }); return; }
+      try { await registerScan(line, remaining, true, who); } catch (e) { playScanTone("bad"); setLast({ status: "bad", msg: "บันทึกไม่สำเร็จ: " + e.message, product }); }
+    });
   };
 
   // ครบทุกรายการ → เปิดสรุปปิดใบให้อัตโนมัติ (ครั้งเดียวต่อใบ) — ปิดใบต้องกดยืนยันเองเสมอ
@@ -3301,6 +3402,16 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
   const closePick = async () => {
     const p = pickRef.current; if (!p) return;
     if (!allDone) { showToast(unmapped.length > 0 ? "มีรายการยังไม่จับคู่ SKU — จับคู่ให้ครบก่อนปิดใบ" : "ยิงยังไม่ครบ — กด \"ของขาด +1\" ระบุจำนวนที่ขาดจริงก่อน ถึงจะปิดใบได้", "error"); return; }
+    const who = await ensureStaff(`ปิดใบ PK${p.id} + ตัดสต็อก`);
+    if (!who) { showToast(needStaffMsg() + " ถึงจะปิดใบได้", "error"); return; }
+    // พัสดุในใบนี้เคยถูกตัดสต็อกไปแล้วในใบอื่น → ต้องให้ผู้จัดการยืนยัน กันตัดสต็อกซ้ำ
+    const closedDups = dupInfo.filter(d => d.pick_status === "closed");
+    if (closedDups.length) {
+      const nTrk = new Set(closedDups.map(d => d.tracking)).size;
+      const pks = [...new Set(closedDups.map(d => "PK" + d.pick_id))].join(", ");
+      const pw = window.prompt(`⚠️ ใบนี้มี ${nTrk} พัสดุที่ตัดสต็อกไปแล้วใน ${pks}\nถ้าปิดใบนี้ สต็อกจะถูกตัดซ้ำ\n\nใส่รหัสผู้จัดการเพื่อยืนยันตัดสต็อกต่อ:`);
+      if (pw !== ORDER_SCANS_PASSWORD) { if (pw !== null) showToast("รหัสผู้จัดการไม่ถูกต้อง — ยังไม่ปิดใบ", "error"); return; }
+    }
     const toCut = linesRef.current.filter(l => l.scanned > 0);
     setClosing(true);
     try {
@@ -3321,22 +3432,22 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
         const res = await commitStockChange({
           productId: product.id,
           next: (live) => live - line.scanned,
-          makeTx: () => ({ type: "out", quantity: line.scanned, note: `ใบหยิบ PK${p.id}${line.sources.some(s => s.sub) ? ` (ส่งแทน ${line.sources.filter(s => s.sub).map(s => s.name).join(", ")})` : ""}`, by: staffRef.current.trim() || p.picked_by || "" }),
+          makeTx: () => ({ type: "out", quantity: line.scanned, note: `ใบหยิบ PK${p.id}${line.sources.some(s => s.sub) ? ` (ส่งแทน ${line.sources.filter(s => s.sub).map(s => s.name).join(", ")})` : ""}`, by: who }),
         });
         localQty.current[product.id] = res.newQty;
         res.txs.forEach(tx => onStockCut(product.id, res.newQty, tx));
         if (res.gap) gapNames.push(product.name);
         cutTotal += line.scanned;
       }
-      await api.updateOrderScan(p.id, { pick_progress: progressRef.current, pick_status: "closed", pick_closed_at: new Date().toISOString(), picked_by: staffRef.current || p.picked_by || null });
+      await api.updateOrderScan(p.id, { pick_progress: progressRef.current, pick_status: "closed", pick_closed_at: new Date().toISOString(), picked_by: who, ...(pinMode === true ? { closed_by: who, pick_people: peopleRef.current } : {}) });
       showToast(gapNames.length
         ? `ปิดใบหยิบ PK${p.id} แล้ว — ⚠️ พบยอดเปลี่ยนโดยไม่มีบันทึกที่: ${gapNames.join(", ")} (บันทึกไว้ในประวัติแล้ว)`
         : `ปิดใบหยิบ PK${p.id} แล้ว — ตัดสต็อก ${cutTotal} ชิ้น`, gapNames.length ? "error" : "success");
-      applyPick(null); setLast(null); loadRecent();
+      applyPick(null); setLast(null); setDupInfo([]); if (pinMode !== false) endSess(); loadRecent();
     } catch (e) { if (!handleSetupError(e)) showToast(e.message, "error"); }
     setClosing(false);
   };
-  const leavePick = () => { applyPick(null); setLast(null); loadRecent(); };
+  const leavePick = () => { applyPick(null); setLast(null); setDupInfo([]); if (pinMode !== false) endSess(); loadRecent(); };
 
   // ลบใบหยิบทิ้ง — ใช้เมื่อยิงเปิดผิดใบ/ใบซ้ำ ก่อนปิดใบ (ปิดใบไปแล้วตัดสต็อกจริงแล้ว ไม่ให้ลบจากหน้านี้)
   const deletePick = async (id) => {
@@ -3363,9 +3474,20 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
           <h2 style={{ fontSize: 20, fontWeight: 700, color: "#111827", marginBottom: 4 }}>📦 ยิงตัดสต็อกจากใบหยิบ</h2>
           <p style={{ fontSize: 13, color: "#6B7280" }}>1) ยิงบาร์โค้ด <b>PK…</b> บนสลิป MyOrder เพื่อเปิดใบ (เปิดปุ๊บขึ้นสถานะ "รอตัดสต็อก" สีเหลืองทันที) · 2) หยิบของพร้อมแผ่นบาร์โค้ดจากช่องเก็บ · 3) ยิงบาร์โค้ด SKU ทีละชิ้น หรือยิงชิ้นแรกแล้วกด "ครบ ✓" ยืนยันยอดรวม โชว์รูปให้เทียบก่อนแพ็ก · <b>ตัดสต็อกจริงตอนกดยืนยันปิดใบเท่านั้น</b></p>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 12, color: "#6B7280" }}>พนักงาน</span>
-          <input className="inp" value={staffName} onChange={e => setStaff(e.target.value)} placeholder="ชื่อผู้ยิง" style={{ width: 150, padding: "7px 10px", fontSize: 13 }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }} data-nofocus>
+          {pinMode === false ? (
+            <>
+              <span style={{ fontSize: 12, color: "#6B7280" }}>พนักงาน</span>
+              <input className="inp" value={staffName} onChange={e => setStaff(e.target.value)} placeholder="ชื่อผู้ยิง" style={{ width: 150, padding: "7px 10px", fontSize: 13 }} />
+            </>
+          ) : (
+            <>
+              <span title="ใส่ PIN ตอนเปิดใบหยิบ · ปิดใบ/ออกจากใบ/ไม่ได้ยิง 5 นาที = ต้องใส่ใหม่"
+                style={{ fontSize: 13, padding: "6px 12px", borderRadius: 999, background: sess ? "#EDE9FE" : "#F3F4F6", color: sess ? "#5B21B6" : "#9CA3AF", fontWeight: 700 }}>👤 {sess ? sess.name : "ยังไม่ใส่ PIN"}</span>
+              {sess && <button onClick={endSess} style={btnStyle("#F3F4F6", "#6B7280", { padding: "7px 12px" })}>ออก</button>}
+              <button onClick={openStaffAdmin} title="ผู้จัดการ: เพิ่ม/แก้ PIN พนักงาน" style={btnStyle("#F3F4F6", "#6B7280", { padding: "7px 12px" })}>👥 PIN พนักงาน</button>
+            </>
+          )}
         </div>
       </div>
 
@@ -3465,7 +3587,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
                   <div style={{ fontSize: 12, color: "#374151", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📦 {pickName(r.products?.[0]?.name) || "ไม่ระบุสินค้า"}{n > 1 ? ` +${n - 1} รายการ` : ""}</div>
                   <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>{fmtDT(r.created_at)} · {r.total_orders || 0} ออเดอร์ · {n} รายการ {r.total_items || 0} หน่วยขาย{prog ? ` · ยิงแล้ว ${prog} ชิ้น` : ""}</div>
                   <div style={{ fontSize: 12, marginTop: 6, paddingTop: 6, borderTop: "1px dashed #E5E7EB", color: rClosed ? "#065F46" : "#9CA3AF", fontWeight: rClosed ? 600 : 400 }}>
-                    {rClosed ? `✂️ ยิงตัดสต็อก ${fmtDT(r.pick_closed_at)}${r.picked_by ? ` · โดย ${r.picked_by}` : ""}` : "⏳ ยังไม่ได้ยิงตัดสต็อก"}
+                    {rClosed ? `✂️ ยิงตัดสต็อก ${fmtDT(r.pick_closed_at)}${(r.closed_by || r.picked_by) ? ` · โดย ${r.closed_by || r.picked_by}` : ""}` : "⏳ ยังไม่ได้ยิงตัดสต็อก"}
                   </div>
                   {pickNotes[r.id]?.note && <div style={{ fontSize: 12, marginTop: 4, color: "#B45309", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={pickNotes[r.id].note}>📝 ผจก.: {pickNotes[r.id].note}</div>}
                 </div>
@@ -3478,6 +3600,25 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
       {pick && (
         <div style={{ display: "grid", gridTemplateColumns: narrow ? "minmax(0, 1fr)" : "minmax(0, 1fr) minmax(280px, 380px)", gap: 14, alignItems: "start" }}>
           <div style={{ minWidth: 0, order: narrow ? 2 : 1 }}>
+            {dupInfo.length > 0 && (() => {
+              const byPk = {};
+              dupInfo.forEach(d => { (byPk[d.pick_id] = byPk[d.pick_id] || { ...d, trks: new Set() }).trks.add(d.tracking); });
+              const nTrk = new Set(dupInfo.map(d => d.tracking)).size;
+              const anyClosed = dupInfo.some(d => d.pick_status === "closed");
+              return (
+                <div style={{ background: "#FEF2F2", border: "2px solid #EF4444", borderRadius: 16, padding: "12px 16px", marginBottom: 14, color: "#7F1D1D" }}>
+                  <div style={{ fontWeight: 800, fontSize: 15, marginBottom: 6 }}>⛔ {nTrk} พัสดุในใบนี้ อยู่ในใบหยิบอื่นด้วย — ระวังแพ็คซ้ำ / ตัดสต็อกซ้ำ</div>
+                  {Object.values(byPk).map(d => (
+                    <div key={d.pick_id} style={{ fontSize: 13, padding: "2px 0" }}>
+                      <b style={{ fontFamily: "monospace" }}>PK{d.pick_id}</b> · พิมพ์ {fmtDT(d.created_at)}{d.printed_by ? ` โดย ${d.printed_by}` : ""} · {d.trks.size} พัสดุ · {d.pick_status === "closed" ? `ตัดสต็อกแล้ว${(d.closed_by || d.picked_by) ? ` (โดย ${d.closed_by || d.picked_by})` : ""}` : pickStatusLabel(d.pick_status)}
+                    </div>
+                  ))}
+                  {Array.isArray(pick.dup_parcels) && pick.dup_parcels.length > 0 && <div style={{ fontSize: 12, marginTop: 6, fontWeight: 700 }}>ผู้จัดการอนุมัติให้พิมพ์ซ้ำไว้ตอนพิมพ์ใบหยิบ</div>}
+                  {!isClosed && anyClosed && <div style={{ fontSize: 12, marginTop: 6 }}>ใบเก่าตัดสต็อกไปแล้ว — ตอนปิดใบนี้ต้องใส่รหัสผู้จัดการ</div>}
+                </div>
+              );
+            })()}
+
             {/* ── รายการที่ยังไม่รู้ว่าคือ SKU ไหน (ต้องจับคู่ก่อน ถึงจะโผล่ในรายการหยิบ) ── */}
             {unmapped.length > 0 && !isClosed && (
               <div style={{ background: "#fff", border: "1px solid #FDE68A", borderRadius: 16, overflow: "hidden", marginBottom: 14 }}>
@@ -3506,7 +3647,14 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
                   </div>
                   <div style={{ fontSize: 13, color: "#111827", fontWeight: 600, marginTop: 2 }}>{pick.page_name || "ไม่ระบุเพจ"}</div>
                   <div style={{ fontSize: 12, color: "#6B7280" }}>{fmtDT(pick.created_at)} · {pick.total_orders || 0} ออเดอร์ · {items.length} ชื่อสินค้า{pick.note ? ` · 📝 ${pick.note}` : ""}</div>
-                  {isClosed && <div style={{ fontSize: 12, color: "#065F46", fontWeight: 600 }}>✂️ ยิงตัดสต็อก {fmtDT(pick.pick_closed_at)}{pick.picked_by ? ` · โดย ${pick.picked_by}` : ""}</div>}
+                  {isClosed && <div style={{ fontSize: 12, color: "#065F46", fontWeight: 600 }}>✂️ ยิงตัดสต็อก {fmtDT(pick.pick_closed_at)}{(pick.closed_by || pick.picked_by) ? ` · โดย ${pick.closed_by || pick.picked_by}` : ""}</div>}
+                  {(pick.printed_by || pick.opened_by || (pick.pick_people && Object.keys(pick.pick_people).length > 0)) && (
+                    <div style={{ fontSize: 12, color: "#6B7280" }}>
+                      {pick.printed_by ? `🖨️ พิมพ์ใบหยิบ: ${pick.printed_by}` : ""}
+                      {pick.opened_by ? `${pick.printed_by ? " · " : ""}🔓 เปิดใบ: ${pick.opened_by}` : ""}
+                      {pick.pick_people && Object.keys(pick.pick_people).length > 0 ? ` · 🔫 ยิง: ${Object.entries(pick.pick_people).map(([n, q]) => `${n} ${q} ชิ้น`).join(", ")}` : ""}
+                    </div>
+                  )}
                 </div>
                 <div style={{ textAlign: "right" }}>
                   <div style={{ fontSize: 26, fontWeight: 800, color: "#111827", fontFamily: "monospace" }}>{totalScanned}<span style={{ color: "#9CA3AF", fontSize: 16 }}>/{totalRequired}</span></div>
@@ -3612,7 +3760,7 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
           <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 20, width: "100%", maxWidth: 560, maxHeight: "90vh", overflow: "auto", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
             <div style={{ padding: "18px 22px 12px", borderBottom: "1px solid #F3F4F6" }}>
               <div style={{ fontWeight: 700, fontSize: 17, color: "#111827" }}>{isClosed ? "📋 สรุปใบหยิบ" : allDone ? "🎉 ยิงครบทุกรายการแล้ว" : "📋 สรุปก่อนปิดใบ"} <span style={{ fontFamily: "monospace", color: "#7C3AED" }}>PK{pick.id}</span></div>
-              <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>{pick.page_name || ""} · ผู้ยิง {staffName || pick.picked_by || "-"} · รวม {totalScanned}/{totalRequired} ชิ้น</div>
+              <div style={{ fontSize: 12, color: "#6B7280", marginTop: 2 }}>{pick.page_name || ""} · ผู้ยิง {staffRef.current || pick.picked_by || "-"} · รวม {totalScanned}/{totalRequired} ชิ้น</div>
             </div>
             <div style={{ padding: "8px 22px" }}>
               {lines.map(l => {
@@ -3654,6 +3802,52 @@ function PickScanPanel({ products, aliases, onAliasesChange, showToast, onStockC
                   {closing ? "⏳ กำลังตัดสต็อก..." : allDone ? `✅ ยืนยันปิดใบ + ตัดสต็อก ${totalScanned} ชิ้น` : "⛔ ยิงให้ครบก่อนปิดใบ"}
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pinAsk && (
+        <div data-nofocus style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.55)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div style={{ background: "#fff", borderRadius: 20, width: "100%", maxWidth: 340, padding: "22px 22px 18px", boxShadow: "0 24px 60px rgba(0,0,0,0.25)", textAlign: "center" }}>
+            <div style={{ fontSize: 32 }}>🔑</div>
+            <div style={{ fontWeight: 800, fontSize: 17, color: "#111827", marginTop: 4 }}>ใส่ PIN พนักงาน</div>
+            <div style={{ fontSize: 13, color: "#6B7280", marginTop: 2, marginBottom: 14 }}>{pinAsk.title}</div>
+            <input autoFocus type="password" inputMode="numeric" autoComplete="off" maxLength={6} value={pinInput}
+              onChange={e => { setPinInput(e.target.value.replace(/\D/g, "")); setPinErr(""); }}
+              onKeyDown={e => { if (e.key === "Enter") submitPin(); if (e.key === "Escape") cancelPin(); }}
+              style={{ width: "100%", textAlign: "center", fontSize: 28, letterSpacing: 10, padding: "10px 12px", borderRadius: 12, border: `2px solid ${pinErr ? "#EF4444" : "#C4B5FD"}`, outline: "none", fontFamily: "monospace" }} />
+            <div style={{ minHeight: 20, fontSize: 13, color: "#DC2626", fontWeight: 600, marginTop: 6 }}>{pinErr}</div>
+            <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+              <button onClick={cancelPin} style={{ flex: 1, background: "#F3F4F6", color: "#374151", border: "none", borderRadius: 10, padding: "11px", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>ยกเลิก</button>
+              <button onClick={submitPin} disabled={pinBusy} style={{ flex: 1, background: "#7C3AED", color: "#fff", border: "none", borderRadius: 10, padding: "11px", fontSize: 14, fontWeight: 700, cursor: "pointer", opacity: pinBusy ? 0.6 : 1 }}>{pinBusy ? "⏳" : "ยืนยัน"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {staffAdmin && (
+        <div data-nofocus style={{ position: "fixed", inset: 0, background: "rgba(17,24,39,0.5)", zIndex: 900, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }} onClick={() => setStaffAdmin(null)}>
+          <div onClick={e => e.stopPropagation()} style={{ background: "#fff", borderRadius: 20, width: "100%", maxWidth: 520, maxHeight: "90vh", overflow: "auto", padding: "18px 22px", boxShadow: "0 24px 60px rgba(0,0,0,0.2)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+              <div style={{ fontWeight: 800, fontSize: 17, color: "#111827" }}>👥 PIN พนักงาน</div>
+              <button onClick={() => setStaffAdmin(null)} style={btnStyle("#F3F4F6", "#6B7280")}>ปิด</button>
+            </div>
+            <div style={{ fontSize: 12, color: "#6B7280", marginBottom: 12 }}>PIN ใช้ตอนพิมพ์ใบหยิบ (extension) และตอนเปิด/ยิง/ปิดใบในหน้านี้ · ห้ามบอก PIN ให้คนอื่น · ระบบเก็บ PIN แบบเข้ารหัส ดูย้อนไม่ได้ ลืมให้ตั้งใหม่</div>
+            {staffAdmin.busy && !staffAdmin.list && <div style={{ color: "#9CA3AF", fontSize: 13 }}>กำลังโหลด...</div>}
+            {(staffAdmin.list || []).map(st => (
+              <div key={st.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid #F3F4F6", opacity: st.active ? 1 : 0.5 }}>
+                <div style={{ flex: 1, fontWeight: 600, color: "#111827" }}>{st.name}{!st.active && <span style={{ fontSize: 11, color: "#9CA3AF", fontWeight: 400 }}> (ปิดใช้งาน)</span>}</div>
+                <button onClick={() => { const pin = window.prompt(`PIN ใหม่ของ ${st.name} (ตัวเลข 4-6 หลัก):`); if (pin) saveStaff(st.id, st.name, pin, st.active); }} style={btnStyle("#EDE9FE", "#5B21B6")}>เปลี่ยน PIN</button>
+                <button onClick={() => { const n = window.prompt("แก้ชื่อ:", st.name); if (n && n.trim()) saveStaff(st.id, n.trim(), null, st.active); }} style={btnStyle("#F3F4F6", "#374151")}>แก้ชื่อ</button>
+                <button onClick={() => saveStaff(st.id, st.name, null, !st.active)} style={btnStyle(st.active ? "#FEF2F2" : "#F0FDF4", st.active ? "#B91C1C" : "#065F46")}>{st.active ? "ปิดใช้" : "เปิดใช้"}</button>
+              </div>
+            ))}
+            {staffAdmin.list && staffAdmin.list.length === 0 && <div style={{ color: "#9CA3AF", fontSize: 13, padding: "8px 0" }}>ยังไม่มีพนักงาน — เพิ่มด้านล่าง</div>}
+            <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
+              <input className="inp" placeholder="ชื่อพนักงาน" value={staffAdmin.newName || ""} onChange={e => setStaffAdmin(prev => ({ ...prev, newName: e.target.value }))} style={{ flex: 2, minWidth: 140, padding: "8px 10px", fontSize: 13 }} />
+              <input className="inp" placeholder="PIN 4-6 หลัก" inputMode="numeric" maxLength={6} value={staffAdmin.newPin || ""} onChange={e => setStaffAdmin(prev => ({ ...prev, newPin: e.target.value.replace(/\D/g, "") }))} style={{ flex: 1, minWidth: 100, padding: "8px 10px", fontSize: 13, fontFamily: "monospace" }} />
+              <button onClick={() => saveStaff(null, (staffAdmin.newName || "").trim(), staffAdmin.newPin || "", true)} style={btnStyle("#7C3AED", "#fff", { padding: "8px 14px" })}>+ เพิ่ม</button>
             </div>
           </div>
         </div>
