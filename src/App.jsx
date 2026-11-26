@@ -2819,12 +2819,12 @@ function PickLogPanel({ showToast }) {
               </label>
             </div>
             {batchesShown.length === 0 && <div style={{ fontSize: 13, color: "#9CA3AF", padding: "6px 2px" }}>{onlyBadBatch ? "✅ ไม่มีรอบที่พิมพ์ซ้ำหรือไม่มีใบหยิบ" : "ไม่มีรอบพิมพ์ตามเงื่อนไข"}</div>}
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 460, overflow: "auto" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: q.trim() ? "none" : 460, overflow: "auto" }}>
               {batchesShown.map(b => {
                 const open = openBatch.has(b.key) || (b.hit && b.hit.size > 0 && q.trim());
                 const bad = b.re || b.noPick; const allRe = b.re === b.count;
                 return (
-                  <div key={b.key} style={{ border: "1px solid " + (bad ? "#FCA5A5" : "#E5E7EB"), borderRadius: 10, overflow: "hidden" }}>
+                  <div key={b.key} style={{ border: "1px solid " + (bad ? "#FCA5A5" : "#E5E7EB"), borderRadius: 10, overflow: "hidden", flexShrink: 0 }}>
                     <div onClick={() => toggleBatch(b.key)} style={{ cursor: "pointer", padding: "8px 12px", background: bad ? "#FEF2F2" : "#F9FAFB", display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
                       <span style={{ color: "#7C3AED", fontWeight: 700 }}>{open ? "▾" : "▸"}</span>
                       <b style={{ color: "#111827" }}>รอบ {fmtDT(b.at)}</b>
